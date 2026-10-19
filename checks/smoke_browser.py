@@ -1,0 +1,460 @@
+"""
+Smoke test of the browser on a synthetic experiment (checks/synth.py), offscreen.
+
+    QT_QPA_PLATFORM=offscreen python -m sm4_Browser.checks.smoke_browser
+
+Builds the standard experiment in a temporary directory, opens the Browser (the event loop is not
+entered), steps through every file, and exercises the controls added by the upgrade plan.  Prints
+one line per check and exits non-zero on the first failure.
+"""
+import os
+import sys
+import tempfile
+import time
+import traceback
+
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+if __package__ in (None, ''):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+import numpy as np
+from sm4_Browser import qtplot as plt
+from sm4_Browser.checks import synth
+
+CHECKS = []
+
+
+def check(name):
+    def deco(fn):
+        CHECKS.append((name, fn))
+        return fn
+    return deco
+
+
+def make_browser(directory, **kw):
+    from sm4_Browser.browser import Browser
+    plt._RUNNING[0] = True              # plt.show() returns at once (no event loop in a test)
+    b = Browser(directory, scalefactor=1.0, **kw)
+    plt._app().processEvents()
+    return b
+
+
+def run(selected=None):
+    tmp = tempfile.mkdtemp(prefix='sm4synth_')
+    exp = synth.standard(tmp)
+    synth.install(exp)
+    t0 = time.perf_counter()
+    b = make_browser(tmp)
+    print(f"browser opened on {len(b.files)} synthetic files in {time.perf_counter() - t0:.2f} s")
+    ok = True
+    for name, fn in CHECKS:
+        if selected and not any(s in name for s in selected):
+            continue
+        try:
+            fn(b, exp)
+            plt._app().processEvents()
+            print(f"PASS  {name}")
+        except Exception:
+            ok = False
+            print(f"FAIL  {name}")
+            traceback.print_exc()
+    return ok
+
+
+@check("step through every file")
+def _step_all(b, exp):
+    for i in range(len(b.files)):
+        b._goto(i)
+    b._goto(0)
+
+
+def _axes_centre_global(canvas, ax):
+    from sm4_Browser.qtplot import QtCore
+    x0, y0, w, h = ax._px_rect()
+    return canvas.viewport().mapToGlobal(QtCore.QPoint(int(x0 + w / 2), int(y0 + h / 2))), (x0 + w / 2, y0 + h / 2)
+
+
+@check("D1 double-click centres at the same zoom")
+def _dbl(b, exp):
+    from sm4_Browser.qtplot import QtCore, QtGui, MouseEvent
+    ax, v = b.ax_scan, b.view
+    x0, x1 = ax.get_xlim(); y0, y1 = ax.get_ylim()
+    w0 = x1 - x0
+    tx, ty = x0 + 0.8 * (x1 - x0), y0 + 0.3 * (y1 - y0)
+    e = MouseEvent('button_press_event', b.canvas_scan, 0, 0, button=1, dblclick=True)
+    e.inaxes, e.xdata, e.ydata = ax, tx, ty
+    b.canvas_scan._fire('button_press_event', e)
+    nx0, nx1 = ax.get_xlim(); ny0, ny1 = ax.get_ylim()
+    assert abs((nx1 - nx0) - w0) < 1e-6 * max(w0, 1), (nx1 - nx0, w0)
+    assert abs(0.5 * (nx0 + nx1) - tx) < 1e-6 * max(w0, 1) and abs(0.5 * (ny0 + ny1) - ty) < 1e-6 * max(w0, 1)
+
+
+@check("D2 R saves the view, space returns to it (real Qt key events)")
+def _save_restore(b, exp):
+    from sm4_Browser.qtplot import QtCore, QtGui, Qt
+    from PySide6.QtTest import QTest
+    ax, c = b.ax_scan, b.canvas_scan
+    g, local = _axes_centre_global(c, ax)
+    QtGui.QCursor.setPos(g)
+    c.setFocus()
+    plt._app().processEvents()
+    saved = (ax.get_xlim(), ax.get_ylim())
+    QTest.keyClick(c.viewport() if False else c, Qt.Key.Key_R)
+    assert b.view.saved is not None, "R did not save (cursor position not over the axes in this platform?)"
+    b.view.centre_on(saved[0][0] - 50.0, saved[1][0] - 50.0)
+    QTest.keyClick(c, Qt.Key.Key_Space)
+    (a0, a1), (c0, c1) = ax.get_xlim(), ax.get_ylim()
+    assert abs(a0 - saved[0][0]) < 1e-6 and abs(c1 - saved[1][1]) < 1e-6, ((a0, a1), saved)
+
+
+@check("D3 Home (toolbar) and Home key return to the full extent; scroll still zooms")
+def _home(b, exp):
+    from sm4_Browser.qtplot import Qt, MouseEvent
+    from PySide6.QtTest import QTest
+    ax, v = b.ax_scan, b.view
+    full = v.full
+    e = MouseEvent('scroll_event', b.canvas_scan, 0, 0, button='up', step=1)
+    e.inaxes, e.xdata, e.ydata = ax, 0.5 * (full[0] + full[1]), 0.5 * (full[2] + full[3])
+    b.canvas_scan._fire('scroll_event', e)
+    zx0, zx1 = ax.get_xlim()
+    assert (zx1 - zx0) < (full[1] - full[0]) * 0.99, "scroll did not zoom"
+    b.toolbar_scan._home()
+    hx0, hx1 = ax.get_xlim()
+    assert abs((hx1 - hx0) - (full[1] - full[0])) < 1e-6 * (full[1] - full[0])
+    b.view.centre_on(0.0, 0.0)
+    QTest.keyClick(b.canvas_scan, Qt.Key.Key_Home)
+    hx0, hx1 = ax.get_xlim()
+    assert abs((hx1 - hx0) - (full[1] - full[0])) < 1e-6 * (full[1] - full[0])
+
+
+def goto_kind(b, kind):
+    i = next(i for i, p in enumerate(b.files) if b.kinds[p] == kind)
+    b._goto(i)
+    return b.current
+
+
+def open_line(b):
+    goto_kind(b, 'grid')
+    n = len(b.children)
+    b._on_line()
+    assert len(b.children) == n + 1, "Line window did not open"
+    return b.children[-1]
+
+
+def open_map(b):
+    goto_kind(b, 'grid')
+    n = len(b.children)
+    b._on_map()
+    assert len(b.children) == n + 1, "Map window did not open"
+    return b.children[-1]
+
+
+@check("E1 Line window: groups and markers down to 0 and back")
+def _line_zero(b, exp):
+    from sm4_Browser import widgets
+    assert widgets.SPECS['Markers']['vmin'] == 0 and widgets.SPECS['avgs']['vmin'] == 0
+    w = open_line(b)
+    w._int_on_group_slider(0, 0)                      # the group's markers to 0
+    assert w._int_group_sizes == [0] and w._int_marker_pos == []
+    w._int_on_add_new(0)                             # nothing to add: a message, no window
+    w._int_on_avgs_change(0)                         # no group at all
+    assert w._int_group_sizes == [] and w._int_marker_pos == []
+    w._int_stacks.chk_average.set(True); w._redraw_curves()
+    w._int_on_avgs_change(2)                         # back: default size
+    assert w._int_group_sizes == [2, 2] and len(w._int_marker_pos) == 4, w._int_group_sizes
+    w._int_on_group_slider(1, 0)
+    assert w._int_group_sizes == [2, 0]
+    w._int_stacks.chk_stack.set(True); w._redraw_curves()
+    w._int_stacks.chk_substack.set(True); w._redraw_curves()
+    w._int_on_group_slider(1, 3)
+    assert w._int_group_sizes == [2, 3] and len(w._int_marker_pos) == 5
+
+
+@check("E1 Map window: groups and markers down to 0 and back")
+def _map_zero(b, exp):
+    m = open_map(b)
+    m._on_group_slider(0, 0)
+    assert m.group_sizes == [0] and m.marker_px == []
+    m._on_avgs_change(0)
+    assert m.group_sizes == [] and m.marker_px == []
+    m.stacks.chk_average.set(True)
+    m._redraw_markers()
+    m._on_avgs_change(1)
+    assert m.group_sizes == [2] and len(m.marker_px) == 2
+
+
+@check("E1 align.marker_map with no markers keeps the DTW map")
+def _align_zero(b, exp):
+    from sm4_Browser import align
+    pos = np.linspace(0, 10, 11)
+    out = align.marker_map(pos, pos * 1.1, [], [])
+    assert np.allclose(out, pos * 1.1)
+
+
+def settle(b, max_turns=2000):
+    """Let the background placing finish (zero timers run in processEvents)."""
+    for _ in range(max_turns):
+        plt._app().processEvents()
+        if not b._bg_running and not b._bg_queue:
+            break
+
+
+@check("A3 drift transform equals the per-pixel resampling (corrected_topo) inside the frame")
+def _affine_equals_resample(b, exp):
+    from scipy.ndimage import map_coordinates
+    from sm4_Browser.scanlayer import display_record, affine_matrix
+    from sm4_Browser.topo import processed_topo
+    t = next(f for f in b.loaded.values() if f.kind == 'topo')
+    for direction in ('forward', 'reverse'):
+        model, _ = b.drift.model_for_topo(t.path, True, True)
+        assert model is not None, "the synthetic pair should give a velocity"
+        ref = b.drift.corrected_topo(t, direction, b.topo_active, b.loaded, True, True) * 1e9   # nm, own grid
+        rec = display_record(t, direction, b.topo_active)
+        k = 1.0
+        M = affine_matrix(rec, k, direction, model)
+        # Every output pixel q (absolute, metres): its frame coordinates through the inverse of M, the
+        # processed image sampled there (bilinear) = what the transformed item shows at q.
+        q = t.pixel_xy_m(direction).reshape(-1, 2)
+        Minv = np.linalg.inv(M)
+        uv = (np.column_stack([q, np.ones(len(q))]) @ Minv.T)[:, :2]
+        j = uv[:, 0] / rec['xscale_m'] + (rec['nx'] - 1) / 2.0
+        i = uv[:, 1] / rec['yscale_m'] + (rec['ny'] - 1) / 2.0
+        img = processed_topo(t, direction, b.topo_active) * 1e9
+        got = map_coordinates(img, [i, j], order=1, mode='constant', cval=np.nan).reshape(img.shape)
+        ok = np.isfinite(ref) & np.isfinite(got)
+        ok[:2, :] = ok[-2:, :] = ok[:, :2] = ok[:, -2:] = False
+        rng = np.nanmax(img) - np.nanmin(img)
+        err = np.nanmax(np.abs(ref[ok] - got[ok])) / rng
+        assert ok.sum() > 0.8 * ok.size * 0.9 and err < 0.02, (direction, ok.sum(), err)
+
+
+@check("A2 images persist across steps (no re-imaging); A4 show modes")
+def _persist_and_modes(b, exp):
+    b._on_show_mode('all')
+    settle(b)
+    assert set(b._visible_paths()) == set(b.files)
+    ids = {p: id(it['im']) for p, it in b.layer.items.items()}
+    for i in range(len(b.files)):
+        b._goto(i)
+    ids2 = {p: id(it['im']) for p, it in b.layer.items.items()}
+    assert all(ids2[p] == ids[p] for p in ids if p in ids2), "an image was rebuilt while stepping"
+    topo_paths = [p for p in b.files if b.kinds[p] == 'topo']
+    b._goto(0)
+    b._on_show_mode('up to current')
+    shown = [p for p, it in b.layer.items.items() if it['im'].get_visible()]
+    assert shown == [b.files[0]], shown
+    b._goto(len(b.files) - 1)
+    shown = {p for p, it in b.layer.items.items() if it['im'].get_visible()}
+    assert set(topo_paths) <= shown, (shown, topo_paths)
+    b._on_show_mode('last 25')
+    b._on_show_mode('up to current')
+
+
+@check("A3 a drift change only moves images (same items, new matrices)")
+def _drift_toggle_moves(b, exp):
+    b._goto(len(b.files) - 1)
+    p = next(p for p in b.files if b.kinds[p] == 'topo')
+    im = b.layer.items[p]['im']
+    m_on = b.layer.items[p]['mat'].copy()
+    b._on_drift_toggle('auto', False)
+    b._on_drift_toggle('manual', False)
+    assert b.layer.items[p]['im'] is im
+    m_off = b.layer.items[p]['mat']
+    assert not np.allclose(m_on, m_off), "turning the drift off did not move the image"
+    b._on_drift_toggle('auto', True)
+    b._on_drift_toggle('manual', True)
+    assert np.allclose(b.layer.items[p]['mat'], m_on)
+
+
+@check("B1 step filter: kinds and minimum duration")
+def _step_filter(b, exp):
+    b._goto(0)
+    b._on_step_kinds('point', [False, True, False, False, False])     # only points
+    b._step(+1)
+    assert b.kinds[b.files[b.index]] == 'point', b.kinds[b.files[b.index]]
+    b._on_step_kinds('topo', [True, True, True, True, True])
+    durs = {p: (b.headers[p]['end_time'] - b.headers[p]['start_time']) for p in b.files}
+    longest = max(durs.values())
+    b._on_min_duration(f"{longest / 60.0 * 0.99:g}")                      # only the longest file passes
+    b._goto(0)
+    b._step(+1)
+    p_long = max(durs, key=durs.get)
+    assert b.files[b.index] == p_long or b.index == 0 and b.files[0] == p_long, (b.files[b.index], p_long)
+    b._on_min_duration("0")
+    j = b._nearest_allowed(2)
+    assert j == 2
+
+
+@check("C1 points grey before the current topo, blue after")
+def _point_colours(b, exp):
+    b._on_show_mode('all')
+    settle(b)
+    gi = next(i for i, p in enumerate(b.files) if b.kinds[p] == 'grid')
+    b._goto(gi)                                    # the point comes after this grid: blue
+    grey, blue = b._point_colours(b._visible_paths())
+    assert len(blue) == 1 and len(grey) == 0, (grey, blue)
+    b._goto(len(b.files) - 1)                      # the last topo comes after the point: grey
+    grey, blue = b._point_colours(b._visible_paths())
+    assert len(grey) == 1 and len(blue) == 0, (grey, blue)
+    b._on_show_mode('up to current')
+
+
+@check("A2 occlusion: an image wholly under a later complete image is not painted")
+def _occlusion(b, exp):
+    from sm4_Browser.scanlayer import _covers
+    sq = lambda c, h: np.array([[c - h, c - h], [c + h, c - h], [c + h, c + h], [c - h, c + h]], dtype=float)
+    quads = {'a': sq(0, 1), 'b': sq(0, 2), 'c': sq(3, 1), 'd': sq(0, 1.5)}
+    order = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+    cov = _covers(quads, order, {'a': True, 'b': True, 'c': True, 'd': False})
+    assert cov == {'a': ['b']}, cov            # d is incomplete (holes): it hides nothing; c lies elsewhere
+    rot = sq(0, 0.5) @ np.array([[np.cos(0.3), -np.sin(0.3)], [np.sin(0.3), np.cos(0.3)]]).T
+    cov = _covers({'r': rot, 'b': sq(0, 2)}, {'r': 0, 'b': 1}, {'r': True, 'b': True})
+    assert cov == {'r': ['b']}, cov
+
+
+def click(fig, ax, x, y):
+    """A press and release at data (x, y) in ax (no motion): mpl events through the canvas."""
+    from sm4_Browser.qtplot import MouseEvent
+    px, py = ax.transData.transform([[x, y]])[0]
+    for name in ('button_press_event', 'button_release_event'):
+        e = MouseEvent(name, fig.canvas, px, py, button=1)
+        e.inaxes, e.xdata, e.ydata = ax, x, y
+        fig.canvas._fire(name, e)
+
+
+@check("G1-G5 drift window: partners placed at once both ways with the current velocity; arrows on both panels")
+def _drift_window(b, exp):
+    from sm4_Browser.drift import seed_partner
+    goto_kind(b, 'grid')
+    b._on_drift_window()
+    w = b.drift_window
+    assert w is not None and w.markers.n_pairs == 0 and w.sld_markers.value == 0
+    v0, src0 = w._seed_velocity()
+    assert v0 is not None and src0.startswith('auto'), (v0, src0)
+    k = w.k
+    # three clicks on the earlier topo: three pairs, partners where the velocity puts them
+    a_c = np.asarray(w.a.center_m)
+    pts = [a_c + np.array(o) for o in ((-2e-9, -1e-9), (1.5e-9, 2e-9), (3e-9, -3e-9))]
+    for p_m in pts:
+        click(w.fig, w.ax_a, *(p_m * k))
+    A, B = w.markers.markers[w.a.path], w.markers.markers[w.b.path]
+    assert len(A) == 3 and len(B) == 3, (len(A), len(B))
+    assert w.markers.n_pairs == 3 and w.sld_markers.value == 3
+    for ma, mb in zip(A, B):
+        exp_xy, _ = seed_partner(w.a, w.b, ma['xy_m'], ma['t'], v0)
+        assert np.allclose(mb['xy_m'], exp_xy, atol=1e-15), (mb['xy_m'], exp_xy)
+        assert mb.get('seed') is not None
+    # arrows on both panels: draw_drift_markers returns markers + texts + arrows per panel
+    n_a = sum(1 for a in w.markers._arts if getattr(a, 'axes', None) is w.ax_a)
+    n_b = sum(1 for a in w.markers._arts if getattr(a, 'axes', None) is w.ax_b)
+    assert n_a >= 3 * 2 and n_b >= 3 * 2, (n_a, n_b)
+    # a click on the later topo places its partner on the earlier one
+    b_c = np.asarray(w.b.center_m)
+    click(w.fig, w.ax_b, *((b_c + np.array([-3e-9, 2.5e-9])) * k))
+    assert len(A) == 4 and len(B) == 4 and A[3].get('seed') is not None
+    exp_xy, _ = seed_partner(w.b, w.a, B[3]['xy_m'], B[3]['t'], v0)
+    assert np.allclose(A[3]['xy_m'], exp_xy, atol=1e-15)
+    # a typed velocity applied: new markers use it
+    w.box_v.set("50, -40")
+    w._on_typed("50, -40")
+    w._on_apply()
+    v1, src1 = w._seed_velocity()
+    assert src1.startswith('manual') and np.allclose(v1 * 3.6e12, [50, -40]), (v1, src1)
+    click(w.fig, w.ax_a, *((a_c + np.array([0.5e-9, 0.5e-9])) * k))
+    assert len(A) == 5
+    exp_xy, _ = seed_partner(w.a, w.b, A[4]['xy_m'], A[4]['t'], v1)
+    assert np.allclose(B[4]['xy_m'], exp_xy, atol=1e-15)
+    assert B[4].get('seed_source', '').startswith('manual')
+    # the count slider back to 0 clears every marker
+    w.markers.set_pairs(0)
+    assert not w.markers.markers[w.a.path] and not w.markers.markers[w.b.path]
+    w.box_v.set("")
+    w._on_apply()                                   # the typed span removed again
+    plt.close(w.fig)
+    plt._app().processEvents()
+    assert not w.is_open(), "a closed window still counts as open (qtplot Figure._on_close)"
+
+
+@check("H stripe match in the browser and the Topo window, with drift on and with drift none")
+def _stripe_browser(b, exp):
+    goto_kind(b, 'grid')
+    b._on_drift_toggle('stripe', True)
+    d = b.drift.result(b.current, b.loaded, True, b.auto_on, b.manual_on, b.anchor_on)
+    assert d is not None and d['stripe'] and d['lines']
+    b._on_drift_toggle('auto', False)
+    b._on_drift_toggle('manual', False)
+    d0 = b.drift.result(b.current, b.loaded, True, False, False, False)
+    assert d0 is not None and d0['source'].startswith('none'), d0 and d0['source']
+    b._on_topo_window()
+    w = b.children[-1]
+    w.draw()
+    plt.close(w.fig)
+    b._on_drift_toggle('auto', True)
+    b._on_drift_toggle('manual', True)
+    b._on_drift_toggle('stripe', False)
+
+
+@check("F1-F3 E-markers and the energy slice (Line window; line average)")
+def _e_markers(b, exp):
+    from sm4_Browser.qtplot import Qt, MouseEvent
+    from PySide6.QtTest import QTest
+    w = open_line(b)
+    assert len(w._int_e_markers) == 1 and w._int_sld_e.value == 1
+    assert w._int_marker_pos, "position markers present"
+    pos_before = list(w._int_marker_pos)
+    # count 0..3, the position markers untouched
+    w._int_on_e_count(3)
+    assert len(w._int_e_markers) == 3 and len(set(w._int_e_markers)) == 3
+    w._int_on_e_count(0)
+    assert w._int_e_markers == [] and w._int_sld_e.value == 0
+    w._int_on_e_count(2)
+    assert w._int_marker_pos == pos_before
+    # the slice: one curve per E-marker, against position, the value at the marker's energy
+    lines = [a for a in w._int_ax_slice._children if hasattr(a, '_y') and len(getattr(a, '_y', [])) == len(w._int_pos)]
+    assert len(lines) == 2, len(lines)
+    j = w._int_e_index(w._int_e_markers[0])
+    kept = w._int_kept_mask()
+    assert np.allclose(lines[0]._x[kept], w._int_curves[kept, j], equal_nan=True)
+    # drag E1 on the heatmap: pick then motion
+    e_axis = w._int_e_axis()
+    art = next(a for a in w._int_e_artists if getattr(a, 'get_label', lambda: '')() == '_emarker_0')
+    class P: pass
+    ev = P(); ev.artist = art
+    w._int_on_pick(ev)
+    target = float(e_axis[3])
+    mv = MouseEvent('motion_notify_event', w._int_fig.canvas, 0, 0, button=1)
+    mv.inaxes, mv.xdata, mv.ydata = w._int_ax_didv, target + 1e-4, 10.0
+    w._int_on_motion(mv)
+    w._int_on_release(mv)
+    assert w._int_e_markers[0] == target, (w._int_e_markers[0], target)
+    # keys step the selected one by one recorded energy (real key events on the canvas)
+    c = w._int_fig.canvas
+    c.setFocus()
+    QTest.keyClick(c, Qt.Key.Key_Right)
+    assert w._int_e_markers[0] == float(e_axis[4]), w._int_e_markers
+    QTest.keyClick(c, Qt.Key.Key_Tab)
+    assert w._int_e_selected == 1
+    # the record keeps them
+    rec = w._int_marker_record() if hasattr(w, '_int_marker_record') else None
+    import inspect
+    src = inspect.getsource(type(w))
+    w._int_on_e_count(1)
+    plt.close(w._int_fig)
+    # line average: built on the Line window, gets the E-markers too
+    w2 = open_line(b)
+    n0 = len(b.line_averages.open())
+    w2._int_on_line_new()
+    la = list(b.line_averages.open().values())
+    assert len(la) == n0 + 1, "line average did not open"
+    lw = la[-1]
+    lw.run()
+    assert lw._int_e_markers and lw._int_ax_slice is not None
+    lw._int_on_e_count(2)
+    rec = lw.record()
+    assert len(rec.get('energy_markers', [])) == 2
+    plt.close(lw._int_fig)
+    plt.close(w2._int_fig)
+
+
+if __name__ == '__main__':
+    sys.exit(0 if run(sys.argv[1:]) else 1)
