@@ -158,8 +158,9 @@ The drift window (DriftWindow: the Browser's 'drift' button for the current
 file, the 'drift window' button of the Line and Map windows) shows the pair
 a file's auto velocity comes from side by side (Drift.window_pair: a spectra
 file's before and after topos; a topo and the next of its segment, else the
-previous and it) and takes the marker pairs for exactly that span; its one
-velocity box is what gets applied.  Its '< before' / 'before >' and
+previous and it), each panel also carrying the other topo's recorded frame
+as a thin black outline on top, and takes the marker pairs for exactly that
+span; its one velocity box is what gets applied.  Its '< before' / 'before >' and
 '< after' / 'after >' buttons step either topo through the segment in time
 order, and the box then applies to the span between the topos shown, which
 covers every file between them.  The Browser applies the manual
@@ -3195,7 +3196,12 @@ class DriftWindow:
     never its own; a topo and the next of its segment, else the previous
     and it), side by side at absolute positions (nm after the scale factor)
     with the same limits, through the caller's topo processors, a spectra
-    file's recorded positions on both.  Clicks place numbered markers
+    file's recorded positions on both, and on each panel the recorded
+    frame of the other topo of the pair (its centre, angle and extent as
+    recorded, no drift correction: the drift is measured from the
+    uncorrected topos), a thin black outline named with its file, drawn
+    last so it lies on top of the topo, the markers and the arrows
+    (plots.draw_topo_outline).  Clicks place numbered markers
     (widgets.PairMarkers: the k-th on the left pairs with the k-th on the
     right, pair k in its own colour; a press on a marker drags it); with
     a click on either topo places the partner on the other at once where the
@@ -3291,12 +3297,13 @@ class DriftWindow:
         plt.show()
 
     def _draw_pair(self):
-        """Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at absolute positions, the file's spectra on both, the same limits."""
+        """Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at absolute positions, the file's spectra on both, the other topo's recorded frame on top, the same limits."""
         from sm4_Browser import plots
         from sm4_Browser import topo as topo_mod
         f, k = self.f, self.k
         corners = []
-        for ax, t, label in ((self.ax_a, self.a, "earlier"), (self.ax_b, self.b, "later")):
+        self._outlines = {}          # panel -> the artists of the other topo's recorded frame (drawn last)
+        for ax, t, other, label in ((self.ax_a, self.a, self.b, "earlier"), (self.ax_b, self.b, self.a, "later")):
             ax.clear()
             img = topo_mod.process_topo(t.topo_raw('forward'), self.active) * 1e9
             plots.draw_topo_absolute(ax, t, img, self.scalefactor, cmap=plots.TOPO_CMAP)
@@ -3312,6 +3319,9 @@ class DriftWindow:
             ax.set_ylabel("y (nm, absolute)")
             ax.ticklabel_format(useOffset=False, style='plain')
             ax.set_aspect('equal', adjustable='box')
+            # The other topo of the pair as its recorded frame, drawn last: a thin black outline on
+            # top of everything on the panel (the markers and arrows drawn later sit below its zorder).
+            self._outlines[ax] = plots.draw_topo_outline(ax, other, self.scalefactor, name=other.name)
         allc = np.vstack(corners)
         mx = 0.05 * max(np.ptp(allc[:, 0]), 1e-9)
         my = 0.05 * max(np.ptp(allc[:, 1]), 1e-9)

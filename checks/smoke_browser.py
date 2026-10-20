@@ -814,6 +814,45 @@ def _drift_step(b, exp):
     plt.close(w.fig)
 
 
+@check("G7 drift window: the other topo's recorded frame on each panel, named, on top of everything; it follows the step")
+def _drift_outline(b, exp):
+    goto_kind(b, 'grid')
+    b._on_drift_window()
+    w = b.drift_window
+    k = 1e9 / w.scalefactor
+
+    def check_frames():
+        for ax, own, other in ((w.ax_a, w.a, w.b), (w.ax_b, w.b, w.a)):
+            arts = w._outlines[ax]
+            line, label = arts[0], arts[1]
+            x, y = line.get_data()
+            c = other.corners_m() * k
+            assert np.allclose(np.column_stack([x, y]), np.vstack([c, c[:1]])), (own.name, other.name)
+            assert line.get_zorder() > max(a.get_zorder() for a in ax.lines if a is not line), own.name
+            assert line.get_zorder() > max(a.get_zorder() for a in ax.images), own.name
+            assert label.text.get_text() == other.name
+            assert not np.allclose(c, own.corners_m() * k), "the frame must be the other topo's, not this panel's"
+            for art in w.markers._arts:                     # markers and arrows drawn later still sit below it
+                if getattr(art, 'axes', None) is ax:
+                    assert art.get_zorder() < line.get_zorder(), own.name
+
+    check_frames()
+    # a marker pair placed after the frames (a click on the earlier topo seeds its partner on the later)
+    click(w.fig, w.ax_a, *(np.asarray(w.a.center_m) * k))
+    assert w.markers.n_pairs == 1 and any(getattr(a, 'axes', None) is w.ax_b for a in w.markers._arts)
+    check_frames()
+    paths = list(w.members)
+    ia = paths.index(w.a.path)
+    assert ia > 0
+    a0 = w.a.path
+    w._step('before', -1)
+    assert w.a.path == paths[ia - 1] and w.a.path != a0
+    check_frames()
+    w._step('before', +1)
+    check_frames()
+    plt.close(w.fig)
+
+
 def widgets_text(lo, hi):
     from sm4_Browser.widgets import RangeBox
     return RangeBox.text_of((lo, hi))
