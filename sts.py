@@ -762,7 +762,7 @@ class STS:
     @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
-                       calibrate=True, vmod=None):
+                       calibrate=True, vmod=None, norm_range=None):
         """
         Per column: the recorded current through the Hampel and
         Savitzky-Golay filters once (hampel, sgolay: the windows' settings,
@@ -776,7 +776,8 @@ class STS:
         each column's current at 0 V before I/V is formed, see
         feenstra.iv_corrected; the division is told not to filter again),
         unit-area normalization (normalization.normalize; skipped with
-        `normalize` off: the areas are then NaN).  The filters reach every
+        `normalize` off: the areas are then NaN; norm_range (lo, hi) limits
+        the area to the samples inside that energy range).  The filters reach every
         use of the current here, the calibration included.  Columns flagged
         as never acquired in `acquired` run through the division with the
         others (see the comment below), are left out of the calibration,
@@ -811,7 +812,7 @@ class STS:
                 c = feenstra.divide_by_iv(energy, c, iv, iv_broadening, iv_zero_sub, None, None)
         if normalize:
             with np.errstate(invalid='ignore'):
-                c, areas = normalization.normalize(energy, c)
+                c, areas = normalization.normalize(energy, c, energy_range=norm_range)
         else:
             areas = np.full(c.shape[1], np.nan)
         c[:, ~acquired] = 0.0

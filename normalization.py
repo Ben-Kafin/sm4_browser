@@ -12,7 +12,7 @@ if __package__ in (None, ''):
 import numpy as np
 
 
-def normalize(energy, curves):
+def normalize(energy, curves, energy_range=None):
     """
     Normalize each spectrum (column) so its integrated area (via the
     trapezoidal rule) is 1.  Returns (normalized curves, areas), the
@@ -20,14 +20,23 @@ def normalize(energy, curves):
     whose area is 0 or NaN (an all-zero column) is returned as it is.  No
     absolute tolerance: the columns are in physical units (a calibrated
     dI/dV in A/V has areas of order 1e-10 A, the lock-in output in A of
-    order 1e-12 A V).
+    order 1e-12 A V).  With energy_range (lo, hi) the area is taken over
+    the samples with lo <= energy <= hi only (the Line window's energy
+    range box: the shown range is the normalized range); fewer than two
+    such samples give area 0, and the column comes back as it is.
     """
     energy = np.asarray(energy, dtype=np.float64)
+    if energy_range is not None:
+        lo, hi = sorted((float(energy_range[0]), float(energy_range[1])))
+        in_range = (energy >= lo) & (energy <= hi)
+    else:
+        in_range = np.ones(len(energy), dtype=bool)
+    e_area = energy[in_range]
     norm_curves = np.zeros_like(curves, dtype=np.float64)
     norm_areas = []  # per-column areas (the columns' units times volts), used by "Send to fit"
     for j in range(curves.shape[1]):
         current_curve = curves[:, j]
-        area = np.abs(np.trapezoid(current_curve, x=energy))
+        area = np.abs(np.trapezoid(current_curve[in_range], x=e_area)) if len(e_area) >= 2 else 0.0
         norm_areas.append(area)
         if np.isfinite(area) and area > 0.0:
             norm_curves[:, j] = current_curve / area
