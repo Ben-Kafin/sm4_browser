@@ -1243,7 +1243,7 @@ class StripeReference:
         return int(np.argmin([np.linalg.norm(self.centre(i) - xy) for i in range(len(self.entries))]))
 
 
-def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
+def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS, points=None):
     """
     Corrected absolute positions (N, 2; NaN for a spectrum not kept) of a
     grid file against the earlier topo 'prev' (raw heights), with the
@@ -1289,6 +1289,16 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
     (forward end - return point) / recorded reverse length, the factor the
     placement implies (the measured b_r is the grid observation; the two are
     printed side by side per link).
+
+    Manual points (`points`, {'E:i' | 'R:i': metres along the fast axis
+    from the grid's first spectrum}, the stripe window's dragged points):
+    'E:i' replaces line i's forward end, which sets that line's forward
+    factor (the end divided by the kept range) and where its reverse pass
+    begins; 'R:i' replaces line i's return point, which stretches its
+    reverse pass between the fixed forward end and the point and moves
+    line i + 1's start with it (the recorded separation kept, one point),
+    line i + 1's own end staying where its point or its match puts it.  No
+    other point moves.  Without points the placement is the matching's.
 
     Placement, line 0: its first spectrum stays at the recorded position
     (the file's absolute anchor); what its forward stripe's match against
@@ -1337,6 +1347,7 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
     """
     report = []
     lines = []
+    points = {str(k): float(v) for k, v in (points or {}).items()}
     N = grid.n_spectra
     xy = np.asarray(grid.spec_xy_m, dtype=np.float64)
     acq = np.asarray(grid.acquired, dtype=bool)[:N]
@@ -1660,6 +1671,10 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                     if lag is not None:
                         R_i = R_prior - lag
                         how = f"phase lock to the previous reverse stripe (lag {lag * 1e10:+.2f} A, ncc {ncc:.3f})"
+            if f'R:{i - 1}' in points:
+                R_i, how = points[f'R:{i - 1}'], "the manual point"
+            if lines:
+                lines[-1]['R'] = float(R_i)
             C_i = R_i + sep
             report.append(f"link {i - 1}->{i}: return point {R_i * 1e10:+.2f} A ({(R_i - R_prior) * 1e10:+.2f} A from the "
                           f"model's prior) by {how}; recorded separation to line {i}'s first spectrum {sep * 1e10:+.2f} A "
@@ -1680,6 +1695,10 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                 how = f"forward pairs {k_f}"
             else:
                 C_i, how = C_prior, "no image pairs; the recorded separation from the forward end"
+            if f'R:{i - 1}' in points:
+                C_i, how = points[f'R:{i - 1}'] + sep, "the manual point"
+            if lines:
+                lines[-1]['R'] = float(C_i - sep)
             report.append(f"link {i - 1}->{i} (no reverse pass): start {C_i * 1e10:+.2f} A by {how}")
 
         # --- the forward factor from the matched extrema themselves (maxima on maxima, minima on minima) ---
@@ -1712,6 +1731,13 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                 b_f, b_f_measured, b_f_borrowed = b_f_pairs, True, False
         if b_f_measured:
             last_b['f'] = (float(b_f), i)
+        if f'E:{i}' in points:
+            # The manual forward end: the forward factor that puts the line's last kept spectrum there.
+            L_f = float(s_spec[a_cols[-1] - cols[0]])
+            if L_f > 0:
+                b_f = (points[f'E:{i}'] - C_i) / L_f
+                b_f_measured, b_f_borrowed = True, False
+                report.append(f"line {i}: forward end at the manual point {points[f'E:{i}'] * 1e10:+.2f} A -> {factor_text(b_f)}")
 
         # --- this line's forward spectra and pixels at their corrected positions ---
         S_corr_spec = C_i + b_f * s_spec
@@ -1731,7 +1757,7 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                       'topo': None if topo_idx is None else ref.entries[topo_idx]['f'].name,
                       'ref_f': ref_f, 'a_f': 0.0, 'k_f': int(k_f), 'b_r': float(b_r),
                       'b_r_measured': bool(b_r_measured and rev is not None), 'ref_r': ref_r, 'k_r': int(k_r),
-                      'c': float(C_i), 'row': row})
+                      'c': float(C_i), 'E': float(E_i), 'R': None, 'row': row})
         entry = {'i': i, 'C': C_i, 'E': E_i, 'row': row, 'cols': cols, 'a_cols': a_cols, 'S0': S0,
                  'img_start': C_prior, 'ext_img': ext_img, 'rev': rev, 'b_r': b_r, 'ref_r': ref_r}
         if rev is not None:
@@ -1746,8 +1772,13 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
         L_r = pr['s_max'] - pr['s_min']
         d_rev = model_along(tm['rev_start'][i_p], tm['rev_end'][i_p]) if i_p < len(tm['rev_start']) else 0.0
         R_last = pr['E'] - (L_r + d_rev)
+        how = "the model's prior"
+        if f'R:{i_p}' in points:
+            R_last, how = points[f'R:{i_p}'], "the manual point"
+        if lines:
+            lines[-1]['R'] = float(R_last)
         place_reverse(pr['row'], pr['cols'], pr['E'], R_last, pr['s_min'], pr['s_max'], i_p)
-        report.append(f"line {i_p}: last line; its reverse pass placed at the model's prior (return point {R_last * 1e10:+.2f} A)")
+        report.append(f"line {i_p}: last line; its reverse pass placed at {how} (return point {R_last * 1e10:+.2f} A)")
     if state['model'] is not None:
         dt = t_spec - t_ref
         ok = acq & np.isfinite(dt)
@@ -1887,6 +1918,10 @@ class Drift:
             if g is not None:
                 self.refs[p] = TopoRef(p, g, self.drift_cache.topos.get(os.path.basename(p)))
         self.manual_spans = []     # [{'a', 'b': paths, 'markers': (n, 6), 'v': (2,) or None, 'pairs': [...], 'kind'}]
+        # The stripe matching's state per grid and per slow-axis setting ('off', 'auto', 'manual'): the
+        # fast-axis state ('off': the velocity alone; 'auto': the extrema matching; 'manual': the matching
+        # with the dragged points) and the points, {'E:i' | 'R:i': metres along the fast axis}.
+        self.stripe_sets = {}      # grid path -> {setting -> {'fast': str, 'points': {key: s}}}
         self._load_manual()
         if self.drift_cache.loaded_from_disk:
             print(f"drift cache loaded: {os.path.basename(self.drift_cache.path)}: "
@@ -1914,13 +1949,131 @@ class Drift:
             self._put_span(a, b, np.asarray(rec.get('markers', []), dtype=np.float64).reshape(-1, 6),
                            kind=rec.get('kind', 'adjusted'), quiet=True,
                            v=None if v is None else np.asarray(v, dtype=np.float64).reshape(2))
+        # The stripe matching's sets (format: {grid name: {setting: {'fast', 'points'}}}).
+        self.stripe_sets = {}
+        by_name = {os.path.basename(p): p for p in self.files}
+        for name, sets in (self.drift_cache.manual.get('stripe') or {}).items():
+            path = by_name.get(name)
+            if path is None:
+                print(f"drift cache: the stripe sets of {name} belong to no file in the directory; dropped.")
+                continue
+            self.stripe_sets[path] = {}
+            for setting, st in (sets or {}).items():
+                if setting not in self.SLOW_SETTINGS:
+                    continue
+                fast = st.get('fast', 'off')
+                self.stripe_sets[path][setting] = {
+                    'fast': fast if fast in self.FAST_STATES else 'off',
+                    'points': {str(k): float(v) for k, v in (st.get('points') or {}).items()}}
 
     def manual_record(self):
-        """The cache's manual section from manual_spans (each span's topo names, kind, markers, and velocity)."""
+        """The cache's manual section from manual_spans (each span's topo names, kind, markers, and velocity) and stripe_sets."""
         return {'spans': [{'a': os.path.basename(sp['a']), 'b': os.path.basename(sp['b']), 'kind': sp['kind'],
                            'markers': [[float(x) for x in row] for row in np.asarray(sp['markers']).reshape(-1, 6)],
                            'v': None if sp.get('v') is None else [float(x) for x in np.asarray(sp['v']).reshape(2)]}
-                          for sp in self.manual_spans]}
+                          for sp in self.manual_spans],
+                'stripe': {os.path.basename(path): {setting: {'fast': st['fast'],
+                                                               'points': {k: float(v) for k, v in st['points'].items()}}
+                                                     for setting, st in sets.items()}
+                           for path, sets in self.stripe_sets.items() if sets}}
+
+    # --- the stripe matching's state (the stripe window) ---
+
+    SLOW_SETTINGS = ('off', 'auto', 'manual')
+    FAST_STATES = ('off', 'auto', 'manual')
+
+    def slow_setting(self, f, auto=True, manual=True):
+        """
+        The slow-axis setting in force for a file under the toggles: 'manual'
+        when a manual span's velocity governs it (manual drift on and a span
+        covering it), 'auto' when the tracker's velocity does (the pair's or
+        the extrapolation, a confirmed span included), 'off' without a
+        velocity.  The stripe sets are kept per setting.
+        """
+        if f.kind == 'topo':
+            model, _ = self.model_for_topo(f.path, auto, manual)
+        else:
+            model, _ = self.model_for_spectra(f, auto, manual)
+        if model is None:
+            return 'off'
+        return 'manual' if str(model.rule).startswith('manual') else 'auto'
+
+    def _stripe_set(self, path, setting, create=False):
+        if create:
+            return self.stripe_sets.setdefault(path, {}).setdefault(setting, {'fast': 'off', 'points': {}})
+        return self.stripe_sets.get(path, {}).get(setting)
+
+    def fast_state(self, f, setting=None, auto=True, manual=True):
+        """The fast-axis state of a grid for a slow-axis setting (the one in force under the toggles when None): 'off', 'auto', or 'manual'; 'off' for any other file."""
+        if f.kind != 'grid':
+            return 'off'
+        setting = self.slow_setting(f, auto, manual) if setting is None else setting
+        st = self._stripe_set(f.path, setting)
+        return st['fast'] if st else 'off'
+
+    def stripe_points(self, f, setting):
+        """The dragged points of a grid for a slow-axis setting: {'E:i' | 'R:i': metres along the fast axis} (a copy)."""
+        st = self._stripe_set(f.path, setting)
+        return dict(st['points']) if st else {}
+
+    def set_fast_state(self, f, setting, state):
+        """The fast-axis state of a grid for a slow-axis setting set; every result dropped, the cache written, the subscribers told."""
+        if state not in self.FAST_STATES or setting not in self.SLOW_SETTINGS:
+            raise ValueError(f"fast-axis state {state!r} / setting {setting!r} unknown.")
+        st = self._stripe_set(f.path, setting, create=True)
+        if st['fast'] == state:
+            return
+        st['fast'] = state
+        self._invalidate()
+        self._save_manual()
+        print(f"stripe matching: {f.name}, slow axis {setting}: fast axis {state}.")
+        self.notify()
+
+    def set_stripe_point(self, f, setting, key, s, commit=True):
+        """
+        A point of a grid's set moved to s (metres along the fast axis from
+        the grid's first spectrum): key 'E:i' (line i's forward end) or
+        'R:i' (its return point, one point with line i + 1's start).  Every
+        result is dropped; with `commit` the cache is written and the
+        subscribers told (a drag commits on release only).
+        """
+        st = self._stripe_set(f.path, setting, create=True)
+        st['points'][str(key)] = float(s)
+        self._invalidate()
+        if commit:
+            self._save_manual()
+            self.notify()
+
+    def pin_stripe_points(self, f, setting, lines, commit=True):
+        """
+        Every line's forward end and return point of a placement (the
+        'lines' of a result: their 'E' and 'R') stored as the points of a
+        grid's set, so that the placement reproduces itself exactly and a
+        drag of one point then moves that point alone (the stripe window
+        pins the placement when a drag begins).  Returns the points.
+        """
+        st = self._stripe_set(f.path, setting, create=True)
+        for ln in lines or []:
+            if ln.get('E') is not None:
+                st['points'][f"E:{int(ln['i'])}"] = float(ln['E'])
+            if ln.get('R') is not None:
+                st['points'][f"R:{int(ln['i'])}"] = float(ln['R'])
+        self._invalidate()
+        if commit:
+            self._save_manual()
+            self.notify()
+        return dict(st['points'])
+
+    def clear_stripe_points(self, f, setting):
+        """Every dragged point of a grid's set dropped (the fast-axis state kept): back to the matching's placement."""
+        st = self._stripe_set(f.path, setting)
+        if not st or not st['points']:
+            return
+        st['points'] = {}
+        self._invalidate()
+        self._save_manual()
+        print(f"stripe matching: {f.name}, slow axis {setting}: the points cleared.")
+        self.notify()
 
     def _save_manual(self):
         self.drift_cache.manual = self.manual_record()
@@ -2603,11 +2756,14 @@ class Drift:
         rigid at the forward end; the next line at the recorded displacement
         from the return point, no drift term; the grid's stripe pixels from
         the same chain (_grid_pixels).
-        Stripe matching (stripe True on a grid): the fast axis from
-        drift_correct_grid against the earlier topo (earlier_topo), the
-        slow axis from v, line 0 keeping its recorded start; the entry also
-        lists the lines whose corrected positions leave the earlier topo's
-        page ('off_page').
+        Stripe matching (a grid; `stripe` None: the grid's stored fast-axis
+        state for the slow-axis setting in force, fast_state; True / 'auto':
+        the extrema matching; 'manual': the matching with the grid's dragged
+        points of that setting, stripe_points; False / 'off': none): the
+        fast axis from drift_correct_grid against the earlier topos
+        (stripe_reference), the slow axis from v, line 0 keeping its
+        recorded start; the entry also lists the lines whose corrected
+        positions leave every reference topo ('off_page').
         Anchor to topo (anchor True, the MATLAB "drift for first point"):
         every position, pixel, and line end shifted rigidly by -v (t_0 -
         t_topo start), t_topo the start of the topo under the file
@@ -2625,9 +2781,19 @@ class Drift:
         """
         if loaded is not None:
             self.loaded = loaded
-        stripe = bool(stripe) and f.kind == 'grid'
         auto, manual, anchor = bool(auto), bool(manual), bool(anchor)
-        key = (f.path, stripe, auto, manual, anchor, getattr(f, 'sweep_mode', None))   # a sweep view has its own clock
+        if stripe is None:
+            fast = self.fast_state(f, None, auto, manual)
+        elif stripe is True:
+            fast = 'auto'
+        elif stripe is False:
+            fast = 'off'
+        else:
+            fast = str(stripe)
+        stripe = fast != 'off' and f.kind == 'grid'
+        points = self.stripe_points(f, self.slow_setting(f, auto, manual)) if (stripe and fast == 'manual') else {}
+        key = (f.path, fast if stripe else False, tuple(sorted(points.items())), auto, manual, anchor,
+               getattr(f, 'sweep_mode', None))                      # a sweep view has its own clock
         if key in self.drift_index:
             return self.drift_index[key]
         if f.spectra is None or f.n_spectra == 0 or not np.any(f.acquired):
@@ -2679,10 +2845,11 @@ class Drift:
             if stripe:
                 prev = self.stripe_reference(f, auto, manual)
             if stripe and prev:
-                xy_corr, report, lines, pix = drift_correct_grid(f, prev, fn, t_0, self.drift_params)
+                xy_corr, report, lines, pix = drift_correct_grid(f, prev, fn, t_0, self.drift_params, points=points)
                 setting = "drift none" if model.rule.startswith('none') else f"the {model.rule} velocity"
                 report.insert(0, f"stripe matching against {prev.name}, placed with {setting} as the grid; "
-                                 f"the slow axis from that velocity only")
+                                 f"the slow axis from that velocity only"
+                                 + (f"; {len(points)} manual point(s)" if points else ""))
             else:
                 prev = None
                 if stripe:
@@ -2713,7 +2880,7 @@ class Drift:
             if prev is not None:
                 prev_name = prev.name
             entry = {'xy_corr': xy_corr, 'report': report, 'drift': model, 'prev': prev_name, 'off_page': off_page,
-                     'lines': lines, 'pix': pix, 'stripe': stripe}
+                     'lines': lines, 'pix': pix, 'stripe': fast if stripe else False}
         entry['source'] = model.rule
         entry['anchor'] = anchor
         entry['anchor_shift'] = np.zeros(2)
