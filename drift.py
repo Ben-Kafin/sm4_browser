@@ -207,9 +207,14 @@ The stripe matching (drift_correct_grid), the 'stripe match' sub-toggle of
 the drift toggles on grid files (off by default): with it on, a grid's fast-axis
 placement comes from matching the lines' own topo stripes against the
 earlier topo (the most recent one before the file whose footprint holds the
-first spectrum): the stretch of each pass from the ratio of the lattice
-period expected along the line to the period the stripe shows, the lines
-placed by their extrema against the earlier topo's profile; the slow axis
+first spectrum): the lines placed by their extrema (maxima on maxima,
+minima on minima) against the topo's profile along each line; the stretch
+of each pass from its matched extrema where it has three or more pairs,
+else from the ratio of the reference period to the period the stripe's own
+extrema show, the reference period being the extrema spacing of the topo
+profile along the part of the line that lies on a topo, and for a line off
+every topo the spacing measured on the other lines, else on the reference
+topos along the fast axis (no Fourier transform anywhere); the slow axis
 stays the baseline v, and the within-sweep shift along the line of a line
 with a measured forward factor is that line's own forward compression v_i =
 (1 - b_f) L_f / T_f (Drift.line_velocities), the baseline across it.  The
@@ -243,7 +248,7 @@ from datetime import datetime
 import numpy as np
 import cv2
 from scipy.signal import savgol_filter, find_peaks
-from scipy.ndimage import map_coordinates, maximum_filter
+from scipy.ndimage import map_coordinates
 from scipy.cluster.vq import kmeans2
 from sm4_Browser import qtplot as plt
 from sm4_Browser import sm4file
@@ -273,13 +278,8 @@ DRIFT_PARAMS = {
     'stretch_limits': (0.33, 3.0),   # a fitted stretch outside this range is treated as no match
     'min_extrema_pairs': 1,    # matched extrema a line needs for the image to place it (a stripe partly on a topo counts)
     'reference_max_topos': 8,  # the most recent earlier topos reaching the grid that form its stripe reference
-    'fft_pad': 2,              # zero padding factor of the topo's 2D transform (topo_lattice)
-    'fft_snr': 20.0,           # a lattice peak must stand this many times above the median power (2D and 1D)
-    'fft_max_peaks': 4,        # lattice vectors kept (+-G pairs), strongest first
-    'fft_min_size_px': 24,     # the acquired rectangle must be at least this many pixels in both directions
-    'fft_min_period_px': 3.0,  # periods shorter than this many pixels are pixel noise, not a lattice
-    'min_lattice_period_m': 2.5e-10,   # and shorter than this is not a surface lattice
-    'period_agree': 0.30,      # a stripe's maxima spacing and its FT period agree within this fraction
+    'period_agree': 0.30,      # the spacings of a stripe's extrema count as consistent within this fraction
+    'area_profiles': 5,        # profiles across each reference topo for the scan-area extrema spacing (period_along)
 }
 
 
@@ -782,26 +782,25 @@ class DriftCache:
 #       to it by its own time.  The fast-axis component of the baseline is
 #       discarded here (printed as a consistency check only).
 #   fast axis (along a line): the stretch of the along-line coordinate is
-#       the ratio of the lattice period expected along the line to the period
-#       the line's own topo stripe shows.  The expected period comes from the
-#       2D Fourier transform of the earlier image (its reciprocal lattice
-#       vectors G give the period 1 / |G . u| along the line direction u);
-#       when the transform shows no lattice, from the extrema spacing of
-#       the image's height profile sampled along the line (and, off the page,
-#       from the periods found on the other lines).  The stripe's period is
-#       its extrema spacing (maxima and minima: same kinds a period apart,
-#       opposite kinds half a period apart, extrema_period) checked against
-#       its 1D transform where the transform can hold two periods
-#       (stripe_period).  A partial line is matched over its kept range only
-#       (first to last kept spectrum), never over the width it would have
-#       covered.  With the
-#       stretch fixed, the extrema (maxima and minima) of the forward stripe
-#       are matched, in order from the line's start, to the extrema of the
-#       image profile along the line's true path, which gives the offset; a
-#       line with no image match (off the page) takes the chained start,
+#       the ratio of the reference period along the line to the period the
+#       line's own topo stripe shows, both from extrema (maxima and minima:
+#       same kinds a period apart, opposite kinds half a period apart,
+#       extrema_period; no Fourier transform).  The reference period is the
+#       extrema spacing of the image's height profile sampled along the part
+#       of the line that lies on a topo; a line off every topo takes the
+#       median spacing found on the other lines, else the spacing of the
+#       reference topos along the fast axis (StripeReference.period_along).
+#       A partial line is matched over its kept range only (first to last
+#       kept spectrum), never over the width it would have covered.  With
+#       the stretch fixed, the extrema of the forward stripe are matched, in
+#       order from the line's start, to the extrema of the image profile
+#       along the line's true path, which gives the offset; where that gives
+#       three or more pairs the stretch is refitted from the pairs
+#       themselves (the period ratio stands otherwise; a pass without a
+#       period takes the nearest measured line's factor, else 1).  A line
+#       with no image match (off the page) takes the chained start,
 #       phase-locked to the previous line's reverse stripe by cross-correlation
-#       after the shift one slow step makes along the line (from the lattice,
-#       G . d_slow / G . u; else measured on the lines the image placed).  The
+#       after the slow-step shift measured on the links the image placed.  The
 #       reverse stripe gets its own stretch and is matched the same way from
 #       the end of the forward pass backwards, and where it puts the return
 #       point is the start of the next line (chained).
@@ -930,104 +929,6 @@ def _parabolic(cm, c0, cp):
     return 0.0 if not np.isfinite(d) or d >= 0 else float(0.5 * (cm - cp) / d)
 
 
-def topo_lattice(topo, img, params=DRIFT_PARAMS):
-    """
-    Reciprocal lattice vectors of a topo image from its 2D Fourier transform:
-    the image is cut to the acquired rectangle (at least fft_min_size_px
-    pixels each way), a fitted plane removed, the unacquired pixels set to
-    zero, a Hann window applied, and the transform zero-padded by fft_pad.
-    Peaks of the power spectrum (local maxima above fft_snr times the median
-    power, periods shorter than half the image but longer than
-    fft_min_period_px pixels and min_lattice_period_m) are refined to
-    sub-bin accuracy; each +-G pair counts once, the strongest fft_max_peaks
-    are kept.  Returns ([(G, power), ...] with G in cycles per
-    metre in the absolute frame, strongest first, note); an empty list means
-    the transform shows no lattice (the note says why).
-    """
-    a = np.asarray(img, dtype=np.float64)
-    ok = np.isfinite(a)
-    if ok.sum() < 64:
-        return [], "fewer than 64 acquired pixels"
-    rows, cols = np.where(ok.any(axis=1))[0], np.where(ok.any(axis=0))[0]
-    a = a[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
-    ok = np.isfinite(a)
-    ny, nx = a.shape
-    if min(ny, nx) < int(params['fft_min_size_px']):
-        return [], f"acquired area {nx} x {ny} px, below {int(params['fft_min_size_px'])} px"
-    J, I = np.meshgrid(np.arange(nx), np.arange(ny))
-    A = np.c_[J.ravel(), I.ravel(), np.ones(nx * ny)]
-    coef, *_ = np.linalg.lstsq(A[ok.ravel()], a.ravel()[ok.ravel()], rcond=None)
-    d = np.where(ok, a - (A @ coef).reshape(ny, nx), 0.0)
-    win = np.outer(np.hanning(ny), np.hanning(nx))
-    pad = int(params['fft_pad'])
-    P = np.fft.fftshift(np.abs(np.fft.fft2(d * win, s=(ny * pad, nx * pad))) ** 2)
-    dx, dy = abs(topo.xscale_m), abs(topo.yscale_m)
-    fu = np.fft.fftshift(np.fft.fftfreq(nx * pad, d=dx)) * np.sign(topo.xscale_m)   # cycles/m along u
-    fv = np.fft.fftshift(np.fft.fftfreq(ny * pad, d=dy)) * np.sign(topo.yscale_m)   # cycles/m along v
-    FU, FV = np.meshgrid(fu, fv)
-    f_min = 2.0 / min(nx * dx, ny * dy)                       # periods longer than half the image: not a lattice
-    f_max = 1.0 / max(params['fft_min_period_px'] * max(dx, dy), params['min_lattice_period_m'])
-    rad = np.hypot(FU, FV)
-    valid = (rad >= f_min) & (rad <= f_max)
-    if not np.any(valid):
-        return [], "image too small for a period"
-    noise = float(np.median(P[valid]))
-    loc = (P == maximum_filter(P, size=5)) & valid & (P >= params['fft_snr'] * max(noise, 1e-300))
-    ii, jj = np.where(loc)
-    if len(ii) == 0:
-        return [], f"no peak above {params['fft_snr']:g} x the median power"
-    order = np.argsort(P[ii, jj])[::-1]
-    dfu = (fu[1] - fu[0]) if len(fu) > 1 else 0.0
-    dfv = (fv[1] - fv[0]) if len(fv) > 1 else 0.0
-    peaks = []
-    for o in order:
-        i, j = ii[o], jj[o]
-        di = _parabolic(P[i - 1, j], P[i, j], P[i + 1, j]) if 0 < i < P.shape[0] - 1 else 0.0
-        dj = _parabolic(P[i, j - 1], P[i, j], P[i, j + 1]) if 0 < j < P.shape[1] - 1 else 0.0
-        g = np.array([FU[i, j] + dj * dfu, FV[i, j] + di * dfv])
-        if any(np.linalg.norm(g + g0) < 0.25 * np.linalg.norm(g0) or np.linalg.norm(g - g0) < 0.25 * np.linalg.norm(g0)
-               for g0, _ in peaks):
-            continue                                           # the mirror (or a neighbour) of a peak already kept
-        peaks.append((g, float(P[i, j])))
-        if len(peaks) >= int(params['fft_max_peaks']):
-            break
-    R = topo.rotation()                                        # frame -> absolute, for vectors
-    return [(R @ g, p) for g, p in peaks], ""
-
-
-def lattice_periods(lattice, direction, step, length):
-    """
-    Periods a lattice shows along a unit direction: 1 / |G . direction| for
-    every lattice vector, kept when the period is at least two spectrum
-    spacings (resolvable) and at most the line length; as [(period, power)],
-    strongest first.
-    """
-    out = []
-    for G, p in lattice:
-        f = abs(float(np.dot(G, direction)))
-        if f <= 0:
-            continue
-        period = 1.0 / f
-        if 2.0 * step <= period <= length:
-            out.append((period, p))
-    return out
-
-
-def lattice_step_shift(lattice, direction, d_slow, step, length):
-    """
-    The shift along `direction` that one slow step d_slow (a vector) is
-    equivalent to for the strongest lattice component with a period along the
-    line: a slow step changes that component's phase by G . d_slow cycles,
-    the same change along the line needs (G . d_slow) / (G . direction).
-    None without such a component.
-    """
-    for G, _ in lattice:
-        f = float(np.dot(G, direction))
-        if f != 0 and 2.0 * step <= 1.0 / abs(f) <= length:
-            return float(np.dot(G, d_slow) / f)
-    return None
-
-
 def extrema_period(ext, with_count=False):
     """
     The period of an extrema list from every spacing it holds: the spacings
@@ -1058,76 +959,22 @@ def extrema_period(ext, with_count=False):
     return period, len(spacings), spread
 
 
-def profile_period_fft(profile, s, params=DRIFT_PARAMS):
-    """
-    Dominant period of a height profile from its Fourier transform: the
-    finite points detrended, Hann windowed, zero-padded by 8, the strongest
-    non-DC bin refined to sub-bin accuracy; None when no bin stands fft_snr
-    times above the median power or the period exceeds half the profile's
-    span.
-    """
-    y = np.asarray(profile, dtype=np.float64)
-    s = np.asarray(s, dtype=np.float64)
-    ok = np.isfinite(y)
-    if np.sum(ok) < 4:
-        return None
-    y, s = y[ok], s[ok]
-    y = y - np.polyval(np.polyfit(s, y, 1), s)
-    n = len(y)
-    ds = float(np.median(np.diff(s)))
-    if ds <= 0:
-        return None
-    P = np.abs(np.fft.rfft(y * np.hanning(n), n=8 * n)) ** 2
-    f = np.fft.rfftfreq(8 * n, d=ds)
-    span = float(s[-1] - s[0])
-    valid = f >= 2.0 / span                                  # at least two periods in the window
-    if not np.any(valid):
-        return None
-    noise = float(np.median(P[valid]))
-    k = int(np.argmax(np.where(valid, P, -np.inf)))
-    if P[k] < params['fft_snr'] * max(noise, 1e-300):
-        return None
-    dk = _parabolic(P[k - 1], P[k], P[k + 1]) if 0 < k < len(P) - 1 else 0.0
-    fk = f[k] + dk * (f[1] - f[0])
-    return 1.0 / fk if fk > 0 else None
-
-
 def stripe_period(profile, s, params=DRIFT_PARAMS):
     """
     The period a stripe shows along the line, from its local maxima and
-    minima (extrema_period of profile_extrema: every spacing, same kind as
-    a period and opposite kinds as a half period) together with its Fourier
-    transform (profile_period_fft).  The transform only reports periods up
-    to half the finite span of the profile (two periods in the window), so
-    when the extrema period exceeds half the span the transform cannot have
-    seen it and its peak checks nothing: the extrema period is used.
-    Otherwise, when the two agree within period_agree the transform's period
-    is used (it interpolates between samples) with the extrema spacing as
-    the check; when they disagree the extrema spacing is used if it rests on
-    at least two spacings that agree with each other within period_agree,
-    else the transform's; whichever exists when only one does.  Returns
-    (period or None, text).
+    minima alone (extrema_period of profile_extrema: every spacing, same
+    kind as a period and opposite kinds as a half period, the median over
+    the pool).  Returns (period or None, text); the text reports the
+    number of spacings and whether they agree within period_agree (their
+    largest / smallest ratio), so a period resting on disagreeing
+    spacings is seen for what it is.
     """
     p_ext, n_sp, spread = extrema_period(profile_extrema(profile, s, params), with_count=True)
-    p_fft = profile_period_fft(profile, s, params)
-    tol = np.log(1.0 + params['period_agree'])
-    ok = np.isfinite(np.asarray(profile, dtype=np.float64))
-    span = float(np.max(np.asarray(s)[ok]) - np.min(np.asarray(s)[ok])) if ok.any() else 0.0
-    if p_ext is not None and p_ext > 0.5 * span:
-        return p_ext, (f"maxima/minima {p_ext * 1e10:.2f} A from {n_sp} spacing(s); the transform cannot hold "
-                       f"two periods over {span * 1e10:.1f} A")
-    if p_ext is not None and p_fft is not None:
-        if abs(np.log(p_ext / p_fft)) <= tol:
-            return p_fft, f"FT {p_fft * 1e10:.2f} A (extrema spacing {p_ext * 1e10:.2f} A agrees)"
-        if n_sp >= 2 and np.log(spread) <= tol:
-            return p_ext, (f"extrema {p_ext * 1e10:.2f} A from {n_sp} consistent spacings "
-                           f"(FT {p_fft * 1e10:.2f} A disagrees)")
-        return p_fft, f"FT {p_fft * 1e10:.2f} A (extrema spacing {p_ext * 1e10:.2f} A disagrees, FT used)"
-    if p_ext is not None:
-        return p_ext, f"extrema {p_ext * 1e10:.2f} A (no FT peak)"
-    if p_fft is not None:
-        return p_fft, f"FT {p_fft * 1e10:.2f} A (fewer than two extrema)"
-    return None, "no period"
+    if p_ext is None:
+        return None, "no period (fewer than two extrema)"
+    agree = n_sp < 2 or np.log(spread) <= np.log(1.0 + params['period_agree'])
+    return p_ext, (f"extrema {p_ext * 1e10:.2f} A from {n_sp} spacing(s)"
+                   + ("" if agree else f", disagreeing by x{spread:.2f}"))
 
 
 def period_stretch(measured, references, stretch_limits):
@@ -1296,9 +1143,10 @@ class StripeReference:
       topos  : loaded Sm4Files, most recent first
       models : their PairDrift under the setting (None: placed at the recorded positions)
     sample(xy) -> (heights (M,), source index (M,), -1 where no topo covers the point); the raw
-    forward page in metres, bilinear, as sample_topo samples one topo.  lattice(i) is the 2D
-    Fourier lattice of topo i (topo_lattice) carried into the absolute frame through its placed
-    frame (the drift shear included); nearest(xy) the topo whose placed centre is nearest a point.
+    forward page in metres, bilinear, as sample_topo samples one topo.  period_along(direction,
+    ds) is the extrema spacing of the reference topos along a direction (profiles across every
+    topo's placed footprint, the median of their periods): the scan-area spacing a line off every
+    topo takes; nearest(xy) the topo whose placed centre is nearest a point.
     """
 
     def __init__(self, topos, models):
@@ -1314,7 +1162,7 @@ class StripeReference:
             except Exception:
                 continue
             self.entries.append({'f': f, 'img': img, 'rec': rec, 'M': M, 'Minv': np.linalg.inv(M),
-                                 'model': model, 'lattice': None, 'note': ''})
+                                 'model': model})
 
     @property
     def names(self):
@@ -1350,16 +1198,39 @@ class StripeReference:
     def contains(self, xy_m):
         return bool(self.sample(np.reshape(xy_m, (1, 2)))[1][0] >= 0)
 
-    def lattice(self, idx, params=DRIFT_PARAMS):
-        """The lattice of topo idx in the absolute frame of its placement: [(G, power)], note."""
-        e = self.entries[idx]
-        if e['lattice'] is None:
-            lat, note = topo_lattice(e['f'], e['img'], params)
-            R = e['f'].rotation()
-            Linv_T = np.linalg.inv(e['M'][:2, :2]).T
-            e['lattice'] = [(Linv_T @ (R.T @ G), p) for G, p in lat]
-            e['note'] = note
-        return e['lattice'], e['note']
+    def period_along(self, direction, ds, params=DRIFT_PARAMS):
+        """
+        The extrema spacing of the reference topos along a unit direction
+        (absolute frame): area_profiles profiles per topo, parallel to the
+        direction, spread evenly across the topo's placed footprint and
+        running its full diagonal, sampled every ds metres (sample), their
+        periods from extrema_period of profile_extrema_runs, the median over
+        every profile with a period; None without one.
+        """
+        u = _unit(np.asarray(direction, dtype=np.float64))
+        w = np.array([-u[1], u[0]])
+        periods = []
+        n_prof = max(int(params.get('area_profiles', 5)), 1)
+        for idx, e in enumerate(self.entries):
+            r = e['rec']
+            c = self.centre(idx)
+            corners = np.array([[x, y] for x in (-(r['nx'] - 1) / 2.0 * r['xscale_m'], (r['nx'] - 1) / 2.0 * r['xscale_m'])
+                                for y in (-(r['ny'] - 1) / 2.0 * r['yscale_m'], (r['ny'] - 1) / 2.0 * r['yscale_m'])])
+            corners = corners @ e['M'][:2, :2].T + e['M'][:2, 2]
+            half = 0.5 * float(np.max(np.linalg.norm(corners - c, axis=1))) * 2.0
+            across = (corners - c) @ w
+            offsets = np.linspace(0.8 * across.min(), 0.8 * across.max(), n_prof) if n_prof > 1 else np.zeros(1)
+            s = np.arange(-half, half + ds, ds)
+            for off in offsets:
+                path = c + off * w + s[:, None] * u[None, :]
+                prof, src = self.sample(path)
+                if np.isfinite(prof).sum() < 4:
+                    continue
+                ext = profile_extrema_runs(prof, s, src, params)
+                per = extrema_period(ext)
+                if per is not None:
+                    periods.append(float(per))
+        return float(np.median(periods)) if periods else None
 
     def centre(self, idx):
         e = self.entries[idx]
@@ -1396,15 +1267,19 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
     projected on the slow axis is added at its own time.
 
     Fast axis, per line: the factor b of the along-line coordinate is the
-    ratio of the lattice period expected along the line to the period the
-    line's own stripe shows (period_stretch), the stripe's pixels at their
-    recorded along-line coordinates.  The expected periods come from the 2D
-    Fourier transform of the earlier topo (topo_lattice, lattice_periods);
-    when the transform shows no lattice they come from the topo profile
-    sampled locally along the line, measured as the stripes are
-    (stripe_period) and, where the line has left the page, from the periods
-    so found on the other lines.  A partial line (the scan stopped in it)
-    is measured over its kept range only.  Within a line the forward spectra
+    ratio of the reference period along the line to the period the line's
+    own stripe shows (period_stretch; both from extrema, stripe_period), the
+    stripe's pixels at their recorded along-line coordinates; where the
+    forward stripe then matches three or more image extrema the forward
+    factor is refitted from those pairs (below).  The reference period is
+    the extrema spacing of the topo profile sampled along the part of the
+    line's path that lies on a topo (extrema_period of the image extrema);
+    a line off every topo takes the median of the periods so found on the
+    other lines, else the spacing of the reference topos along the fast axis
+    (StripeReference.period_along).  A pass whose stripe shows no period
+    takes the nearest measured line's factor, else 1 (reported as such).  A
+    partial line (the scan stopped in it) is measured over its kept range
+    only.  Within a line the forward spectra
     sit at the line's corrected start plus b_f times their recorded distance
     from the line's first spectrum; the reverse pixels from the line's
     forward end, where the reverse pass began (the same tip position seconds
@@ -1440,9 +1315,8 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
     reaches the page is placed by that stripe's pairs, the other following
     at the recorded separation.  Where neither reaches the page the prior
     is refined by the phase lock between the two stripes after the
-    slow-step shift the lattice gives (stripe_lag, lattice_step_shift;
-    without a lattice the median of that shift measured on the links the
-    image placed).  A line without a reverse pass (one topo page) links
+    slow-step shift measured on the links the image placed (stripe_lag; zero
+    before any link was placed by the image).  A line without a reverse pass (one topo page) links
     through its forward end: the next start is the forward end plus the
     recorded displacement from the forward's last pixel to the next first
     spectrum, refined by the forward stripe's pairs alone.  The last line's
@@ -1522,35 +1396,22 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
     tol = step                                           # a stripe extremum pairs with an image extremum within this
     L_nom = (n_fast - 1) * step
 
-    # The lattice of every reference topo (2D transform, in its placed frame) and the periods it
-    # shows along the line: each line takes the lattice of the topo that covers most of its path
-    # (else the topo nearest it), _line_lattice below.
-    d_slow_rec = (xy[n_fast] - xy[0]) if (grid.n_lines > 1 and N > n_fast) else None
     report.append(f"reference: {len(ref.entries)} topo(s) under the grid, most recent on top: {ref.name}")
-    lat_cache = {}
+    area_cache = {}
 
-    def _line_lattice(src_counts, mid):
-        """(lattice periods along the line, slow-step shift, topo index, note) for a line's path."""
-        idx = int(np.argmax(src_counts)) if np.any(src_counts > 0) else ref.nearest(mid)
-        if idx is None:
-            return [], None, None, "no topo"
-        if idx not in lat_cache:
-            lat, note = ref.lattice(idx, params)
-            per = lattice_periods(lat, fast, step, L_nom) if lat else []
-            gs = lattice_step_shift(lat, fast, d_slow_rec, step, L_nom) if (lat and d_slow_rec is not None) else None
-            lat_cache[idx] = (per, gs, note)
-            name = ref.entries[idx]['f'].name
-            if per:
-                report.append("lattice from the 2D transform of " + name + ": periods along the line "
-                              + ", ".join(f"{p * 1e10:.2f} A" for p, _ in per)
-                              + (f"; one slow step = {gs * 1e10:+.2f} A along the line" if gs is not None else ""))
+    def area_period():
+        """The reference topos' extrema spacing along the fast axis (StripeReference.period_along), once."""
+        if 'p' not in area_cache:
+            area_cache['p'] = ref.period_along(fast, step / m, params) if ref else None
+            if area_cache['p'] is not None:
+                report.append(f"scan-area extrema spacing along the fast axis {area_cache['p'] * 1e10:.2f} A "
+                              f"(the reference topos' profiles)")
             else:
-                report.append("no lattice from the 2D transform of " + name + (f" ({note})" if note else "")
-                              + ": reference periods from the extrema of the topo profile along each line")
-        per, gs, note = lat_cache[idx]
-        return per, gs, idx, note
+                report.append("no scan-area extrema spacing along the fast axis (no reference profile with a period)")
+        return area_cache['p']
 
-    local_refs = []                                      # reference periods found on the image profiles (fallback)
+    local_refs = []                                      # the lines' own reference periods (their on-topo profiles)
+    last_b = {'f': None, 'r': None}                      # the nearest measured factors, for a pass without a period
     geo_measured = []                                    # slow-step shifts measured on the links the image placed
 
     state = {'model': drift_fn}
@@ -1673,20 +1534,24 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
         inside = (s_img >= 0) & (s_img <= span)
         on_page = bool(np.isfinite(prof[inside]).any())
         counts = np.bincount(src[inside & (src >= 0)], minlength=max(len(ref.entries), 1))
-        lat_periods, geo_shift, lat_idx, _ = _line_lattice(counts, start_actual + 0.5 * span * fast)
+        topo_idx = int(np.argmax(counts)) if np.any(counts > 0) else None      # the topo under most of the line
         cover = (f"; on {', '.join(ref.entries[t]['f'].name for t in np.flatnonzero(counts))}"
                  f" over {100.0 * np.mean(np.isfinite(prof[inside])):.0f}% of its path" if counts.any() else "")
-        if lat_periods:
-            refs = lat_periods
+        # The reference period: the extrema spacing of the topo profile along the part of this line's
+        # path that lies on a topo; off every topo, the median of the other lines', else the scan area's.
+        p_img = extrema_period(ext_img)
+        if p_img is not None:
+            local_refs.append(float(p_img))
+            refs, ref_how = [(float(p_img), 1.0)], "the topo profile along this line"
+        elif local_refs:
+            refs, ref_how = [(float(np.median(local_refs)), 1.0)], \
+                f"the median spacing on the other lines' topo profiles ({len(local_refs)} line(s))"
         else:
-            p_loc, _ = stripe_period(prof, s_img, params)
-            cands = {round(x, 15) for x in (p_loc, extrema_period(ext_img), profile_period_fft(prof, s_img, params))
-                     if x is not None}
-            if cands:
-                local_refs.extend(sorted(cands))
-            refs = [(x, 1.0) for x in sorted(set(local_refs))]
+            p_area = area_period()
+            refs, ref_how = ([(p_area, 1.0)] if p_area else []), "the reference topos' extrema spacing along the fast axis"
         report.append(f"line {i}: image extrema (A from the prior start, + max, - min) {_ext_text(ext_img)}"
-                      + (cover if on_page else " (line off every topo)"))
+                      + (cover if on_page else " (line off every topo)")
+                      + (f"; reference period {refs[0][0] * 1e10:.2f} A from {ref_how}" if refs else "; no reference period"))
 
         # --- the factors from the stripes ---
         b_f, b_r = 1.0, 1.0
@@ -1694,29 +1559,37 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
         b_f_measured = b_r_measured = False
         p_f = p_r = None
         ext_f = ext_r = []
+        b_f_borrowed = b_r_borrowed = False
         if fwd is not None:
             p_f, txt_f = stripe_period(fwd[1], fwd[0], params)
             b_f, ref_f = period_stretch(p_f, refs, limits)
             b_f_measured = b_f is not None
-            if b_f is None:
-                b_f = 1.0
+            if b_f is None and last_b['f'] is not None:
+                b_f, b_f_borrowed = last_b['f'][0], True
+                how_f = f"no period ratio; the nearest measured line's factor (line {last_b['f'][1]}) {factor_text(b_f)}"
+            elif b_f is None:
+                b_f, how_f = 1.0, "no factor measured (1)"
+            else:
+                how_f = f"-> {factor_text(b_f)} (reference {ref_f * 1e10:.2f} A)"
             ext_f = profile_extrema_runs(fwd[1], fwd[0], None, params)
-            report.append(f"line {i}: forward stripe period {txt_f}"
-                          + (f" -> {factor_text(b_f)} (reference {ref_f * 1e10:.2f} A)" if ref_f is not None and b_f != 1.0
-                             else "; no factor measured")
-                          + f"; extrema {_ext_text(ext_f)}")
+            report.append(f"line {i}: forward stripe period {txt_f}; {how_f}; extrema {_ext_text(ext_f)}")
         if rev is not None:
             p_r, txt_r = stripe_period(rev[1], rev[0], params)
             b_r, ref_r = period_stretch(p_r, refs, limits)
             b_r_measured = b_r is not None
-            if b_r is None:
-                b_r = 1.0
+            if b_r is None and last_b['r'] is not None:
+                b_r, b_r_borrowed = last_b['r'][0], True
+                how_r = f"no period ratio; the nearest measured line's factor (line {last_b['r'][1]}) {factor_text(b_r)}"
+            elif b_r is None:
+                b_r, how_r = 1.0, "no factor measured (1)"
+            else:
+                how_r = f"-> {factor_text(b_r)}"
             ext_r = profile_extrema_runs(rev[1], rev[0], None, params)
-            report.append(f"line {i}: reverse stripe period {txt_r}"
-                          + (f" -> {factor_text(b_r)}" if ref_r is not None and b_r != 1.0 else "; no factor measured")
-                          + f"; extrema {_ext_text(ext_r)}")
+            report.append(f"line {i}: reverse stripe period {txt_r}; {how_r}; extrema {_ext_text(ext_r)}")
+            if b_r_measured:
+                last_b['r'] = (float(b_r), i)
         period_ref = ref_f or ref_r or (prev_line['ref_r'] if prev_line else None) or p_f or p_r \
-            or (lat_periods[0][0] if lat_periods else None)
+            or (refs[0][0] if refs else None)
         window = float(period_ref) if period_ref else L_nom
 
         # --- the placement: line 0 pinned, every other line through its link with the previous one ---
@@ -1780,7 +1653,7 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                 if fwd is not None:
                     # Off the page: the phase lock between the previous reverse stripe (at the prior) and this
                     # forward stripe after the shift one slow step makes along the line.
-                    shift_geo = geo_shift if geo_shift is not None else (float(np.median(geo_measured)) if geo_measured else 0.0)
+                    shift_geo = float(np.median(geo_measured)) if geo_measured else 0.0
                     x_r = E_p - b_implied(R_prior) * (s_max - s_rev)
                     x_f = C_prior + b_f * fwd[0] + shift_geo
                     lag, ncc = stripe_lag(x_r, h_rev, x_f, fwd[1], step / m, window, params)
@@ -1792,7 +1665,7 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                           f"model's prior) by {how}; recorded separation to line {i}'s first spectrum {sep * 1e10:+.2f} A "
                           f"-> start {C_i * 1e10:+.2f} A; the placement implies the reverse {factor_text(b_implied(R_i))} "
                           f"(measured {factor_text(b_rp)})")
-            if k_r + k_f > 0 and fwd is not None and geo_shift is None:
+            if k_r + k_f > 0 and fwd is not None:
                 # The image placed this link: the lag between the two stripes measures the slow-step shift.
                 x_r = E_p - b_implied(R_i) * (s_max - s_rev)
                 x_f = C_i + b_f * fwd[0]
@@ -1835,8 +1708,10 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
             if n_fit >= 3:
                 b_f_pairs = b_try
                 report.append(f"line {i}: forward factor from {n_fit} matched extrema {factor_text(b_f_pairs)}"
-                              + (f" (lattice-period ratio {factor_text(b_f)})" if b_f_measured else ""))
-                b_f, b_f_measured = b_f_pairs, True
+                              + (f" (period ratio {factor_text(b_f)})" if b_f_measured else ""))
+                b_f, b_f_measured, b_f_borrowed = b_f_pairs, True, False
+        if b_f_measured:
+            last_b['f'] = (float(b_f), i)
 
         # --- this line's forward spectra and pixels at their corrected positions ---
         S_corr_spec = C_i + b_f * s_spec
@@ -1852,7 +1727,8 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS):
                       f"{E_i * 1e10:+.2f} A" + ("" if rev is not None else "; reverse pass missing"))
         lines.append({'i': i, 'n_kept': int(len(a_cols)), 'b_f': float(b_f), 'b_f_measured': bool(b_f_measured),
                       'b_f_pairs': None if b_f_pairs is None else float(b_f_pairs), 'n_fit': int(n_fit),
-                      'topo': None if lat_idx is None else ref.entries[lat_idx]['f'].name,
+                      'b_f_borrowed': bool(b_f_borrowed), 'b_r_borrowed': bool(b_r_borrowed),
+                      'topo': None if topo_idx is None else ref.entries[topo_idx]['f'].name,
                       'ref_f': ref_f, 'a_f': 0.0, 'k_f': int(k_f), 'b_r': float(b_r),
                       'b_r_measured': bool(b_r_measured and rev is not None), 'ref_r': ref_r, 'k_r': int(k_r),
                       'c': float(C_i), 'row': row})
