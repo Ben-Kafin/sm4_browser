@@ -42,6 +42,7 @@ draws.
 """
 
 import os
+import re
 import sys
 import math
 import html
@@ -978,10 +979,16 @@ def short_label(text):
     return (head + tail).strip()
 
 
+_FILE_NAME_RE = re.compile(r'\.[A-Za-z0-9]{1,4}$')     # a title that is a file name: it ends in an extension
+
+
 def short_title(text):
     """
     The essential part of a title: its first line, cut at the first ': ', ', ', double space,
-    or ' ['.  The rest (counts, states, file details) goes to the window's info panel.
+    or ' ['.  The rest (counts, states, file details) goes to the window's info panel.  A title
+    that starts with two lower-case letters is capitalised ('raw dI/dV' -> 'Raw dI/dV'), except a
+    file name (anything ending in an extension such as '.sm4'), which is shown exactly as the
+    file is named, so that the name can be copied from the info panel into a file search.
     """
     t = str(text or '').strip()
     t = t.split('\n')[0]
@@ -990,7 +997,7 @@ def short_title(text):
         if k > 0:
             t = t[:k]
     t = t.strip().rstrip(':,;')
-    if len(t) > 1 and t[0].islower() and t[1].islower():
+    if len(t) > 1 and t[0].islower() and t[1].islower() and not _FILE_NAME_RE.search(t):
         t = t[0].upper() + t[1:]              # 'raw dI/dV' -> 'Raw dI/dV' (never 'dI/dV' -> 'DI/dV')
     return t
 

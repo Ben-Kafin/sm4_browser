@@ -76,7 +76,9 @@ the titles goes to an **info** panel docked at the bottom of each window (closab
 one line per panel: counts, calibrate/normalize states, file names, the energy index, drift
 sources, and so on. In the main browser these lines are appended to its existing info box.
 The rule is in `qtplot.short_title`: each title is written as "Simple name: details", and the
-panel shows the part before the first ': ' or ', '.
+panel shows the part before the first ': ' or ', '. A title that is a file name, as above the
+drift window's panels, is shown exactly as the file is named, capitalisation included; the full
+name is also in the info panel, whose text can be selected and copied into a file search.
 
 ## Text that is never cut
 * Every control measures its own text. If its box is too small (e.g. in a window narrower than

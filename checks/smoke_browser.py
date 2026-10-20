@@ -814,6 +814,16 @@ def _drift_step(b, exp):
     plt.close(w.fig)
 
 
+@check("T1 titles: a file name is shown exactly as named (no capitalisation), other titles as before")
+def _title_rule(b, exp):
+    st = plt.short_title
+    assert st("image_12.sm4: later topography, forward pass, 01-01 10:05:01") == "image_12.sm4"
+    assert st("synth_ct_2024_01_01_10_05_01_440.SM4, this file") == "synth_ct_2024_01_01_10_05_01_440.SM4"
+    assert st("raw dI/dV: 12 curves") == "Raw dI/dV"
+    assert st("dI/dV: 12 curves") == "dI/dV"
+    assert st("Scan area: 5 files") == "Scan area"
+
+
 @check("G7 drift window: the other topo's recorded frame on each panel, on top of everything; the titles; one centred view; the step")
 def _drift_outline(b, exp):
     goto_kind(b, 'grid')
