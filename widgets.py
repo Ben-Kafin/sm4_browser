@@ -28,6 +28,7 @@ if __package__ in (None, ''):
     # Run as a file (Spyder F5): make the package importable from wherever its folder sits.
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import re
 import numpy as np
 from sm4_Browser import qtplot as plt
 from sm4_Browser.qtplot import QtCore, QtGui, QtWidgets, qfont, qcolor, Bbox
@@ -145,6 +146,8 @@ SPECS = {
     'spectra': _spec('slider', 1.8, 0.2, fs=9, vmin=0, vmax=1, valstep=1, valfmt='%d'),
     # --- text boxes ---
     'γ': _spec('text', 0.45, 0.24, fs=7),
+    'E range': _spec('text', 1.0, 0.26, fs=7),                       # the Line window's shown (and normalized) energy range "lo, hi" (V)
+    'x range': _spec('text', 1.0, 0.26, fs=7),                       # the Line window's shown position range "lo, hi" (Å)
     'name': _spec('text', 2.1, 0.26, fs=9),
     'line': _spec('text', 0.55, 0.3, fs=8),
     'scale factor': _spec('text', 0.65, 0.3, fs=9),
@@ -159,7 +162,7 @@ SPECS = {
 LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass': None, 'site': None,
           'hold': '', 'param': '', 'rows': '', 'width': '', 'file': 'file', 'spectra': 'spectra',
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
-          'γ': 'γ ', 'drift v': 'v (nm/h) '}
+          'γ': 'γ ', 'drift v': 'v (nm/h) ', 'E range': 'E (V) ', 'x range': 'x (Å) '}
 
 
 # ---------------------------------------------------------------------- #
@@ -1544,6 +1547,80 @@ class GammaBox:
         self.gamma = g
         if self._cb is not None:
             self._cb(g)
+
+
+class RangeBox:
+    """
+    An axis range box (the Line window's 'E range' and 'x range'): the text
+    "lo, hi" (two numbers, a comma, semicolon or spaces between them), or
+    blank for the full range.  value is (lo, hi) with lo < hi, or None for
+    the full range.  A box that does not parse (not two numbers, one of
+    them not finite, or two equal ones) is reported and put back.
+    on_change(callback) runs callback(value) when the value changes; a
+    callback that returns False refuses the value, and the box goes back
+    to the previous one.  set(value) fills the box without firing.
+    """
+
+    def __init__(self, fig, name, x, y, value=None):
+        self.range = None if value is None else (float(value[0]), float(value[1]))
+        self.box = make(fig, name, x, y, value=self.text_of(self.range))
+        self._cb = None
+        self.box.on_change(self._on_submit)
+
+    @staticmethod
+    def text_of(rng):
+        """The box text of a range: "lo, hi", or '' for None (the full range)."""
+        return '' if rng is None else f"{rng[0]:g}, {rng[1]:g}"
+
+    @staticmethod
+    def parse(text):
+        """(lo, hi) sorted from "lo, hi"; None from a blank; ValueError with the reason otherwise."""
+        s = str(text).strip()
+        if not s:
+            return None
+        parts = [p for p in re.split(r'[,;\s]+', s) if p]
+        if len(parts) != 2:
+            raise ValueError("two numbers 'lo, hi' are needed")
+        try:
+            lo, hi = (float(p) for p in parts)
+        except ValueError:
+            raise ValueError("two numbers 'lo, hi' are needed")
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            raise ValueError("both numbers must be finite")
+        if lo == hi:
+            raise ValueError("the two numbers must differ")
+        return (min(lo, hi), max(lo, hi))
+
+    def on_change(self, callback):
+        self._cb = callback
+
+    def show(self, flag):
+        self.box.show(flag)
+
+    @property
+    def value(self):
+        return self.range
+
+    def set(self, rng):
+        self.range = None if rng is None else (float(rng[0]), float(rng[1]))
+        self.box.set(self.text_of(self.range))
+
+    def _on_submit(self, text):
+        try:
+            rng = self.parse(text)
+        except ValueError as exc:
+            print(f"{self.box.name}: '{text}' not applied ({exc}); the box is put back.")
+            self.box.set(self.text_of(self.range))
+            return
+        if rng == self.range:
+            self.box.set(self.text_of(rng))
+            return
+        old = self.range
+        self.range = rng
+        self.box.set(self.text_of(rng))
+        if self._cb is not None and self._cb(rng) is False:
+            self.range = old
+            self.box.set(self.text_of(old))
 
 
 class NameBox:

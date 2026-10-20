@@ -456,5 +456,79 @@ def _e_markers(b, exp):
     plt.close(w2._int_fig)
 
 
+@check("G1 Line window: 'E range' and 'x range' boxes (limits, normalization, colour scale, record)")
+def _line_ranges(b, exp):
+    from sm4_Browser import plots
+    w = open_line(b)
+    e = w._int_e_axis()
+    lo, hi = float(e[len(e) // 4]), float(e[3 * len(e) // 4])
+    # normalize on: the shown energy range is the normalized range
+    w._int_pipeline_box.set_state(calibrate=w._int_apply_calibration, normalize=True)
+    w._int_on_pipeline_change({'calibrate': w._int_apply_calibration, 'normalize': True})
+    assert w._int_apply_normalize
+    w._int_e_range_box._on_submit(f"{lo}, {hi}")
+    assert w._int_e_range == (lo, hi), w._int_e_range
+    assert w._int_e_range_box.box.value == widgets_text(lo, hi), w._int_e_range_box.box.value
+    assert np.allclose(w._int_ax_didv.get_xlim(), (lo, hi)), w._int_ax_didv.get_xlim()
+    assert np.allclose(w._int_ax_curve.get_xlim(), (lo, hi)), w._int_ax_curve.get_xlim()
+    m = (e >= lo) & (e <= hi)
+    rows = np.asarray(w._int_curves)[w._int_kept_mask()]
+    areas = [abs(np.trapezoid(r[m], e[m])) for r in rows if np.isfinite(r).all()]
+    assert areas and np.allclose(areas, 1.0), areas[:5]
+    # the colour scale from the cells inside the range only
+    vmin, vmax = plots.finite_range(rows[:, m])
+    assert np.isclose(w._int_im.norm.vmin, vmin) and np.isclose(w._int_im.norm.vmax, vmax), \
+        (w._int_im.norm.vmin, w._int_im.norm.vmax, vmin, vmax)
+    w._int_on_gamma(2.0)
+    assert np.isclose(w._int_im.norm.vmin, vmin) and np.isclose(w._int_im.norm.vmax, vmax)
+    # the companion shows and normalizes over the same range
+    fw = w._int_feenstra
+    if fw is not None and fw.is_open():
+        fw.pipeline.set_state(normalize=True)
+        fw.refresh()
+        col = fw.cols[0]
+        assert np.allclose(col['top'].get_xlim(), (lo, hi)), col['top'].get_xlim()
+        assert np.allclose(col['curves'].get_xlim(), (lo, hi)), col['curves'].get_xlim()
+        v = w.feenstra_view(calibrate=w._int_apply_calibration, normalize=True)
+        top = np.asarray(v['versions']['didv']['top'])[w._int_kept_mask()]
+        a2 = [abs(np.trapezoid(r[m], e[m])) for r in top if np.isfinite(r).all()]
+        assert a2 and np.allclose(a2, 1.0), a2[:5]
+    # the position range: the view only
+    p0, p1 = w._int_pos_bounds()
+    q0, q1 = p0 + 0.25 * (p1 - p0), p0 + 0.75 * (p1 - p0)
+    curves_before = np.array(w._int_curves)
+    w._int_x_range_box._on_submit(f"{q0} {q1}")
+    assert w._int_x_range == (q0, q1)
+    assert np.allclose(w._int_ax_didv.get_ylim(), (q0, q1)), w._int_ax_didv.get_ylim()
+    assert np.allclose(w._int_ax_topo.get_ylim(), (q0, q1)), w._int_ax_topo.get_ylim()
+    assert np.allclose(curves_before, w._int_curves, equal_nan=True)
+    # the record carries both; blank boxes restore the full ranges; the record restores them
+    rec = w.marker_record()
+    assert rec['energy_range'] == [lo, hi] and rec['pos_range'] == [q0, q1], (rec['energy_range'], rec['pos_range'])
+    w._int_e_range_box._on_submit('')
+    w._int_x_range_box._on_submit('')
+    assert w._int_e_range is None and w._int_x_range is None
+    x0, x1, y0, y1 = w._int_im.extent()
+    assert np.allclose(w._int_ax_didv.get_xlim(), (x0, x1)) and np.allclose(w._int_ax_didv.get_ylim(), (y0, y1))
+    full = [abs(np.trapezoid(r, e)) for r in np.asarray(w._int_curves)[w._int_kept_mask()] if np.isfinite(r).all()]
+    assert np.allclose(full, 1.0)
+    w.restore_markers(rec)
+    assert w._int_e_range == (lo, hi) and w._int_x_range == (q0, q1), (w._int_e_range, w._int_x_range)
+    assert np.allclose(w._int_ax_didv.get_xlim(), (lo, hi)) and np.allclose(w._int_ax_didv.get_ylim(), (q0, q1))
+    # refused input leaves the ranges and puts the boxes back
+    for bad in ("abc", "1", "1, 1", "nan, 2"):
+        w._int_e_range_box._on_submit(bad)
+        assert w._int_e_range == (lo, hi), bad
+        assert w._int_e_range_box.box.value == widgets_text(lo, hi), (bad, w._int_e_range_box.box.value)
+    w._int_e_range_box._on_submit(f"{e.min() - 2}, {e.min() - 1}")            # no recorded energy inside
+    assert w._int_e_range == (lo, hi) and w._int_e_range_box.box.value == widgets_text(lo, hi)
+    plt.close(w._int_fig)
+
+
+def widgets_text(lo, hi):
+    from sm4_Browser.widgets import RangeBox
+    return RangeBox.text_of((lo, hi))
+
+
 if __name__ == '__main__':
     sys.exit(0 if run(sys.argv[1:]) else 1)

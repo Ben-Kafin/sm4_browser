@@ -416,7 +416,7 @@ class FeenstraWindow:
         return (view['kind'], v.get('note'), v.get('title'), self._sig(v.get('top')), self.gammas[key].value,
                 self._sig(view.get('shear')), self._sig(view.get('shift')), self._sig(view.get('stripe')),
                 self._sig(view.get('pos')), self._sig(view.get('kept')), tuple(view.get('extent') or ()),
-                str(view.get('cmap')), self._sig(view.get('drift_lines')))
+                str(view.get('cmap')), self._sig(view.get('drift_lines')), tuple(view.get('e_range') or ()))
 
     def _draw_top(self, view, v, key, col, kind):
         """The heatmap (line) or map of one column with its colour bar (and the stripe)."""
@@ -426,9 +426,15 @@ class FeenstraWindow:
             # The kept spectra's rows at their positions, sheared as the main window's are.
             pos = np.asarray(view['pos'], dtype=np.float64)
             kept = np.asarray(view.get('kept', np.ones(len(pos), dtype=bool)), dtype=bool)
+            # The main window's 'E range' box (view['e_range']): the colour scale from the cells
+            # inside it, and the energy limits at it.
+            rng = view.get('e_range')
+            lo, hi = plots.energy_range_scale(img[kept], view['energy'], rng)
             im = plots.RowHeatmap(top, img[kept], view['energy'], pos[kept], view.get('cmap', 'jet'),
-                                  gamma=self.gammas[key].value, shear=view.get('shear'))
+                                  gamma=self.gammas[key].value, shear=view.get('shear'), vmin=lo, vmax=hi)
             x0, x1, y0, y1 = im.extent()
+            if rng is not None:
+                x0, x1 = float(rng[0]), float(rng[1])
             top.set_xlim(x0, x1)
             top.set_ylim(y0, y1)
         elif view.get('shift') is not None:
@@ -538,6 +544,8 @@ class FeenstraWindow:
             texts['ylabel_offset'] = texts['ylabel'] + " (offset)"
             plots.draw_marker_curves(axc, view['energy'], v['markers'], v['groups'], view.get('avg_on', False),
                                      self.stack_on, self.substack_on, texts, legend_fontsize=6.5, show_title=False)
+            if kind == 'line' and view.get('e_range') is not None:
+                axc.set_xlim(float(view['e_range'][0]), float(view['e_range'][1]))   # the main window's 'E range'
             axc.title.set_fontsize(7)
         self.fig.suptitle("Feenstra normalization: " + view.get('title', self.title), fontsize=10, y=0.985)
         self.fig.canvas.draw_idle()

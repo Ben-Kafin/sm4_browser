@@ -355,7 +355,8 @@ class Line:
         return int(size)
 
     def _pipeline(self, raw, iv, hampel_filter_params, sgolay_filter_params, apply_calibration,
-                  divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False):
+                  divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False,
+                  norm_range=None):
         """
         The package's one pipeline (STS.process_arrays) on this line's
         columns (npts, N), each step when switched on: the I(V) through the
@@ -366,7 +367,9 @@ class Line:
         calibration_gainoffset, or calibration_stretch), the
         division by the broadened I/V of the same current (dI/dV only;
         iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
-        value at 0 V, feenstra.iv_corrected), unit-area normalization.  A column that is
+        value at 0 V, feenstra.iv_corrected), unit-area normalization (over
+        the energy range norm_range (lo, hi) when one is given: the window's
+        'E range' box; else the whole axis).  A column that is
         never written (every sample the page's offset, self._unset) was never acquired: it is left out of the regression and
         comes back as NaN (never drawn); a line with no acquired column at
         all is refused, as is the calibration of a file without the I(V).
@@ -393,7 +396,7 @@ class Line:
                                            divide_iv, iv_broadening, return_areas=True, channel=self.channel,
                                            acquired=acquired, iv_zero_sub=iv_zero_sub,
                                            normalize=apply_normalize, calibrate=apply_calibration,
-                                           vmod=getattr(self, 'vmod', None))
+                                           vmod=getattr(self, 'vmod', None), norm_range=norm_range)
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)
         curves[:, ~acquired] = np.nan
@@ -444,12 +447,14 @@ class Line:
         The displayed line's curves for given filter settings (None = off):
         the pipeline (_pipeline) with the window's calibrate / normalize
         flags, the division when the window's 'Feenstra' toggle is on, and
-        the Feenstra settings, oriented like the heatmap.  Returns an
+        the Feenstra settings, the normalization over the 'E range' box's
+        range, oriented like the heatmap.  Returns an
         (n_positions, n_energies) array.
         """
         curves = self._pipeline(self._int_raw, self._int_iv, hampel_filter_params, sgolay_filter_params,
                                 self._int_apply_calibration, self._int_divide_iv, self._int_iv_width(),
-                                self._int_apply_normalize, iv_zero_sub=self._int_iv_zero_sub)
+                                self._int_apply_normalize, iv_zero_sub=self._int_iv_zero_sub,
+                                norm_range=self._int_e_range)
         return self._int_orient(curves)
 
     def _int_source_label(self):
@@ -678,10 +683,19 @@ class Line:
     # --- the heatmap ---
 
     def _int_set_heat_limits(self):
-        """The heatmap's limits: the energy axis and the kept rows' edges (the shear included)."""
+        """
+        The heatmap's limits: the energy axis and the kept rows' edges (the
+        shear included), or, where typed, the 'E range' box's energy range
+        and the 'x range' box's position range (the stripe and the energy
+        slice share the position axis).
+        """
         if self._int_im is None:
             return
         x0, x1, y0, y1 = self._int_im.extent()
+        if self._int_e_range is not None:
+            x0, x1 = self._int_e_range
+        if self._int_x_range is not None:
+            y0, y1 = self._int_x_range
         self._int_ax_didv.set_xlim(x0, x1)
         self._int_ax_didv.set_ylim(y0, y1)
 
@@ -689,26 +703,59 @@ class Line:
         """
         The heatmap from self._int_curves: the kept spectra's rows at their
         positions (plots.RowHeatmap; the colour scale from the kept rows,
-        the 'γ' box's exponent; with the drift toggle on each row sheared
+        inside the 'E range' box's range when one is typed
+        (plots.energy_range_scale), the 'γ' box's exponent; with the drift toggle on each row sheared
         along the position axis by the drift during its sweep), the colour
         bar rebuilt, the title and label set.
         """
         kept = self._int_kept_mask()
         img = np.asarray(self._int_curves, dtype=np.float64)[kept]
+        lo, hi = plots.energy_range_scale(img, self._int_energy, self._int_e_range)
         if self._int_im is None:
             self._int_im = plots.RowHeatmap(self._int_ax_didv, img, self._int_energy, self._int_kept_pos(),
-                                            self.cmap, gamma=self._int_gamma_box.value, shear=self._int_shear())
+                                            self.cmap, gamma=self._int_gamma_box.value, shear=self._int_shear(),
+                                            vmin=lo, vmax=hi)
             self._int_set_heat_limits()
             self._int_ax_didv.set_xlabel("Energy (eV)")
         else:
-            plots.update_heatmap(self._int_im, img, gamma=self._int_gamma_box.value)
+            plots.update_heatmap(self._int_im, img, gamma=self._int_gamma_box.value, vmin=lo, vmax=hi)
         plots.draw_colorbar(self._int_fig, self._int_im, self._int_cax_didv, label=self._int_cbar_label())
         self._int_ax_didv.set_title(self._int_heat_title())
 
     def _int_on_gamma(self, value):
-        """The heatmap's 'γ' box: the colour map's exponent (plots.heat_norm)."""
-        plots.update_heatmap(self._int_im, gamma=value)
+        """The heatmap's 'γ' box: the colour map's exponent (plots.heat_norm), over the 'E range' box's cells."""
+        lo, hi = plots.energy_range_scale(self._int_im.get_array(), self._int_energy, self._int_e_range)
+        plots.update_heatmap(self._int_im, gamma=value, vmin=lo, vmax=hi)
         plots.draw_colorbar(self._int_fig, self._int_im, self._int_cax_didv, label=self._int_cbar_label())
+        self._int_fig.canvas.draw_idle()
+
+    def _int_on_e_range(self, rng):
+        """
+        The 'E range' box (widgets.RangeBox; (lo, hi) in V, None the full
+        axis): the shown energy range of the heatmap and the curve panel,
+        the normalization range (the pipeline rerun: _int_apply_feenstra,
+        the companion with it), and the colour scale's.  A range holding
+        fewer than two recorded energies is refused (False: the box goes
+        back), as is a range the line cannot be processed with.
+        """
+        if rng is not None:
+            e = self._int_e_axis()
+            if int(np.count_nonzero((e >= rng[0]) & (e <= rng[1]))) < 2:
+                print(f"E range: {rng[0]:g}, {rng[1]:g} V holds fewer than two recorded energies; the box is put back.")
+                return False
+        old = self._int_e_range
+        self._int_e_range = rng
+        if not self._int_apply_feenstra("E range"):
+            self._int_e_range = old
+            return False
+        self._int_set_heat_limits()
+        self._int_fig.canvas.draw_idle()
+        return True
+
+    def _int_on_x_range(self, rng):
+        """The 'x range' box ((lo, hi) in Å, None the kept rows): the shown position range of the stripe, the heatmap, and the energy slice; nothing is recomputed."""
+        self._int_x_range = rng
+        self._int_set_heat_limits()
         self._int_fig.canvas.draw_idle()
 
     # --- topo stripe source: rows (line index, forward / reverse) ---
@@ -1207,6 +1254,8 @@ class Line:
         plots.draw_marker_curves(self._int_ax_curve, self._int_energy, markers, group_items, self._int_avg_on,
                                  self._int_stack_on, self._int_substack_on, self._int_curve_texts(),
                                  offset_frac=self.STACK_OFFSET_FRAC)
+        if self._int_e_range is not None:
+            self._int_ax_curve.set_xlim(*self._int_e_range)       # the 'E range' box (the panel was cleared above)
 
         # The 'Markers' slider stack follows the groups' order on the stripe.
         self._int_refresh_group_sliders()
@@ -1385,7 +1434,7 @@ class Line:
         # setting (a marker drag refreshes the companion without rerunning the pipeline).
         memo_key = (bool(calibrate), bool(normalize), repr(hp), repr(sp), self._int_iv_zero_sub,
                     self._int_iv_broadened, self._int_iv_broadening, self.channel, self.chunk_index,
-                    id(raw), id(iv), len(self._int_pos))
+                    id(raw), id(iv), len(self._int_pos), self._int_e_range)
         memo = getattr(self, '_int_versions_memo', None)
         if memo is not None and memo[0] == memo_key:
             return {k: dict(v) for k, v in memo[1].items()}, memo[2]
@@ -1394,7 +1443,7 @@ class Line:
         return {k: dict(v) for k, v in versions.items()}, q
 
     def _int_feenstra_versions_compute(self, calibrate, normalize, hp, sp, raw, iv):
-        """The four versions of _int_feenstra_versions, computed."""
+        """The four versions of _int_feenstra_versions, computed (every normalization over the 'E range' box's range)."""
         q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
         nn = "" if normalize else ", not normalized"
         zs, width = self._int_iv_zero_sub, self._int_iv_width()
@@ -1406,7 +1455,8 @@ class Line:
             'ivv': {'title': t['ivv'], 'ylabel': "I/V (unit area)" if normalize else "I/V (A/V)"},
             'ratio': {'title': t['ratio'] + f" (division on){nn}", 'ylabel': "(dI/dV)/(I/V) (arb. units)"},
         }
-        versions['didv']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize))
+        versions['didv']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize,
+                                                                  norm_range=self._int_e_range))
         if iv is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
@@ -1415,19 +1465,20 @@ class Line:
                 else np.any(np.asarray(raw) != self._unset, axis=0)
             iv_a = iv_corrected(self.energy, iv, zs, hp, sp)
             if normalize:
-                iv_a = normalize_abs(self.energy, iv_a)[0]
+                iv_a = normalize_abs(self.energy, iv_a, energy_range=self._int_e_range)[0]
             iv_a[:, ~acquired] = np.nan
             versions['iv']['top'] = self._int_orient(iv_a)
             ivv = iv_broadened(self.energy, iv, width, zs, hp, sp)
             if normalize:
-                ivv = normalize_abs(self.energy, ivv)[0]
+                ivv = normalize_abs(self.energy, ivv, energy_range=self._int_e_range)[0]
             ivv[:, ~acquired] = np.nan
             versions['ivv']['top'] = self._int_orient(ivv)
             if self.channel == 'iets':
                 versions['ratio']['note'] = "the division applies to dI/dV only"
             else:
                 versions['ratio']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, True, width,
-                                                                           normalize, iv_zero_sub=zs))
+                                                                           normalize, iv_zero_sub=zs,
+                                                                           norm_range=self._int_e_range))
         return versions, q
 
     def feenstra_view(self, calibrate=True, normalize=True):
@@ -1446,6 +1497,9 @@ class Line:
         lock-in output as recorded, and the ratio of that output by the filtered I/V);
         with `normalize` on the current and the I/V are unit area per
         location (normalization.normalize_abs); off, no panel is normalized.
+        Every normalization is over the 'E range' box's range, handed over
+        as 'e_range' ((lo, hi) or None): the companion shows that range and
+        scales its colours over it.
         """
         versions, q = self._int_feenstra_versions(calibrate, normalize)
         for key, v in versions.items():
@@ -1458,6 +1512,7 @@ class Line:
         return {'kind': 'line',
                 'title': self._int_source_label(),
                 'energy': self._int_energy,
+                'e_range': self._int_e_range,
                 'versions': versions,
                 'texts': self._int_curve_texts(q),
                 'avg_on': self._int_avg_on,
@@ -1858,7 +1913,8 @@ class Line:
         The marker record of this file and line (records.LINE_RECORD_FORMAT):
         the file (path and name), the line index, the channel, the filter
         boxes and their on / off states, the calibrate / normalize / Feenstra
-        states, the Feenstra settings, the gamma, the topo rows and the
+        states, the Feenstra settings, the gamma, the 'E range' and 'x range'
+        boxes (None = full), the topo rows and the
         active processor, the group sizes and the marker positions (Å), the
         Average / stack / substack states, and the time of writing.
         """
@@ -1879,6 +1935,8 @@ class Line:
                 'iv_broadened': bool(self._int_iv_broadened),
                 'iv_zero_sub': bool(self._int_iv_zero_sub),
                 'gamma': float(self._int_gamma_box.value),
+                'energy_range': None if self._int_e_range is None else [float(v) for v in self._int_e_range],
+                'pos_range': None if self._int_x_range is None else [float(v) for v in self._int_x_range],
                 'topo_lines': [[int(r), m] for r, m in self._int_topo_lines],
                 'topo_active': [bool(a) for a in self._int_topo_active],
                 'group_sizes': [int(s) for s in self._int_group_sizes],
@@ -1905,7 +1963,8 @@ class Line:
         Put a marker record's state into the open window (the browser's
         loader, after plot_line_with_topo_interactive on the record's file
         and line): the filter boxes and states, the calibrate / normalize /
-        Feenstra states and settings, the gamma, the topo rows and processor,
+        Feenstra states and settings, the gamma, the 'E range' and 'x range'
+        boxes, the topo rows and processor,
         the group sizes and marker positions, Average / stack / substack.
         Every part that cannot be applied is reported and skipped.
         """
@@ -1933,6 +1992,20 @@ class Line:
             self._int_gamma_box.set(float(rec.get('gamma', 1.0)))
         except Exception:
             pass
+        if 'energy_range' in rec:
+            r = rec.get('energy_range')
+            rng = None if r is None else (float(min(r)), float(max(r)))
+            e = self._int_e_axis()
+            if rng is not None and int(np.count_nonzero((e >= rng[0]) & (e <= rng[1]))) < 2:
+                print("restore markers: the record's energy range holds fewer than two recorded energies; "
+                      "the window keeps its own.")
+            else:
+                self._int_e_range = rng
+                self._int_e_range_box.set(rng)
+        if 'pos_range' in rec:
+            r = rec.get('pos_range')
+            self._int_x_range = None if r is None else (float(min(r)), float(max(r)))
+            self._int_x_range_box.set(self._int_x_range)
         rows = rec.get('topo_lines')
         if rows:
             try:
@@ -2013,7 +2086,9 @@ class Line:
         with that group's marker positions) to the single-point
         fit.  The sent curves are always rebuilt with calibration and
         normalization on, using the display's filter settings (Hampel, SG on
-        the LIA); a console line says so when either is off in the window.
+        the LIA) and the 'E range' box's normalization range (the full
+        curves, their areas over that range; the fit refits over the same
+        range); a console line says so when either is off in the window.
         A group average is the plain mean of its members.  The unsmoothed
         counterpart of each sent curve goes along for the noise estimate.  With divide_by_iv
         on, the curves are (dI/dV)/(I/V) (division after the calibration), the
@@ -2045,10 +2120,12 @@ class Line:
         div = self._int_divide_iv
         quantity = 'ratio' if div else 'didv'
         width, zs = self._int_iv_width(), self._int_iv_zero_sub
-        cf, norm_areas = self._pipeline(raw, iv, hp, sp, True, div, width, True, return_areas=True, iv_zero_sub=zs)
+        cf, norm_areas = self._pipeline(raw, iv, hp, sp, True, div, width, True, return_areas=True, iv_zero_sub=zs,
+                                        norm_range=self._int_e_range)
         areas_f = np.array(norm_areas)                       # per column, amps (ratio: arb. units x V)
         # The same with every filter off (the 'unfiltered' curve of the record).
-        cu = self._pipeline(raw.copy(), iv, None, None, True, div, width, True, iv_zero_sub=zs)
+        cu = self._pipeline(raw.copy(), iv, None, None, True, div, width, True, iv_zero_sub=zs,
+                            norm_range=self._int_e_range)
         suffix = " over I/V" if div else ""                       # separate fit histories for the ratio
 
         # Orient like the display: rows follow self.pos, energy ascending.
@@ -2125,7 +2202,8 @@ class Line:
                                         units_lia=self.units_lia, units_iv=self.units_iv, vmod=self.vmod,
                                         energy_raw=self.energy,
                                         filter_stage=stage,
-                                        quantity=quantity, iv_broadening=width, iv_zero_sub=zs)
+                                        quantity=quantity, iv_broadening=width, iv_zero_sub=zs,
+                                        norm_range=self._int_e_range)
                 an.select_model(**settings)
             an.plot()
             self._int_fits.append(an)
@@ -2197,6 +2275,13 @@ class Line:
         self._int_btn_e_clear = widgets.make(fig, 'clear E-markers', 0.30, 0.918)
         self._int_btn_e_clear.on_change(lambda: self._int_on_e_count(0))
         self._int_txt_e = fig.text(0.375, 0.932, '', fontsize=8, ha='left', va='center')
+        # The 'x range' and 'E range' boxes (widgets.RangeBox, "lo, hi", blank = full), right of the
+        # readout: the shown position range, and the shown energy range, which is also the
+        # normalization range and the colour scale's (_int_on_x_range, _int_on_e_range).
+        self._int_x_range_box = widgets.RangeBox(fig, 'x range', 0.72, 0.925, value=self._int_x_range)
+        self._int_x_range_box.on_change(self._int_on_x_range)
+        self._int_e_range_box = widgets.RangeBox(fig, 'E range', 0.84, 0.925, value=self._int_e_range)
+        self._int_e_range_box.on_change(self._int_on_e_range)
         self._int_rad_sweeps = None
         if self.spectra_all is not None:
             from sm4_Browser import sweeps as sweeps_mod
@@ -2484,6 +2569,8 @@ class Line:
         self._int_apply_calibration = bool(apply_calibration)
         self._int_apply_normalize = bool(apply_normalize)
         self._int_gamma0 = float(gamma)
+        self._int_e_range = None              # the 'E range' box: (lo, hi) V shown and normalized over, None = all
+        self._int_x_range = None              # the 'x range' box: (lo, hi) Å shown, None = the kept rows
         self._int_drift = drift
         self._int_auto_on = bool(auto_on and drift is not None)
         self._int_manual_on = bool(manual_on and drift is not None)

@@ -2,7 +2,9 @@
 Unit-area normalization of spectra: normalize (the signed trapezoidal area
 of every column set to 1, the pipeline's last step) and normalize_abs (the
 area between the curve and zero, for the current and I/V panels of the
-Feenstra windows).  Plain arrays in, columns = spectra.
+Feenstra windows), both over the whole energy axis or over an energy range
+(the Line window's 'E range' box; range_mask).  Plain arrays in, columns =
+spectra.
 """
 
 if __package__ in (None, ''):
@@ -10,6 +12,20 @@ if __package__ in (None, ''):
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import numpy as np
+
+
+def range_mask(energy, energy_range):
+    """
+    The samples of `energy` inside energy_range (lo, hi), lo <= E <= hi, as
+    a boolean mask; every sample with energy_range None.  The energy range
+    of the Line window's 'E range' box, as normalize and normalize_abs
+    take it.
+    """
+    energy = np.asarray(energy, dtype=np.float64)
+    if energy_range is None:
+        return np.ones(len(energy), dtype=bool)
+    lo, hi = sorted((float(energy_range[0]), float(energy_range[1])))
+    return (energy >= lo) & (energy <= hi)
 
 
 def normalize(energy, curves, energy_range=None):
@@ -26,11 +42,7 @@ def normalize(energy, curves, energy_range=None):
     such samples give area 0, and the column comes back as it is.
     """
     energy = np.asarray(energy, dtype=np.float64)
-    if energy_range is not None:
-        lo, hi = sorted((float(energy_range[0]), float(energy_range[1])))
-        in_range = (energy >= lo) & (energy <= hi)
-    else:
-        in_range = np.ones(len(energy), dtype=bool)
+    in_range = range_mask(energy, energy_range)
     e_area = energy[in_range]
     norm_curves = np.zeros_like(curves, dtype=np.float64)
     norm_areas = []  # per-column areas (the columns' units times volts), used by "Send to fit"
@@ -45,7 +57,7 @@ def normalize(energy, curves, energy_range=None):
     return norm_curves, np.array(norm_areas, dtype=np.float64)
 
 
-def normalize_abs(energy, curves):
+def normalize_abs(energy, curves, energy_range=None):
     """
     Normalize each column by the area between the curve and zero: the
     trapezoidal integral of |curve| over the energy axis.  Where the
@@ -57,15 +69,19 @@ def normalize_abs(energy, curves):
     the per-column areas in the units of the columns; an all-zero or NaN
     column (area 0 or NaN) is returned as it is.  No absolute tolerance:
     the inputs may be in amps (areas of order 1e-10), and the integral of
-    |curve| is zero only for an all-zero column.
+    |curve| is zero only for an all-zero column.  energy_range (lo, hi)
+    limits the integral to the samples inside that range, as in normalize
+    (fewer than two such samples: area 0, the column as it is).
     """
     energy = np.asarray(energy, dtype=np.float64)
     curves = np.asarray(curves, dtype=np.float64)
+    in_range = range_mask(energy, energy_range)
+    e_area = energy[in_range]
     norm_curves = np.zeros_like(curves, dtype=np.float64)
     areas = []
     for j in range(curves.shape[1]):
         current_curve = curves[:, j]
-        area = np.abs(np.trapezoid(np.abs(current_curve), x=energy))
+        area = np.abs(np.trapezoid(np.abs(current_curve[in_range]), x=e_area)) if len(e_area) >= 2 else 0.0
         areas.append(area)
         if np.isfinite(area) and area > 0.0:
             norm_curves[:, j] = current_curve / area

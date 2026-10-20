@@ -117,6 +117,24 @@ def finite_range(img):
     return float(np.min(a[ok])), float(np.max(a[ok]))
 
 
+def energy_range_scale(img, energy, e_range):
+    """
+    (vmin, vmax) of a row heatmap's colour scale over an energy range: the
+    finite_range of the cells whose energy (the columns' axis `energy`)
+    lies inside e_range (lo, hi), the Line window's 'E range' box; (None,
+    None) without a range or without a column inside it (the heatmap then
+    scales over every cell).
+    """
+    if e_range is None:
+        return None, None
+    e = np.asarray(energy, dtype=np.float64)
+    cols = (e >= float(e_range[0])) & (e <= float(e_range[1]))
+    a = np.asarray(img, dtype=np.float64)
+    if a.ndim != 2 or a.shape[1] != len(e) or not cols.any():
+        return None, None
+    return finite_range(a[:, cols])
+
+
 def draw_heatmap(ax, img, extent, cmap, gamma=1.0, vmin=None, vmax=None, origin='upper', aspect='auto',
                  interpolation=None):
     """

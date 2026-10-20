@@ -192,6 +192,13 @@ fits still use only finished sweeps, as before.
   heatmap or curve panel; Left/Right step the selected one by one recorded energy; Tab selects the next.
   The **Energy slice** panel shows the quantity against position at each E-marker. They are saved in the
   marker and line-average records.
+* **E range / x range** boxes (Line window, top row): "lo, hi" sets the shown energy range (V) and the
+  shown position range (Å); a blank box is the full range. The energy range is also the normalization
+  range (with normalize on, every spectrum has unit area over the shown range, nothing else) and the
+  colour scale's (only the cells inside it set the colour map). The Feenstra companion shows and
+  normalizes over the same range, and **Send to fit** sends the full curves normalized over it, the
+  fit's refits using the same range. The position range changes nothing but the view. Both are saved
+  in the marker record.
 * **Every marker count can go to 0** (Markers, avgs, the drift window, the E-markers, the alignment
   editor).
 * **Several sweeps per pixel** (`sweeps.py`): the pixels and their sweeps are found from the recorded

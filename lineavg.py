@@ -1006,7 +1006,7 @@ class LineAverage(Line):
         Line._int_build_controls(self)
         fig = self._int_fig
         for w in (self._int_box_line, self._int_btn_line_new, self._int_btn_line_exist, self._int_btn_save,
-                  self._int_btn_topo_add, self._int_btn_topo_remove):
+                  self._int_btn_topo_add, self._int_btn_topo_remove, self._int_e_range_box, self._int_x_range_box):
             w.show(False)
         self._int_line_steps.show(False)
         for row in self._int_topo_row_widgets:            # (box, pass button, profile button) per row

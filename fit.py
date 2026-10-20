@@ -586,7 +586,8 @@ class Fit:
                 if quantity == 'ratio':
                     cal = feenstra.divide_by_iv(self.energy, cal, iv_f, self.iv_broadening,
                                                bool(getattr(self, 'iv_zero_sub', False)), None, None)
-                norm, norm_areas = normalization.normalize(self.energy, cal)
+                norm, norm_areas = normalization.normalize(self.energy, cal,
+                                                           energy_range=getattr(self, 'norm_range', None))
                 order = np.argsort(self.energy)
                 e = self.energy[order]
                 norm = norm[order, :]
@@ -868,7 +869,7 @@ class Fit:
                    units_lia=None, units_iv=None, vmod=None,
                    energy_raw=None, filter_stage=None,
                    quantity='didv', iv_broadening=0.0, raw_sets=None,
-                   resample=None, iv_zero_sub=False):
+                   resample=None, iv_zero_sub=False, norm_range=None):
         """
         Build an analyzer from an already processed curve (calibrated, unit-area
         normalized, averaged, and smoothed elsewhere, e.g. sent from the Line
@@ -915,12 +916,17 @@ class Fit:
           iv_broadening    : broadening width (V) of I/V for quantity 'ratio' (0: the plain I/V)
           iv_zero_sub      : for quantity 'ratio', each sweep's current at 0 V subtracted
                              before I/V is formed (STS.iv_corrected), as the sender did
+          norm_range       : (lo, hi) in V when the sender normalized over an energy range
+                             (the Line window's 'E range' box): every rebuild of the
+                             curve from raw columns normalizes over the same range
+                             (normalization.normalize); None, the whole axis
         """
         self = cls.__new__(cls)
         self.ifile = label
         self.quantity = 'ratio' if quantity == 'ratio' else 'didv'
         self.iv_broadening = float(iv_broadening)
         self.iv_zero_sub = bool(iv_zero_sub)
+        self.norm_range = None if norm_range is None else (float(norm_range[0]), float(norm_range[1]))
         self.hampel_filter_params = None if hampel_filter_params is None else dict(hampel_filter_params)
         self.sgolay_filter_params = None if sgolay_filter_params is None else dict(sgolay_filter_params)
         self.resample = resample if resample in ('bin', 'interp') else None
@@ -2073,7 +2079,8 @@ class Fit:
                 order = np.argsort(self.energy)
                 iv_f = filters.filter_lia(self.iv, self.hampel_filter_params, self.sgolay_filter_params)
                 calibrated, _ = calibration.calibrate(self.energy, self.lia.copy(), iv_f, self.vmod)
-                _, norm_areas = normalization.normalize(self.energy, calibrated)
+                _, norm_areas = normalization.normalize(self.energy, calibrated,
+                                                        energy_range=getattr(self, 'norm_range', None))
                 self.areas_A = np.array(norm_areas)
                 iv_sorted = self.iv[order, :]
                 self.delta_I_window_A = iv_sorted[self.i_bias, :] - iv_sorted[self.i_ref, :]
@@ -2234,6 +2241,8 @@ class Fit:
             'model_equation': model_eq,
             'amplitude_units': units,
             'energy_window_V': [float(self.V[0]), float(self.V[-1])],
+            'norm_range_V': (None if getattr(self, 'norm_range', None) is None
+                             else [float(v) for v in self.norm_range]),
             'anchor': {'mode': self.anchor_mode,
                        'target_arb_units': None if self.target is None else float(self.target),
                        'V_bias_V': float(self.V_bias), 'I_setpoint_A': float(self.I_setpoint),
