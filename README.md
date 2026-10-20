@@ -170,6 +170,10 @@ fits still use only finished sweeps, as before.
   full area. Scroll-to-zoom and drag-to-pan are unchanged.
 
 ### Drift window
+* **< before / before > and < after / after >** step the earlier and the later topo through the file's segment
+  in time order (the earlier always before the later). The pair is redrawn, the marker draft emptied, a span
+  stored for the new pair restored, and **apply velocity** then stores the span between the topos shown, which
+  covers every file between them, topo, line, map or single point alike.
 * A click on either topo places the marker **and its partner on the other topo at once**, with the
   displacement arrow on both panels. The partner is placed with the velocity that currently governs the
   pair: an applied manual velocity, else the auto velocity of the pair, else the extrapolated auto

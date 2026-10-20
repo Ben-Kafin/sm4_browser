@@ -130,6 +130,10 @@ SPECS = {
     'line >': _spec('button', 0.6, 0.3, fs=7),
     '< sweep': _spec('button', 0.6, 0.3, fs=7),                  # calibration's if-main: the previous / next sweep of the file
     'sweep >': _spec('button', 0.6, 0.3, fs=7),
+    '< before': _spec('button', 0.62, 0.3, fs=7),                # the drift window: the earlier topo one step back / forward in time
+    'before >': _spec('button', 0.62, 0.3, fs=7),
+    '< after': _spec('button', 0.62, 0.3, fs=7),                 # ... and the later topo
+    'after >': _spec('button', 0.62, 0.3, fs=7),
     'prev region': _spec('button', 0.78, 0.32, fs=6),
     'next region': _spec('button', 0.78, 0.32, fs=6),
     '+': _spec('button', 0.4, 0.3),
@@ -2132,6 +2136,24 @@ class PairMarkers:
                 self.markers[path] = []
             self.draw()
             self._fire()
+
+    def retarget(self, panels):
+        """
+        The panels replaced (the drift window stepping to another pair of
+        topos): the draft emptied and its artists dropped (the panels were
+        cleared by the window), the new (ax, path, name) panels taken, the
+        pair count kept; nothing fired.
+        """
+        for a in self._arts:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        self._arts = []
+        self._drag = None
+        self._press = None
+        self.panels = list(panels)
+        self.markers = {path: [] for _, path, _ in self.panels}
 
     def restore(self, markers, to_display, kind='adjusted'):
         """

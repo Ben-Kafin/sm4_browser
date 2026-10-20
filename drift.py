@@ -159,7 +159,10 @@ file, the 'drift window' button of the Line and Map windows) shows the pair
 a file's auto velocity comes from side by side (Drift.window_pair: a spectra
 file's before and after topos; a topo and the next of its segment, else the
 previous and it) and takes the marker pairs for exactly that span; its one
-velocity box is what gets applied.  The Browser applies the manual
+velocity box is what gets applied.  Its '< before' / 'before >' and
+'< after' / 'after >' buttons step either topo through the segment in time
+order, and the box then applies to the span between the topos shown, which
+covers every file between them.  The Browser applies the manual
 velocities wherever they cover a file; the Browser, Topo, Line, and Map
 windows each have their own 'auto drift' and 'manual drift' toggles.
 
@@ -3168,7 +3171,13 @@ class DriftWindow:
     from it, whichever drift window made the change); `on_change`, when a
     caller outside the package gives one, runs as well (_changed).  A
     stored span between the two topos is restored at opening, its markers
-    and its velocity in the box.  Raises ValueError when the file has no
+    and its velocity in the box.  '< before' / 'before >' and '< after' /
+    'after >' step the earlier and the later topo through the file's
+    segment in time order (the earlier always before the later): the pair
+    is redrawn, the draft emptied, the new pair's stored span restored and
+    the box reseeded, and 'apply velocity' then stores the span between
+    the topos shown, which covers every file between them, whatever its
+    kind (Drift._manual_model).  Raises ValueError when the file has no
     pair to show.
     """
 
@@ -3193,8 +3202,53 @@ class DriftWindow:
             pass
         self.ax_a = self.fig.add_axes([0.05, 0.30, 0.42, 0.64])
         self.ax_b = self.fig.add_axes([0.55, 0.30, 0.42, 0.64], sharex=self.ax_a, sharey=self.ax_a)
+        # The topos of the file's segment in time order: what the step buttons walk through.
+        seg = drift.segment_key_of(f.path)
+        self.members = list(drift.segment_members(seg)) if seg is not None else []
+        self._draw_pair()
+        self.markers = widgets.PairMarkers(self.fig, [(self.ax_a, a.path, a.name), (self.ax_b, b.path, b.name)],
+                                           self._resolve_on, n_pairs=0, seed=self._seed,
+                                           on_count=lambda n: self.sld_markers.set(n))
+        self.markers.on_change(self._on_markers)
+        self.sld_markers = widgets.make(self.fig, 'Markers', 0.08, 0.235, value=0, vmax=widgets.MARKER_PAIRS_MAX)
+        self.sld_markers.on_change(lambda val: self.markers.set_pairs(int(round(float(val)))))
+        self.btn_clear = widgets.make(self.fig, 'clear markers', 0.20, 0.225)
+        self.btn_clear.on_change(self._on_clear)
+        self.btn_set_v = widgets.make(self.fig, 'set from markers', 0.29, 0.225)
+        self.btn_set_v.on_change(self._on_set_from_markers)
+        self.box_v = widgets.make(self.fig, 'drift v', 0.49, 0.228, value='')
+        self.box_v.on_change(self._on_typed)
+        self.btn_apply = widgets.make(self.fig, 'apply velocity', 0.59, 0.225)
+        self.btn_apply.on_change(self._on_apply)
+        # The step buttons: the earlier topo and the later topo each one step back or forward in time.
+        self.btn_before_prev = widgets.make(self.fig, '< before', 0.70, 0.225)
+        self.btn_before_prev.on_change(lambda: self._step('before', -1))
+        self.btn_before_next = widgets.make(self.fig, 'before >', 0.748, 0.225)
+        self.btn_before_next.on_change(lambda: self._step('before', +1))
+        self.btn_after_prev = widgets.make(self.fig, '< after', 0.83, 0.225)
+        self.btn_after_prev.on_change(lambda: self._step('after', -1))
+        self.btn_after_next = widgets.make(self.fig, 'after >', 0.878, 0.225)
+        self.btn_after_next.on_change(lambda: self._step('after', +1))
+        self.txt = self.fig.text(0.05, 0.02, '', fontsize=7, family='monospace', ha='left', va='bottom')
+        self.help_txt = self.fig.text(0.05, 0.17, '', fontsize=8, ha='left', va='bottom')
+        self._write_help()
+        # The box's provenance: where its text came from ('confirmed', 'markers', or 'typed'), the
+        # markers it was fitted from, and the text as written, so an edited box applies as typed.
+        self._box_kind = None
+        self._box_markers = None
+        self._box_text = ''
+        self._applied = None
+        self._restore_span()
+        plt.show()
+
+    def _draw_pair(self):
+        """Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at absolute positions, the file's spectra on both, the same limits."""
+        from sm4_Browser import plots
+        from sm4_Browser import topo as topo_mod
+        f, k = self.f, self.k
         corners = []
-        for ax, t, label in ((self.ax_a, a, "earlier"), (self.ax_b, b, "later")):
+        for ax, t, label in ((self.ax_a, self.a, "earlier"), (self.ax_b, self.b, "later")):
+            ax.clear()
             img = topo_mod.process_topo(t.topo_raw('forward'), self.active) * 1e9
             plots.draw_topo_absolute(ax, t, img, self.scalefactor, cmap=plots.TOPO_CMAP)
             corners.append(t.corners_m() * k)
@@ -3214,49 +3268,73 @@ class DriftWindow:
         my = 0.05 * max(np.ptp(allc[:, 1]), 1e-9)
         self.ax_a.set_xlim(allc[:, 0].min() - mx, allc[:, 0].max() + mx)
         self.ax_a.set_ylim(allc[:, 1].min() - my, allc[:, 1].max() + my)
-        self.markers = widgets.PairMarkers(self.fig, [(self.ax_a, a.path, a.name), (self.ax_b, b.path, b.name)],
-                                           self._resolve_on, n_pairs=0, seed=self._seed,
-                                           on_count=lambda n: self.sld_markers.set(n))
-        self.markers.on_change(self._on_markers)
-        self.sld_markers = widgets.make(self.fig, 'Markers', 0.08, 0.235, value=0, vmax=widgets.MARKER_PAIRS_MAX)
-        self.sld_markers.on_change(lambda val: self.markers.set_pairs(int(round(float(val)))))
-        self.btn_clear = widgets.make(self.fig, 'clear markers', 0.20, 0.225)
-        self.btn_clear.on_change(self._on_clear)
-        self.btn_set_v = widgets.make(self.fig, 'set from markers', 0.29, 0.225)
-        self.btn_set_v.on_change(self._on_set_from_markers)
-        self.box_v = widgets.make(self.fig, 'drift v', 0.49, 0.228, value='')
-        self.box_v.on_change(self._on_typed)
-        self.btn_apply = widgets.make(self.fig, 'apply velocity', 0.59, 0.225)
-        self.btn_apply.on_change(self._on_apply)
-        self.txt = self.fig.text(0.05, 0.02, '', fontsize=7, family='monospace', ha='left', va='bottom')
+
+    def _write_help(self):
+        """The help line under the panels, for the pair shown (its seeding velocity)."""
         v0, src0 = self._seed_velocity()
         seeding = (f"a click on either topo places its partner on the other at once, with the current velocity "
                    f"({src0}); drag to adjust" if v0 is not None else
                    "no velocity covers this pair yet: place each partner by hand (or apply a velocity)")
-        self.fig.text(0.05, 0.17, f"{f.name}: click the same feature in both topos (the k-th marker on the left pairs "
-                      f"with the k-th on the right).\n{seeding}; 'set from markers' puts the markers' velocity in the "
-                      "'v (nm/h)' box, or type one; 'apply velocity' stores the box for the files between these two topos.",
-                      fontsize=8, ha='left', va='bottom')
-        # The box's provenance: where its text came from ('confirmed', 'markers', or 'typed'), the
-        # markers it was fitted from, and the text as written, so an edited box applies as typed.
-        self._box_kind = None
-        self._box_markers = None
-        self._box_text = ''
+        self.help_txt.set_text(f"{self.f.name}: click the same feature in both topos (the k-th marker on the left pairs "
+                               f"with the k-th on the right).\n{seeding}; 'set from markers' puts the markers' velocity "
+                               "in the 'v (nm/h)' box, or type one; 'apply velocity' stores the box for the files between "
+                               f"these two topos ({self.a.name} -> {self.b.name}); '< before' / 'before >' and "
+                               "'< after' / 'after >' step the topos through the segment.")
+
+    def _restore_span(self):
+        """A stored span between the pair shown put into the window: its markers in the draft, its velocity in the box, the readout."""
+        a, b, k = self.a, self.b, self.k
+        sp = self.drift.span_between(a.path, b.path)
+        if sp is None:
+            self._show_draft()
+            return
+        m = np.asarray(sp['markers']).reshape(-1, 6)
+        if sp['a'] != a.path:                                  # stored the other way round
+            m = m[:, [3, 4, 5, 0, 1, 2]]
+        if len(m):
+            self.markers.restore(m, lambda xy_m: np.asarray(xy_m, dtype=np.float64) * k, kind=sp.get('kind', 'adjusted'))
+            self.sld_markers.set(self.markers.n_pairs)
+        if sp.get('v') is not None:
+            self._fill_box(sp['v'], {'confirmed': 'confirmed', 'adjusted': 'markers'}.get(sp.get('kind'), 'typed'),
+                           m if len(m) else None)
+        self._applied = sp
+        self._show(sp)
+
+    def _step(self, which, d):
+        """
+        '< before' / 'before >' ('after'): the earlier (later) topo one step
+        back (d = -1) or forward (+1) through the segment's topos in time
+        order; refused at the segment's ends and where the earlier would
+        not stay before the later.  The pair is redrawn, the draft emptied,
+        the box cleared, the new pair's stored span restored (markers, box,
+        readout), the help line rewritten.
+        """
+        paths = self.members
+        if self.a.path not in paths or self.b.path not in paths:
+            print("drift window: the pair is not in the file's segment; no stepping.")
+            return
+        ia, ib = paths.index(self.a.path), paths.index(self.b.path)
+        if which == 'before':
+            ia += int(d)
+        else:
+            ib += int(d)
+        if not (0 <= ia < ib < len(paths)):
+            print(f"drift window: no {'earlier' if d < 0 else 'later'} topo for the {which} panel "
+                  f"(the segment holds {len(paths)} topos; the earlier stays before the later).")
+            return
+        self.a = self.drift._topo_file(paths[ia])
+        self.b = self.drift._topo_file(paths[ib])
+        self.v_auto = self.drift.auto_velocity_of(self.a.path, self.b.path)
+        self._draw_pair()
+        self.markers.retarget([(self.ax_a, self.a.path, self.a.name), (self.ax_b, self.b.path, self.b.name)])
+        self.sld_markers.set(0)
+        self.box_v.set('')
+        self._box_kind, self._box_markers, self._box_text = None, None, ''
         self._applied = None
-        sp = drift.span_between(a.path, b.path)
-        if sp is not None:
-            m = np.asarray(sp['markers']).reshape(-1, 6)
-            if sp['a'] != a.path:                                  # stored the other way round
-                m = m[:, [3, 4, 5, 0, 1, 2]]
-            if len(m):
-                self.markers.restore(m, lambda xy_m: np.asarray(xy_m, dtype=np.float64) * k, kind=sp.get('kind', 'adjusted'))
-                self.sld_markers.set(self.markers.n_pairs)
-            if sp.get('v') is not None:
-                self._fill_box(sp['v'], {'confirmed': 'confirmed', 'adjusted': 'markers'}.get(sp.get('kind'), 'typed'),
-                               m if len(m) else None)
-            self._applied = sp
-            self._show(sp)
-        plt.show()
+        self._write_help()
+        self._restore_span()
+        print(f"drift window: {self.a.name} -> {self.b.name}" + (f", auto v = {self._v_text(self.v_auto)}" if self.v_auto is not None else ", pair not tracked"))
+        self.fig.canvas.draw_idle()
 
     def is_open(self):
         return plt.fignum_exists(self.fig.number)

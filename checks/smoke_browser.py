@@ -653,6 +653,49 @@ def _map_composer(b, exp):
     plt.close(m.fig)
 
 
+@check("G4 drift window: '< before' / 'before >' / '< after' / 'after >' step the pair; the span covers the files between")
+def _drift_step(b, exp):
+    goto_kind(b, 'grid')
+    b._on_drift_window()
+    w = b.drift_window
+    paths = list(w.members)
+    assert len(paths) >= 3, paths
+    a0, b0 = w.a.path, w.b.path
+    ia, ib = paths.index(a0), paths.index(b0)
+    assert ia < ib
+    sp0 = b.drift.span_between(a0, b0)
+    # beyond the segment's end, or the later onto the earlier: refused, nothing changes
+    if ib == len(paths) - 1:
+        w._step('after', +1)
+        assert (w.a.path, w.b.path) == (a0, b0)
+    if ib - ia == 1:
+        w._step('after', -1)
+        assert (w.a.path, w.b.path) == (a0, b0)
+    assert ia > 0, "the synthetic grid's before topo should not be the segment's first"
+    w._step('before', -1)
+    assert w.a.path == paths[ia - 1] and w.b.path == b0, (w.a.path, w.b.path)
+    assert w.markers.n_pairs == 0 and w.markers.panels[0][1] == w.a.path and w.markers.panels[1][1] == w.b.path
+    assert w.box_v.value == '' and w._applied is None
+    # a typed velocity applied covers every file between the topos shown, whatever its kind
+    w.box_v.set("30, -20")
+    w._on_typed("30, -20")
+    w._on_apply()
+    sp = b.drift.span_between(w.a.path, w.b.path)
+    assert sp is not None and np.allclose(np.asarray(sp['v']) * 3.6e12, [30, -20])
+    i_a, i_b = b.files.index(w.a.path), b.files.index(w.b.path)
+    between = [p for p in b.files if i_a <= b.files.index(p) <= i_b]
+    assert len(between) >= 3 and any(b.kinds[p] != 'topo' for p in between)
+    for p in between:
+        m = b.drift._manual_model(p, 0.0)
+        assert m is not None and np.allclose(m.v, sp['v']), p
+    # back to the original pair: its own span state comes back
+    w._step('before', +1)
+    assert (w.a.path, w.b.path) == (a0, b0)
+    assert (w._applied is None) == (sp0 is None)
+    b.drift.clear_manual_span(paths[ia - 1], b0)
+    plt.close(w.fig)
+
+
 def widgets_text(lo, hi):
     from sm4_Browser.widgets import RangeBox
     return RangeBox.text_of((lo, hi))
