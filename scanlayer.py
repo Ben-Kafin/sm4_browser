@@ -229,6 +229,13 @@ def record_corners(rec, k, direction, model):
     return uv @ m[:2, :2].T + m[:2, 2]
 
 
+def _cross2d(a, b):
+    """z component of a x b for 2-D vectors (NumPy 2.5 dropped the 2-D np.cross)."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+
 def _covers(quads, order, complete):
     """
     For every image, the later complete images whose quadrilateral contains it entirely:
@@ -243,7 +250,7 @@ def _covers(quads, order, complete):
     comp = np.array([bool(complete.get(p)) for p in paths])
     E = np.roll(Q, -1, axis=1) - Q                              # edges (n, 4, 2)
     # The orientation of each quad (its vertices run one way round).
-    sgn = np.sign(np.cross(E[:, 0], E[:, 1]))
+    sgn = np.sign(_cross2d(E[:, 0], E[:, 1]))
     out = {}
     tol = 1e-12
     for a in range(len(paths) - 1):
@@ -253,7 +260,7 @@ def _covers(quads, order, complete):
             continue
         P = Q[a]                                                # (4, 2) corners of the covered candidate
         d = P[None, None, :, :] - Q[cand][:, :, None, :]        # (m, 4 edges, 4 points, 2)
-        cr = np.cross(E[cand][:, :, None, :], d)                # (m, 4, 4)
+        cr = _cross2d(E[cand][:, :, None, :], d)                # (m, 4, 4)
         inside = np.all(cr * sgn[cand][:, None, None] >= -tol * np.abs(cr).max(initial=1.0), axis=(1, 2))
         if inside.any():
             out[paths[a]] = [paths[j] for j in cand[inside]]
