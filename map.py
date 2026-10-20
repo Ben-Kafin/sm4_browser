@@ -20,6 +20,7 @@ from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_title
                                   iv_broadened)
 from sm4_Browser.normalization import normalize_abs
 from sm4_Browser.drift import DriftWindow
+from sm4_Browser.composer import FigureComposer
 from sm4_Browser.topo import processed_topo, process_topo, TOPO_CMAP
 
 
@@ -148,6 +149,8 @@ class Map:
         self._fits = []                 # sent fits stay referenced
         self._avg_picker = None                     # the pop-up list of the open averages (made at the first use)
         self.feenstra = None                        # the Feenstra companion (opened at the end of __init__)
+        self.composer = None                        # the figure composer (composer.FigureComposer), made at the first add
+        self._single_im = None                      # the single view's drawn map (its colour limits for the composer)
 
         # Marker state: one group of two markers at the grid's centre.
         self.n_lines, self.n_fast = int(grid.n_lines), int(grid.n_fast)
@@ -203,6 +206,22 @@ class Map:
         self.stacks.on_change(self._redraw_markers)
         self.btn_send = widgets.make(self.fig, 'Send to fit', 0.73, 0.065)
         self.btn_send.on_change(self._send_to_fit)
+        # The whole map into an averaging window: 'map → new avg' starts one, 'map → existing avg' lists
+        # the open ones (map_selection: every acquired pixel's spectrum as one sweep of one entry).
+        self.btn_map_new = widgets.make(self.fig, 'map → new avg', 0.45, 0.012)
+        self.btn_map_new.on_change(self._on_map_new)
+        self.btn_map_exist = widgets.make(self.fig, 'map → existing avg', 0.45, 0.046)
+        self.btn_map_exist.on_change(self._on_map_existing)
+        # The figure composer (composer.FigureComposer): 'add to plot' under the topo, the map and the curve
+        # panel sends that panel as shown; 'new plot' empties the figure.
+        self.btn_plot_topo = widgets.make(self.fig, 'add to plot', self.TOPO_X, 0.135)
+        self.btn_plot_topo.on_change(lambda: self._on_add_to_plot('topo'))
+        self.btn_plot_map = widgets.make(self.fig, 'add to plot', self.MAP_X, 0.135)
+        self.btn_plot_map.on_change(lambda: self._on_add_to_plot('map'))
+        self.btn_plot_curve = widgets.make(self.fig, 'add to plot', self.CURVE_X, 0.135)
+        self.btn_plot_curve.on_change(lambda: self._on_add_to_plot('spectra'))
+        self.btn_new_plot = widgets.make(self.fig, 'new plot', 0.43, 0.114)
+        self.btn_new_plot.on_change(self._on_new_plot)
         self.gamma_single = widgets.GammaBox(self.fig, gamma=self.gammas[self.e_index])
         self.gamma_single.on_change(self._on_gamma_single)
 
@@ -800,6 +819,7 @@ class Map:
         else:
             im = plots.draw_heatmap(ax, m, self.extent, self.cmap, gamma=self.gammas[self.e_index], vmin=lo, vmax=hi,
                                     origin='lower', aspect='equal', interpolation='none')
+        self._single_im = im
         self._frame_limits(ax)
         q = self._quantity()
         units = ("arb. units" if self.divide_iv and self.channel == 'didv'
@@ -1257,6 +1277,135 @@ class Map:
             self.fig.canvas.draw_idle()
 
         picker.open(anchor_ax, selection, add_to)
+
+    # --- the whole map into an average ('map → new avg', 'map → existing avg') ---
+
+    def map_selection(self):
+        """
+        The whole map as one entry of an averaging window: every acquired
+        pixel's spectrum as one sweep (averaging.Selection of those columns,
+        its positions the pixel centres in the frame, 'map' True); None
+        without an acquired pixel (the console says so).
+        """
+        n = self.n_lines * self.n_fast
+        acq = np.asarray(self.grid.acquired, dtype=bool)[:n]
+        cols = np.flatnonzero(acq)
+        if not len(cols):
+            print("map → avg: no acquired pixel in this map.")
+            return None
+        positions = []
+        for c in cols:
+            x, y = self.pixel_xy(divmod(int(c), self.n_fast))
+            positions.append([float(x), float(y)])
+        return Selection(self.grid, cols, {'line': None, 'positions': positions, 'map': True})
+
+    def _on_map_new(self):
+        """'map → new avg': the whole map starts a new averaging window (one entry, every acquired pixel one sweep)."""
+        self._picker().close()
+        selection = self.map_selection()
+        if selection is None:
+            return
+        try:
+            w = self._averages().add('', selection, channel=self.channel)
+        except Exception as exc:
+            print(f"map → new avg: {exc}")
+            return
+        self._avg_windows.append(w)
+        self.fig.canvas.draw_idle()
+
+    def _on_map_existing(self):
+        """'map → existing avg': the list of the open averages; a row picked adds the whole map to it."""
+        picker = self._picker()
+        if picker.is_open():
+            picker.close()
+            return
+        selection = self.map_selection()
+        if selection is None:
+            return
+
+        def add_to(index):
+            w = self._averages().open().get(index)
+            if w is None:
+                return
+            if w.has(selection):
+                print(f"{w.name} already holds {selection.entry_label} ({selection.name}).")
+                return
+            try:
+                w.add(selection)
+            except Exception as exc:
+                print(f"map → {w.name}: {exc}")
+                return
+            print(f"{w.name}: added {selection.entry_label} ({selection.name}; {len(w.entries)} entries).")
+            self._avg_windows.append(w)
+            self.fig.canvas.draw_idle()
+
+        picker.open(self.btn_map_exist.ax, selection, add_to)
+
+    # --- the figure composer ('add to plot' x 3, 'new plot') ---
+
+    def _composer(self):
+        if self.composer is None:
+            self.composer = FigureComposer(f"{self.grid.name}: figure")
+        return self.composer
+
+    def _on_add_to_plot(self, which):
+        """
+        'add to plot' under a panel: that panel as shown goes to the figure
+        composer (composer.FigureComposer).  'map': the shown slice with its
+        colour limits, gamma, the axes limits and its drift shift, at its
+        bias; 'topo': the embedded topo as drawn (the quads with their
+        shifts with a drift source on); 'spectra': every marker's spectrum
+        (Average off) or every group's average (Average on), each with the
+        marker's pixel centre or the group's centre, and the curve panel's
+        limits (the curve's own with stack on).
+        """
+        c = self._composer()
+        try:
+            if self.maps is None:
+                raise ValueError("no maps yet")
+            if which == 'map':
+                e = self.e_index
+                im = self._single_im
+                vmin, vmax = (im.norm.vmin, im.norm.vmax) if im is not None else (None, None)
+                c.add_map(self.maps[e], self.extent, [*self.ax_map.get_xlim(), *self.ax_map.get_ylim()],
+                          vmin, vmax, self.gammas[e], self.cmap, self.V[e], shift=self._frame_shift(e))
+            elif which == 'topo':
+                if not self.has_topo:
+                    raise ValueError("no topography page in this file")
+                quads = self._topo_maps.get(id(self.ax_topo)) or []
+                if quads:
+                    layers = [(pm.img, pm.shift) for pm in quads]
+                else:
+                    layers = [(processed_topo(self.grid, self.direction, self.active_procs) * 1e9, None)]
+                c.add_topo(layers, self.extent, [*self.ax_topo.get_xlim(), *self.ax_topo.get_ylim()])
+            else:
+                markers, groups = self._curve_items(self.maps)
+                xlim = self.ax_curve.get_xlim()
+                q = self._quantity().split(',')[0]
+
+                def lim_of(curve):
+                    if self.stack_on and self.avg_on:
+                        ok = np.isfinite(curve)
+                        return (float(np.min(curve[ok])), float(np.max(curve[ok]))) if ok.any() else (0.0, 1.0)
+                    return self.ax_curve.get_ylim()
+
+                if self.avg_on:
+                    for g, item in enumerate(groups):
+                        if not item['members']:
+                            continue
+                        c.add_spectrum(self.V, item['average'], xlim, lim_of(item['average']),
+                                       self.group_center_xy(item['members'], g), q)
+                else:
+                    for i, item in enumerate(markers):
+                        c.add_spectrum(self.V, item['curve'], xlim, lim_of(item['curve']),
+                                       self.pixel_xy(self.marker_px[i]), q)
+        except Exception as exc:
+            print(f"add to plot: {exc}")
+
+    def _on_new_plot(self):
+        """'new plot': the composer's list emptied (the figure, if open, shows nothing)."""
+        if self.composer is not None:
+            self.composer.clear()
 
     # --- send to fit ---
 

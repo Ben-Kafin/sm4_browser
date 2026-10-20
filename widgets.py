@@ -98,6 +98,10 @@ SPECS = {
     'edit alignment': _spec('button', 1.3, 0.36),
     'line → new avg': _spec('button', 1.35, 0.24, fs=7),            # the Line window: this line starts a line average
     'line → existing avg': _spec('button', 1.35, 0.24, fs=7),       # ... or joins an open one (the pop-up list)
+    'map → new avg': _spec('button', 1.35, 0.24, fs=7),             # the Map window: the whole map starts an average
+    'map → existing avg': _spec('button', 1.35, 0.24, fs=7),        # ... or joins an open one (the pop-up list)
+    'add to plot': _spec('button', 0.8, 0.24, fs=7),                # the Map window: the panel above goes to the figure composer
+    'new plot': _spec('button', 0.8, 0.24, fs=7),                   # the Map window: the figure composer's list emptied
     'apply': _spec('button', 0.9, 0.36),
     'auto': _spec('button', 0.9, 0.36),
     'close': _spec('button', 0.9, 0.36),

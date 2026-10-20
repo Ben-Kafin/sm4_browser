@@ -598,6 +598,61 @@ def _map_drift(b, exp):
     plt.close(m.fig)
 
 
+@check("G3 Map window: the whole map into an average; the figure composer (order, symbols, arrows, delete, new plot)")
+def _map_composer(b, exp):
+    m = open_map(b)
+    # the whole map as one entry: every acquired pixel one sweep
+    sel = m.map_selection()
+    n = m.n_lines * m.n_fast
+    assert sel is not None and len(sel.cols) == int(np.sum(np.asarray(m.grid.acquired, dtype=bool)[:n]))
+    assert sel.where.get('map') and len(sel.where['positions']) == len(sel.cols)
+    k0 = len(m._avg_windows)
+    m._on_map_new()
+    assert len(m._avg_windows) == k0 + 1, "map → new avg should open an averaging window"
+    w = m._avg_windows[-1]
+    assert w.has(sel) and len(w.entries) == 1
+    # the composer: a map, the topo, another map at a lower energy, the spectra
+    m._on_add_to_plot('map')
+    m._on_add_to_plot('topo')
+    e0 = m.e_index
+    m.step(-1)
+    assert m.e_index != e0
+    m._on_add_to_plot('map')
+    m._on_add_to_plot('spectra')
+    c = m.composer
+    assert c is not None and c.is_open()
+    kinds = [it['kind'] for it in c.ordered()]
+    n_sp = len(m.marker_px)
+    assert kinds == ['topo', 'map', 'map'] + ['spectrum'] * n_sp, kinds
+    biases = [it['bias'] for it in c.ordered() if it['kind'] == 'map']
+    assert biases == sorted(biases) and np.isclose(biases[0], m.V[m.e_index]) and np.isclose(biases[1], m.V[e0])
+    assert len(c.panels) == len(kinds)
+    for ax, it, info in c.panels:
+        if it['kind'] in ('map', 'topo'):
+            assert info['symbols'] == n_sp
+        else:
+            assert info['arrows'] == 2
+    # the map item carries the shown slice and its colour limits; the spectra their positions
+    it_map = [it for it in c.ordered() if it['kind'] == 'map'][1]
+    assert np.allclose(it_map['img'], m.maps[e0], equal_nan=True) and it_map['vmin'] is not None
+    pos = [it['position'] for it in c.ordered() if it['kind'] == 'spectrum']
+    assert np.allclose(pos, [m.pixel_xy(px) for px in m.marker_px])
+    # Delete over the topo panel removes it; 'new plot' empties the list
+    class _E:
+        pass
+    ev = _E()
+    ev.key, ev.inaxes = 'delete', c.panels[0][0]
+    c._on_key(ev)
+    assert [it['kind'] for it in c.ordered()] == ['map', 'map'] + ['spectrum'] * n_sp
+    m._on_new_plot()
+    assert c.items == [] and c.panels == [] and c.is_open()
+    m._on_add_to_plot('map')
+    assert len(c.panels) == 1
+    plt.close(c.fig)
+    plt.close(w.fig)
+    plt.close(m.fig)
+
+
 def widgets_text(lo, hi):
     from sm4_Browser.widgets import RangeBox
     return RangeBox.text_of((lo, hi))

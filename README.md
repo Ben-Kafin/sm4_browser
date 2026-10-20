@@ -198,6 +198,17 @@ fits still use only finished sweeps, as before.
   (nothing clipped; the chosen pass, or both with `average`, the reverse under the forward); the frame widens
   to hold every shifted pixel and stays put while stepping the energy; the grid view carries the topo in its
   first cell; the companion uses the same bounds.
+* **Map → new avg / map → existing avg** (Map window): the whole map, every acquired pixel's spectrum as one
+  sweep of one entry, starts an averaging window or joins an open one, beside the per-group "add new" /
+  "add existing" the Map already had.
+* **Figure composer** (`composer.py`; Map window): "add to plot" under the topo, the map and the curve panel
+  copies that panel as shown (a map at its bias with its colour limits, gamma, zoom and drift shift; the topo
+  as drawn; every marker's spectrum, or every group's average, with its position) into one figure, four
+  square panels wide: the topo first, then the maps in order of energy titled by bias, then the spectra. Every
+  spectrum gets its own symbol (+ x * . ^ v > < o s d p h) drawn on every map at its position; every spectrum
+  panel gets a down arrow at each collected map's bias and is titled "dI/dV at '+'"; maps carry a 1 nm scale
+  bar and no ticks. Delete over a panel removes it; "new plot" empties the figure. Save on its toolbar gives
+  the usual exports.
 * **E range / x range** boxes (Line window, top row): "lo, hi" sets the shown energy range (V) and the
   shown position range (Å); a blank box is the full range. The energy range is also the normalization
   range (with normalize on, every spectrum has unit area over the shown range, nothing else) and the
