@@ -179,10 +179,12 @@ fits still use only finished sweeps, as before.
   pair: an applied manual velocity, else the auto velocity of the pair, else the extrapolated auto
   velocity. Markers placed after **apply velocity** use the new one. Each click adds a pair (up to 8);
   the Markers slider follows and can go to 0.
-* **The other topo's frame.** Each panel carries the recorded frame of the other topo of the pair, a thin
-  black outline named with its file, drawn last so it lies on top of the topo, the markers and the arrows.
-  It is the recorded position, angle and size, with no drift correction: the drift is measured from the
-  uncorrected topos, and the outline shows at once how far the two scans overlap.
+* **The other topo's frame.** Each panel is titled with the name of the file it draws and carries the
+  recorded frame of the other topo of the pair, a thin black outline drawn last so it lies on top of the
+  topo, the markers and the arrows. It is the recorded position, angle and size, with no drift
+  correction: the drift is measured from the uncorrected topos, and the outline shows at once how far the
+  two scans overlap. Both panels show one view, the two frames together centred, with the same limits and
+  the same box shape, so neither image is centred on its own.
 
 ### Stripe matching
 * **The stripe window** (`stripe.py`): the browser's and the Topo window's **stripe match** button opens it

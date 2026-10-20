@@ -360,9 +360,11 @@ windows' 'drift window' button for theirs.  The window shows the pair the
 file's auto velocity comes from, side by side at absolute positions: for a
 spectra file the last topo of its segment before it and the first after it
 (never the file's own topo); for a topo file itself and the next topo of
-its segment, else the previous topo and itself; each panel also shows the
-other topo's recorded frame as a thin black outline on top of everything,
-named with its file, so the pair's overlap is seen at once.  A click in a panel places
+its segment, else the previous topo and itself; each panel is titled with
+the name of the file it draws and also shows the other topo's recorded
+frame as a thin black outline on top of everything, both panels on one
+view centred on the two frames together, so the pair's overlap is seen at
+once.  A click in a panel places
 a numbered marker on that topo (draggable, the pixel's acquisition time
 re-read at the new place); the k-th marker on the earlier topo pairs with
 the k-th on the later one; 'Markers' (1 to 8) is the number of pairs, pair

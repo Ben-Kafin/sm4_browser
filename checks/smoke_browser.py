@@ -814,7 +814,7 @@ def _drift_step(b, exp):
     plt.close(w.fig)
 
 
-@check("G7 drift window: the other topo's recorded frame on each panel, named, on top of everything; it follows the step")
+@check("G7 drift window: the other topo's recorded frame on each panel, on top of everything; the titles; one centred view; the step")
 def _drift_outline(b, exp):
     goto_kind(b, 'grid')
     b._on_drift_window()
@@ -822,19 +822,34 @@ def _drift_outline(b, exp):
     k = 1e9 / w.scalefactor
 
     def check_frames():
+        plt._app().processEvents()                          # the deferred placement of the boxes runs
         for ax, own, other in ((w.ax_a, w.a, w.b), (w.ax_b, w.b, w.a)):
             arts = w._outlines[ax]
-            line, label = arts[0], arts[1]
+            assert len(arts) == 1, "the outline carries no text"
+            line = arts[0]
             x, y = line.get_data()
             c = other.corners_m() * k
             assert np.allclose(np.column_stack([x, y]), np.vstack([c, c[:1]])), (own.name, other.name)
             assert line.get_zorder() > max(a.get_zorder() for a in ax.lines if a is not line), own.name
             assert line.get_zorder() > max(a.get_zorder() for a in ax.images), own.name
-            assert label.text.get_text() == other.name
             assert not np.allclose(c, own.corners_m() * k), "the frame must be the other topo's, not this panel's"
             for art in w.markers._arts:                     # markers and arrows drawn later still sit below it
                 if getattr(art, 'axes', None) is ax:
                     assert art.get_zorder() < line.get_zorder(), own.name
+            assert ax.get_title() == own.name, (ax.get_title(), own.name)
+        # one view on both panels: the same limits, the same box, the two frames together centred
+        allc = np.vstack([w.a.corners_m() * k, w.b.corners_m() * k])
+        (xa0, xa1), (ya0, ya1) = w.ax_a.get_xlim(), w.ax_a.get_ylim()
+        (xb0, xb1), (yb0, yb1) = w.ax_b.get_xlim(), w.ax_b.get_ylim()
+        assert np.allclose([xa0, xa1, ya0, ya1], [xb0, xb1, yb0, yb1]), ((xa0, xa1, ya0, ya1), (xb0, xb1, yb0, yb1))
+        ga, gb = w.ax_a.vb.geometry(), w.ax_b.vb.geometry()
+        ra, rb = (ga.width(), ga.height()), (gb.width(), gb.height())
+        assert abs(ra[0] - rb[0]) < 1.0 and abs(ra[1] - rb[1]) < 1.0, (ra, rb)
+        cx, cy = 0.5 * (allc[:, 0].min() + allc[:, 0].max()), 0.5 * (allc[:, 1].min() + allc[:, 1].max())
+        tol = 1e-6 * max(xa1 - xa0, ya1 - ya0)
+        assert abs(0.5 * (xa0 + xa1) - cx) < tol and abs(0.5 * (ya0 + ya1) - cy) < tol, "the two frames are not centred"
+        assert xa0 < allc[:, 0].min() and xa1 > allc[:, 0].max() and ya0 < allc[:, 1].min() and ya1 > allc[:, 1].max()
+        assert abs((xa1 - xa0) / (ya1 - ya0) - ra[0] / ra[1]) < 0.02, "the view is not at equal aspect in the box"
 
     check_frames()
     # a marker pair placed after the frames (a click on the earlier topo seeds its partner on the later)

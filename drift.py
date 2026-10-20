@@ -3194,14 +3194,17 @@ class DriftWindow:
     Line and Map windows' 'drift window' button): the pair its auto velocity
     comes from (Drift.window_pair: a spectra file's before and after topos,
     never its own; a topo and the next of its segment, else the previous
-    and it), side by side at absolute positions (nm after the scale factor)
-    with the same limits, through the caller's topo processors, a spectra
-    file's recorded positions on both, and on each panel the recorded
-    frame of the other topo of the pair (its centre, angle and extent as
-    recorded, no drift correction: the drift is measured from the
-    uncorrected topos), a thin black outline named with its file, drawn
-    last so it lies on top of the topo, the markers and the arrows
-    (plots.draw_topo_outline).  Clicks place numbered markers
+    and it), side by side at absolute positions (nm after the scale factor),
+    each panel titled with the name of the file it draws, through the
+    caller's topo processors, a spectra file's recorded positions on both,
+    and on each panel the recorded frame of the other topo of the pair (its
+    centre, angle and extent as recorded, no drift correction: the drift is
+    measured from the uncorrected topos), a thin black outline drawn last
+    so it lies on top of the topo, the markers and the arrows
+    (plots.draw_topo_outline).  Both panels show one view: the outline of
+    the two frames together centred, the same limits and the same box
+    shape on both, so neither image is centred on its own.  Clicks place
+    numbered markers
     (widgets.PairMarkers: the k-th on the left pairs with the k-th on the
     right, pair k in its own colour; a press on a marker drags it); with
     a click on either topo places the partner on the other at once where the
@@ -3297,7 +3300,7 @@ class DriftWindow:
         plt.show()
 
     def _draw_pair(self):
-        """Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at absolute positions, the file's spectra on both, the other topo's recorded frame on top, the same limits."""
+        """Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at absolute positions, titled with its file, the file's spectra on both, the other topo's recorded frame on top, one view centred on both frames."""
         from sm4_Browser import plots
         from sm4_Browser import topo as topo_mod
         f, k = self.f, self.k
@@ -3312,21 +3315,28 @@ class DriftWindow:
                 xy = np.asarray(f.spec_xy_m, dtype=np.float64) * k
                 acq = np.asarray(f.acquired, dtype=bool)[:len(xy)] if f.kind == 'grid' else np.ones(len(xy), dtype=bool)
                 ax.plot(xy[acq, 0], xy[acq, 1], ls='none', marker='o', ms=2.5, color='cyan', mec='black', mew=0.3)
-            mark = "  (this file)" if t is f or t.path == f.path else ""
-            ax.set_title(f"{label.capitalize()} topography: {t.name}{mark}  [forward]  "
-                         f"{datetime.fromtimestamp(t.start_time).strftime('%m-%d %H:%M:%S')}", fontsize=8)
+            # The title above the panel is the name of the file drawn in it; the rest of the line
+            # (earlier or later, the pass, the start time, whether it is the window's file) goes to
+            # the window's info panel (qtplot.short_title).
+            mark = ", this file" if t is f or t.path == f.path else ""
+            ax.set_title(f"{t.name}: {label} topography, forward pass, "
+                         f"{datetime.fromtimestamp(t.start_time).strftime('%m-%d %H:%M:%S')}{mark}", fontsize=8)
             ax.set_xlabel("x (nm, absolute)")
             ax.set_ylabel("y (nm, absolute)")
             ax.ticklabel_format(useOffset=False, style='plain')
             ax.set_aspect('equal', adjustable='box')
             # The other topo of the pair as its recorded frame, drawn last: a thin black outline on
             # top of everything on the panel (the markers and arrows drawn later sit below its zorder).
-            self._outlines[ax] = plots.draw_topo_outline(ax, other, self.scalefactor, name=other.name)
+            self._outlines[ax] = plots.draw_topo_outline(ax, other, self.scalefactor)
+        # One view on both panels: the outline of the two frames together, centred, with a margin.
+        # The limits are set on each axes (not only on the one the other shares), so that each
+        # panel's box is shrunk to the equal aspect the same way and neither image sits off-centre.
         allc = np.vstack(corners)
         mx = 0.05 * max(np.ptp(allc[:, 0]), 1e-9)
         my = 0.05 * max(np.ptp(allc[:, 1]), 1e-9)
-        self.ax_a.set_xlim(allc[:, 0].min() - mx, allc[:, 0].max() + mx)
-        self.ax_a.set_ylim(allc[:, 1].min() - my, allc[:, 1].max() + my)
+        for ax in (self.ax_a, self.ax_b):
+            ax.set_xlim(allc[:, 0].min() - mx, allc[:, 0].max() + mx)
+            ax.set_ylim(allc[:, 1].min() - my, allc[:, 1].max() + my)
 
     def _write_help(self):
         """The help line under the panels, for the pair shown (its seeding velocity)."""

@@ -683,30 +683,21 @@ def draw_section_line(ax, p0, p1):
     return [line, h0, h1]
 
 
-def draw_topo_outline(ax, sm4, scalefactor, name=None, zorder=6.0):
+def draw_topo_outline(ax, sm4, scalefactor, zorder=6.0):
     """
     The recorded frame of a topography (Sm4File) on an axes of absolute
     positions (nm after the scale factor): the closed polygon through its
     four corners (Sm4File.corners_m: the recorded centre, angle and extent,
-    no drift correction) as a solid thin line in PARTNER_FRAME_COLOR, with
-    `name` written inside the frame at its first corner (the scan origin;
-    the text is offset towards the frame's centre, whichever way the frame
-    is turned).  The drift window draws it last on each panel, for the
-    other topo of the pair, so the zorder is above the topo image, the
-    spectra positions, the markers (4.2, 4.3) and the arrows (4.15).
-    Returns the artists.
+    no drift correction) as a solid thin line in PARTNER_FRAME_COLOR, no
+    text.  The drift window draws it last on each panel, for the other
+    topo of the pair, so the zorder is above the topo image, the spectra
+    positions, the markers (4.2, 4.3) and the arrows (4.15).  Returns the
+    artists.
     """
     c = np.asarray(sm4.corners_m(), dtype=np.float64) * (1e9 / scalefactor)
     closed = np.vstack([c, c[:1]])
     line, = ax.plot(closed[:, 0], closed[:, 1], ls='-', lw=0.8, color=PARTNER_FRAME_COLOR, zorder=zorder)
-    arts = [line]
-    if name:
-        inward = c.mean(axis=0) - c[0]                    # from the first corner towards the frame's centre
-        dx, dy = (3 if inward[0] >= 0 else -3), (3 if inward[1] >= 0 else -3)
-        arts.append(ax.annotate(str(name), xy=(c[0, 0], c[0, 1]), xytext=(dx, dy), textcoords='offset points',
-                                ha='left' if dx > 0 else 'right', va='bottom' if dy > 0 else 'top',
-                                color=PARTNER_FRAME_COLOR, fontsize=7, zorder=zorder + 0.1))
-    return arts
+    return [line]
 
 
 def draw_drift_markers(ax, markers, pairs):
