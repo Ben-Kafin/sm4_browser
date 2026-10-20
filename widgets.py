@@ -70,7 +70,7 @@ SPECS = {
     'broadened': _spec('check', 1.35, 0.30),
     'auto drift': _spec('check', 1.1, 0.38),                      # the tracker's drift (KAZE pairs)
     'manual drift': _spec('check', 1.25, 0.38),                   # the marker / typed drift (the MATLAB method)
-    'stripe match': _spec('check', 1.2, 0.38),                    # grids: the lines' stripe matching on top of the velocity
+    'stripe match': _spec('button', 1.2, 0.36),                   # grids: opens the stripe window (stripe.StripeWindow)
     'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift)
     'cmap norm': _spec('check', 1.4, 0.38),
     'crop': _spec('check', 0.8, 0.38),
@@ -85,6 +85,9 @@ SPECS = {
     'topo pass': _spec('radio', 1.05, 0.85, fs=8, labels=list(TOPO_DIRECTIONS)),      # topo.TOPO_DIRECTIONS
     'site': _spec('radio', 1.3, 0.85, fs=8, labels=['pulsing', 'clean', 'experiment']),
     'cal method': _spec('radio', 1.35, 0.55, fs=8, labels=['fitted stretch', '1/V_mod']),   # calibration_stretch_vmod's if-main
+    'slow axis': _spec('radio', 1.0, 0.85, fs=8, labels=['off', 'auto', 'manual']),       # the stripe window: the velocity source
+    'fast axis': _spec('radio', 1.0, 0.85, fs=8, labels=['off', 'auto', 'manual']),       # ... and the placement along the line
+    'stripe pass': _spec('radio', 1.0, 0.6, fs=8, labels=['forward', 'reverse']),        # ... the pass drawn on top
     # --- buttons ---
     'run': _spec('button', 1.2, 0.36),
     'clear': _spec('button', 1.2, 0.36),
@@ -110,6 +113,7 @@ SPECS = {
     'section line': _spec('button', 1.1, 0.36),                   # the browser: the draggable cross-section line
     'cross section': _spec('button', 1.1, 0.36),                  # ... and its profile window
     'clear markers': _spec('button', 1.2, 0.36),                  # the manual-drift markers removed
+    'clear points': _spec('button', 1.1, 0.36),                   # the stripe window: the dragged points dropped
     'set from markers': _spec('button', 1.4, 0.36, fs=7),         # the drift window's velocity box filled from the marker draft (nothing stored)
     'apply velocity': _spec('button', 1.2, 0.36),                 # the drift window's velocity box stored as the pair's span (confirmed, adjusted, or typed)
     'drift': _spec('button', 0.8, 0.36),                          # the browser: the current file's manual drift window

@@ -811,7 +811,7 @@ def _pixel_quads(path, half_width):
     return np.stack([starts + normal, ends + normal, ends - normal, starts - normal], axis=1)
 
 
-def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None):
+def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None, top='forward'):
     """
     The grid's own topo stripes drawn on the scan area with every pixel at
     its own position: fwd and rev are the processed forward and reverse
@@ -826,8 +826,10 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None):
     along the row when None).  Each pass is coloured on its own scale (its
     own min to max, as the topo images are drawn; the reverse rows span a
     smaller height range than the forward rows, so one shared scale would
-    leave them black).  The reverse band is drawn under the forward band.
-    Nothing is drawn when fwd is None.
+    leave them black).  `top` names the pass drawn on top of the other
+    ('forward': the reverse band under the forward one; 'reverse': the
+    other way round), the browser's, the Topo window's and the stripe
+    window's pass radio.  Nothing is drawn when fwd is None.
     """
     if fwd is None or pos_f is None:
         return
@@ -868,10 +870,10 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None):
             quads_r, colors_r = band(np.asarray(rev, dtype=np.float64), np.asarray(pos_r, dtype=np.float64), norm_r)
             if quads_r:
                 ax.add_collection(PolyCollection(np.array(quads_r), facecolors=colors_r, edgecolors='none',
-                                                 zorder=1.4, antialiased=False))
+                                                 zorder=1.5 if top == 'reverse' else 1.4, antialiased=False))
     if quads_f:
         ax.add_collection(PolyCollection(np.array(quads_f), facecolors=colors_f, edgecolors='none',
-                                         zorder=1.5, antialiased=False))
+                                         zorder=1.4 if top == 'reverse' else 1.5, antialiased=False))
 
 
 if __name__ == '__main__':

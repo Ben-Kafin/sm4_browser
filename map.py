@@ -350,11 +350,12 @@ class Map:
         computed once per toggle state; None with both toggles off or when
         no correction can be made (the console says why).
         """
-        if not self._drift_active():
+        stripe = self.drift is not None and self.drift.fast_state(self.grid, None, self.auto_on, self.manual_on) != 'off'
+        if not (self._drift_active() or stripe):
             return None
         if self._drift_res is None:
             try:
-                res = self.drift.result(self.grid, None, False, self.auto_on, self.manual_on)
+                res = self.drift.result(self.grid, None, None, self.auto_on, self.manual_on)
             except Exception as exc:
                 print(f"Map window: drift correction not available ({exc}); pixels unshifted.")
                 res = None
@@ -452,11 +453,12 @@ class Map:
         """
         The embedded topo into `ax` (the single view's topo panel; the grid
         view's topo cell with small=True): with a drift source on, the
-        chosen pass's pixels as quads at their chained positions
-        (plots.PixelMap: nothing is clipped, a pixel no spectrum places is
-        not drawn; 'average' both passes, the reverse under the forward,
-        each at its own positions); off, the chosen pass at the recorded
-        pixels (plots.draw_topo_frame).  The limits are _frame_limits'.
+        two passes as quads at their chained positions (plots.PixelMap:
+        nothing is clipped, a pixel no spectrum places is not drawn), the
+        pass the 'topo pass' radio names on top ('average' counts as
+        forward: a grid's passes are never averaged); off, the chosen pass
+        at the recorded pixels (plots.draw_topo_frame).  The limits are
+        _frame_limits'.
         """
         for pm in self._topo_maps.pop(id(ax), []):
             try:
@@ -470,9 +472,10 @@ class Map:
             ax.text(0.5, 0.5, "no topography page in this file", ha='center', va='center',
                     transform=ax.transAxes, fontsize=fs)
             return
-        corrected = self._drift_active() and self._topo_shift('forward') is not None
+        corrected = self._topo_shift('forward') is not None
         if corrected:
-            passes = [self.direction] if self.direction in ('forward', 'reverse') else ['reverse', 'forward']
+            top = 'reverse' if self.direction == 'reverse' else 'forward'
+            passes = ['forward', 'reverse'] if top == 'reverse' else ['reverse', 'forward']    # the last drawn on top
             maps = []
             for p in passes:
                 if p == 'reverse' and len(g.topo_pages) < 2:
@@ -484,15 +487,16 @@ class Map:
                     continue
                 img = np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan)
                 maps.append(plots.PixelMap(ax, img, self.extent, TOPO_CMAP, shift=sh,
-                                           zorder=1.0 if p == 'forward' else 0.5))
+                                           zorder=1.0 if p == top else 0.5))
             self._topo_maps[id(ax)] = maps
             ax.set_aspect('equal', adjustable='box')
-            what = ("both passes" if len(maps) > 1 else passes[-1]) + ", drift corrected" \
+            what = (f"both passes, {top} on top" if len(maps) > 1 else passes[-1]) + ", drift corrected" \
                 + (f" ({self._drift_source})" if self._drift_source else "")
         else:
-            img = processed_topo(g, self.direction, self.active_procs) * 1e9
+            direction = 'reverse' if self.direction == 'reverse' else 'forward'      # a grid's passes are never averaged
+            img = processed_topo(g, direction, self.active_procs) * 1e9
             plots.draw_topo_frame(ax, g, img, self.scalefactor, cmap=TOPO_CMAP)
-            what = self.direction
+            what = direction
         self._frame_limits(ax)
         if small:
             ax.set_title("Topo", fontsize=fs)
@@ -521,7 +525,7 @@ class Map:
 
     def _frame_lines_compute(self):
         try:
-            L = self.drift.sweep_lines(self.grid, None, False, self.auto_on, self.manual_on)
+            L = self.drift.sweep_lines(self.grid, None, None, self.auto_on, self.manual_on)
         except Exception as exc:
             print(f"Map window: drift lines not available ({exc}).")
             return None

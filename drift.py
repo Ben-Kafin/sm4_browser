@@ -203,9 +203,11 @@ consecutive topos; only pairs within a segment are tracked, and a file's
 before and after topos are looked up within its segment (sites.py groups
 its regions by the same segments through seg_first).
 
-The stripe matching (drift_correct_grid), the 'stripe match' sub-toggle of
-the drift toggles on grid files (off by default): with it on, a grid's fast-axis
-placement comes from matching the lines' own topo stripes against the
+The stripe matching (drift_correct_grid; the stripe window, stripe.py, sets
+a grid's fast-axis state per slow-axis setting, Drift.stripe_sets: off, the
+velocity alone; auto, the matching; manual, the matching with hand-moved
+line ends and return points, Drift.stripe_points): with it on, a grid's
+fast-axis placement comes from matching the lines' own topo stripes against the
 earlier topo (the most recent one before the file whose footprint holds the
 first spectrum): the lines placed by their extrema (maxima on maxima,
 minima on minima) against the topo's profile along each line; the stretch
@@ -219,7 +221,10 @@ stays the baseline v, and the within-sweep shift along the line of a line
 with a measured forward factor is that line's own forward compression v_i =
 (1 - b_f) L_f / T_f (Drift.line_velocities), the baseline across it.  The
 stripe matching informs nothing: it never changes v.  Off, both axes come
-from the baseline.
+from the baseline.  A manual point replaces a line's forward end (its
+forward factor follows) or its return point (its reverse pass stretches,
+the next line's start moves with it), and no other point moves
+(drift_correct_grid's `points`).
 
 Locations.  Spectra sit at their recorded locations and topo pixels at the
 locations their page's geometry records (Sm4File.pixel_xy_m); a spectrum's
@@ -267,7 +272,7 @@ DRIFT_PARAMS = {
     #                            above this is a long-range move (a segment boundary)
     'extrapolate_tol': 0.5,    # a file without a usable after topo takes the last tracked pair's velocity when that is
     #                            within this fraction of the larger magnitude of the two last velocities
-    # --- the stripe matching of grid lines (the 'stripe match' sub-toggle; drift_correct_grid) ---
+    # --- the stripe matching of grid lines (the stripe window; drift_correct_grid) ---
     'sg_window': 5,            # Savitzky-Golay window (points) before peak finding
     'sg_poly': 2,              # Savitzky-Golay polynomial order
     'prominence_frac': 0.20,   # peak prominence threshold as a fraction of the profile range
@@ -767,7 +772,7 @@ class DriftCache:
 
 
 # ---------------------------------------------------------------------- #
-#  The stripe matching of grid lines (the 'stripe match' sub-toggle)      #
+#  The stripe matching of grid lines (the stripe window, stripe.py)       #
 # ---------------------------------------------------------------------- #
 #
 # One optional correction of a grid file's spectrum positions along the fast
@@ -1888,8 +1893,9 @@ class Drift:
       loader     : loader(path) -> Sm4File, the Browser's _load
     result(f, loaded, stripe) takes the Browser's loaded set for the
     duration of the call, so files the Browser holds are not loaded again;
-    `stripe` is the state of the 'stripe match' sub-toggle (grid files
-    only; ignored for a point).
+    `stripe` is the fast-axis placement asked for a grid (None: the grid's
+    stored state for the setting in force; True / 'auto', 'manual', False /
+    'off'; ignored for a point).
     """
 
     LRU = 3               # topos kept loaded during a build

@@ -235,14 +235,15 @@ def grid_stripe_layers(grid, direction, active, pix=None):
     the drift's corrected positions (`pix` = Drift result 'pix').
     `direction` is the 'topo pass' choice for the grid's topo, which
     applies with `pix` None (the drift off): 'forward' or 'reverse' gives
-    that pass alone, 'average' the two passes range-matched and averaged
-    pixelwise (processed_topo) at the forward positions.  With `pix` given
+    that pass alone ('average' counts as forward: the two passes of a grid
+    are never averaged, averaging is for topo images).  With `pix` given
     (the drift on) both passes are always returned at their own corrected
-    positions (the reverse band under the forward one: the forward pass by
-    its points' times, the reverse rigid at the forward end, see
-    drift.Drift.grid_chain), whatever `direction` says.  Returns (main
-    image, second image or None, main positions, second positions or
-    None); (None, None, None, None) without topo pages.
+    positions (the forward pass by its points' times, the reverse rigid at
+    the forward end, see drift.Drift.grid_chain), whatever `direction`
+    says; the caller draws the pass of its choice on top
+    (plots.draw_grid_stripes).  Returns (main image, second image or None,
+    main positions, second positions or None); (None, None, None, None)
+    without topo pages.
     """
     if not grid.topo_pages:
         return None, None, None, None
@@ -265,8 +266,6 @@ def grid_stripe_layers(grid, direction, active, pix=None):
         pos_r = grid.pixel_xy_m('reverse') if two else None
     if direction == 'reverse' and two and pos_r is not None:
         return process_topo(grid.topo_raw('reverse'), active), None, pos_r, None
-    if direction == 'average' and two and pos_r is not None:
-        return processed_topo(grid, 'average', active), None, pos_f, None
     return process_topo(grid.topo_raw('forward'), active), None, pos_f, None
 
 
@@ -287,23 +286,26 @@ class TopoWindow:
     pass' radio: with both drift toggles off forward, reverse, or the
     average of the two at the recorded positions; with a source on the
     chosen pass at its corrected positions, 'average' showing both passes
-    at theirs.  'stripe match' (grid files) is the sub-toggle of the drift
-    toggles; the browser's 'anchor to topo' state is taken at opening (no
-    toggle of its own here).  Its colour bar carries the height scale (nm).
+    at theirs, the pass the radio names drawn on top.  'stripe match'
+    (grid files) opens the stripe window (stripe.StripeWindow); the grid's
+    stored fast-axis state for the setting in force places the lines
+    (Drift.result with stripe None); the browser's 'anchor to topo' state
+    is taken at opening (no toggle of its own here).  Its colour bar
+    carries the height scale (nm).
       topo        : the topography (Sm4File)
       spec        : the spectra file drawn on it (Sm4File of kind 'point', 'grid',
                     or 'phase'), or None
       drift       : the directory's Drift, or None (no correction possible)
-      auto_on, manual_on, stripe_on : the toggles' starting states
+      auto_on, manual_on : the toggles' starting states
       anchor_on   : the state taken from the browser
-      spec_dir    : the grid's topo pass at opening ('forward', 'reverse', 'average')
+      spec_dir    : the grid's topo pass at opening ('forward' or 'reverse')
       marker_xy_m : (kept for callers without `spec`) positions (n, 2) drawn as
                     a point's sweeps
     """
 
     def __init__(self, topo, active_procs, scalefactor, marker_xy_m=None, title=None, direction='forward',
-                 spec=None, drift=None, auto_on=False, manual_on=False, stripe_on=False, anchor_on=False,
-                 spec_dir='forward'):
+                 spec=None, drift=None, auto_on=False, manual_on=False, anchor_on=False,
+                 spec_dir='forward', stripe_on=None):
         from sm4_Browser import widgets
         self.topo = topo
         self.active = list(active_procs)
@@ -315,9 +317,9 @@ class TopoWindow:
         self.drift = drift
         self.auto_on = bool(auto_on and drift is not None)
         self.manual_on = bool(manual_on and drift is not None)
-        self.stripe_on = bool(stripe_on)
         self.anchor_on = bool(anchor_on)
-        self.spec_dir = spec_dir if spec_dir in TOPO_DIRECTIONS else 'forward'
+        self.spec_dir = spec_dir if spec_dir in ('forward', 'reverse') else 'forward'
+        self.stripe_window = None
         self.fig, self.ax = plt.subplots(figsize=(7.5, 7.4))
         self.fig.subplots_adjust(bottom=0.17)
         self.cbar = None
@@ -325,10 +327,10 @@ class TopoWindow:
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
         self.chk_manual = widgets.make(self.fig, 'manual drift', 0.18, 0.015, value=self.manual_on)
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.chk_stripe = widgets.make(self.fig, 'stripe match', 0.36, 0.015, value=self.stripe_on)
-        self.chk_stripe.on_change(lambda flag: self._on_drift_toggle('stripe', flag))
+        self.btn_stripe = widgets.make(self.fig, 'stripe match', 0.36, 0.015)
+        self.btn_stripe.on_change(self._on_stripe_window)
         is_grid = spec is not None and spec.kind == 'grid' and bool(spec.topo_pages)
-        self.chk_stripe.show(is_grid)
+        self.btn_stripe.show(is_grid and drift is not None)
         # The grid's own topo pass (the 'topo pass' radio of the scan area, for the grid's topo).
         self.txt_dir = self.fig.text(0.80, 0.135, 'line/map topo', fontsize=8, ha='left', va='bottom', visible=is_grid)
         self.rad_dir = widgets.make(self.fig, 'topo pass', 0.80, 0.015, value=self.spec_dir)
@@ -369,14 +371,15 @@ class TopoWindow:
         if f is not None and f.kind in ('point', 'grid', 'phase') and len(f.spec_xy_m):
             xy = f.spec_xy_m
             lines = None
-            stripe = self.stripe_on and f.kind == 'grid'
+            stripe = (f.kind == 'grid' and self.drift is not None
+                      and self.drift.fast_state(f, None, self.auto_on, self.manual_on) != 'off')
             if (self._drift_active() or stripe) and f.kind != 'phase':
-                # Stripe matching runs with drift none as well (the lines placed along the fast axis).
-                d = self.drift.result(f, None, self.stripe_on, self.auto_on, self.manual_on, self.anchor_on)
+                # The grid's stored fast-axis state places the lines, with drift none as well.
+                d = self.drift.result(f, None, None, self.auto_on, self.manual_on, self.anchor_on)
                 if d is not None:
                     xy = np.where(np.isfinite(d['xy_corr']), d['xy_corr'], f.spec_xy_m)
                     # Every sweep's drift line through its sweep (Drift.sweep_lines), in the frame.
-                    L = self.drift.sweep_lines(f, None, self.stripe_on, self.auto_on, self.manual_on, self.anchor_on)
+                    L = self.drift.sweep_lines(f, None, None, self.auto_on, self.manual_on, self.anchor_on)
                     if L is None:
                         L = np.stack([d['xy_corr'], d['xy_end']], axis=1)
                     lines = (self.topo.to_frame_m(L.reshape(-1, 2)) * k).reshape(L.shape)
@@ -396,7 +399,8 @@ class TopoWindow:
                             width = (float(np.linalg.norm(f.spec_xy_m[f.n_fast] - f.spec_xy_m[0])) * k
                                      if f.n_lines > 1 and len(f.spec_xy_m) > f.n_fast else None)
                             plots.draw_grid_stripes(ax, f, main, second, to_frame(pos_m),
-                                                    None if pos_s is None else to_frame(pos_s), width)
+                                                    None if pos_s is None else to_frame(pos_s), width,
+                                                    top=self.spec_dir)
                     except Exception as exc:
                         print(f"Topo window: the grid's topo pixels not drawn ({exc}).")
                 ax.plot(uv[acq, 0], uv[acq, 1], ls='none', marker='o', ms=2.5, color='cyan', mec='black', mew=0.3,
@@ -422,30 +426,41 @@ class TopoWindow:
         self.fig.canvas.draw_idle()
 
     def _on_drift_toggle(self, which, flag):
-        """
-        The window's 'auto drift' / 'manual drift' / 'stripe match' toggles:
-        the drift ones on only with a drift model at hand (else the toggle
-        goes back); 'stripe match' acts with or without a drift source (with none, the slow axis
-        stays as recorded and the stripes place the lines along the fast axis).
-        """
-        chk = {'auto': self.chk_auto, 'manual': self.chk_manual, 'stripe': self.chk_stripe}[which]
-        if flag and which != 'stripe' and self.drift is None:
+        """The window's 'auto drift' / 'manual drift' toggles: on only with a drift model at hand (else the toggle goes back)."""
+        chk = {'auto': self.chk_auto, 'manual': self.chk_manual}[which]
+        if flag and self.drift is None:
             print("Topo window: no drift model at hand; the toggle stays off.")
             chk.set(False)
             self.fig.canvas.draw_idle()
             return
         if which == 'auto':
             self.auto_on = bool(flag)
-        elif which == 'manual':
-            self.manual_on = bool(flag)
         else:
-            self.stripe_on = bool(flag)
+            self.manual_on = bool(flag)
         self.draw()
 
+    def _on_stripe_window(self):
+        """'stripe match': the grid's stripe window (stripe.StripeWindow), one at a time, opened at the setting in force here."""
+        f = self.spec
+        if self.drift is None or f is None or f.kind != 'grid' or not f.topo_pages:
+            print("Topo window: no grid with topo pages, or no drift model; no stripe window.")
+            return
+        w = self.stripe_window
+        if w is not None and w.is_open():
+            w.raise_()
+            return
+        from sm4_Browser.stripe import StripeWindow
+        try:
+            self.stripe_window = StripeWindow(self.drift, f, self.scalefactor, list(self.active),
+                                              setting=self.drift.slow_setting(f, self.auto_on, self.manual_on),
+                                              pass_top=self.spec_dir)
+        except ValueError as exc:
+            print(f"Topo window: stripe window not opened ({exc}).")
+
     def _on_spec_dir(self, label):
-        """The 'topo pass' radio: the grid's own topo pass."""
+        """The 'topo pass' radio: the grid's own topo pass drawn alone (drift off) or on top (drift on); 'average' counts as forward."""
         if label in TOPO_DIRECTIONS:
-            self.spec_dir = label
+            self.spec_dir = 'reverse' if label == 'reverse' else 'forward'
             self.draw()
 
 

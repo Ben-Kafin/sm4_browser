@@ -181,14 +181,38 @@ fits still use only finished sweeps, as before.
   the Markers slider follows and can go to 0.
 
 ### Stripe matching
-* Done **separately for each drift setting** (none, auto, manual). The slow axis only ever gets the
+* **The stripe window** (`stripe.py`): the browser's and the Topo window's **stripe match** button opens it
+  for the current grid. It shows the earlier topos under the grid, placed as the scan area places them, the
+  grid's two stripe passes at their placed positions, and a handle at every movable point: each line's
+  forward end (circle) and return point (diamond). The grid's start is anchored.
+* **Three radios.** *slow axis* (off, auto, manual) is the velocity source the window works under and
+  chooses which of the grid's three stored sets is edited, so every setting can be prepared from one
+  window. *fast axis* (off, auto, manual) is that set's state: off places the lines by the velocity alone,
+  auto by the extrema matching, manual by the matching with the dragged points. *stripe pass* (forward,
+  reverse) picks the pass drawn on top. **clear points** drops the set's points.
+* **Dragging** a handle moves that point along the scan direction of its line only, the direction the
+  line has as placed under the setting in force (the drifted scan direction with a velocity on); motion
+  across it is ignored. The first drag pins every point of the placement and sets the fast axis to
+  manual, so one point moves alone: a forward end stretches the line's forward and reverse passes; a
+  return point stretches the line's reverse pass and moves the next line's start with it (the recorded
+  separation kept), that line's own end staying put. The release writes the drift cache and redraws every
+  window. The placement applies in the scan area, the Topo window, the Line window (its heatmap rows
+  skewed by the placement plus the drift, the stripe unmoved) and the Map window.
+* **Matching without a Fourier transform.** Maxima are matched to maxima and minima to minima over every
+  part of a line that lies on a topo. The stretch of a pass comes from its matched extrema (3 or more
+  pairs), else from the ratio of the reference period to the stripe's own extrema spacing. The reference
+  period is the extrema spacing of the topo profile along the part of the line on a topo; a line off
+  every topo takes the median of the other lines' periods, else the spacing of the reference topos along
+  the fast axis. A pass without a period takes the nearest measured line's factor, else 1.
+* Done **separately for each drift setting** (off, auto, manual). The slow axis only ever gets the
   velocity of that setting. The reference is **whatever topo lies under each part of each line** (the
-  most recent there), placed with **the same drift setting** as the grid. Maxima are matched to maxima
-  and minima to minima over every part of a line that lies on a topo, so a line partly on a topo is
-  matched on that part. The forward factor is fitted from the matched extrema (3 or more pairs), with the
-  lattice period of the nearest topo as the fallback.
-* **Drift none + stripe match** still offsets every line's start along the scan direction and measures
-  each line's compression and stretch. `checks/check_stripe.py` tests all of this against known truth.
+  most recent there), placed with **the same drift setting** as the grid.
+* **Drift none + a fast axis on** still offsets every line's start along the scan direction and measures
+  each line's compression and stretch. `checks/check_stripe.py` tests the matching against known truth.
+* **Pass order.** The *topo pass* radio of the browser, the Topo window and the Map window draws the
+  chosen pass on top of the other whenever both are drawn (a velocity on); with drift off it draws that
+  pass alone. A grid's passes are never averaged ("average" is for topo images). The Line window opens
+  with its line's forward row only; its row controls add the reverse row as before.
 
 ### Line and Map windows
 * **E-markers** (Line and line-average windows): vertical lines at an energy, separate from the position

@@ -116,9 +116,9 @@ one active at most), 'load saved averages' (the saved averages window),
 and along the bottom left the drift controls: the 'auto drift' and
 'manual drift' toggles (every file: the two velocity sources for the
 topos' skew and the spectra's correction and drift lines on the scan area,
-see "Drift correction"), the 'stripe match' toggle (grid files; off at
-startup) and the 'drift' button, which opens the manual
-drift window of the current file (see "Manual drift").  Right, for the current file: 'Line' / 'Map'
+see "Drift correction"), the 'stripe match' button (grid files: the
+stripe window, see "Stripe matching") and the 'drift' button, which opens
+the manual drift window of the current file (see "Manual drift").  Right, for the current file: 'Line' / 'Map'
 (grid; the line is chosen inside the Line window and the scan area
 highlights it), the 'calibrate' / 'normalize' box of the spectra panels
 (widgets.PipelineBox, both off at open, as in every window that uses
@@ -282,9 +282,9 @@ Drift correction
 Two sources of drift and one model: every file is corrected by one
 constant velocity v, the surface's features' displacement per second in
 the absolute frame.  The browser carries the 'auto drift' and 'manual
-drift' toggles (both on at startup), the 'stripe match' toggle (grid
-files; off at startup) and the 'drift' button; the Topo, Line, and Map
-windows have their own toggles.
+drift' toggles (both on at startup), the 'stripe match' button (grid
+files) and the 'drift' button; the Topo, Line, and Map windows have their
+own toggles.
   'auto drift'   : the tracker's velocity (drift.py: every consecutive topo
       pair of a segment tracked at startup by feature-point matching, the
       method of Diao et al., Appl. Phys. Lett. 122, 121601 (2023), with the
@@ -322,17 +322,23 @@ position axis by the drift during its own sweep (Drift.row_shear), nothing
 along the energy axis.  Map window: every pixel of every energy slice sits
 at its spectrum's anchor plus the drift during the sweep up to that energy
 (Drift.map_shift).  The Line, Map, and Topo windows carry their own 'auto
-drift' and 'manual drift' toggles (and the Topo window 'stripe match'),
-set from the browser's states at opening and independent after; the Line
-and Map windows also carry 'drift window' (see "Manual drift").
-  'stripe match' (grid files; off by default; the browser and the Topo
-      window only, never the Line or the Map window, whose shears come
-      from the velocity alone): on top of the velocity, the lines' own topo stripes
-      placed against the earlier topo (drift_correct_grid: the stretch of
-      each pass from the lattice period expected along the line against the
-      period the stripe shows, the lines placed by their extrema against the
-      topo's profile, the reverse pass chained to the next line); the slow
-      axis stays v.  It never changes v.
+drift' and 'manual drift' toggles, set from the browser's states at
+opening and independent after; the Line and Map windows also carry 'drift
+window' (see "Manual drift"), the Topo window 'stripe match'.
+  Stripe matching (grid files; the 'stripe match' button of the browser and
+      the Topo window opens the stripe window, stripe.StripeWindow): on top
+      of the velocity, the lines' own topo stripes placed against the
+      earlier topos (drift_correct_grid: the lines placed by their extrema
+      against the topo's profile, the stretch of each pass from its matched
+      extrema or from the extrema period ratio, the reverse pass chained to
+      the next line), with hand-moved line ends and return points where
+      the window's points say so; the slow axis stays v.  Each grid keeps
+      one fast-axis state (off, auto, manual) and one set of points per
+      slow-axis setting (off, auto, manual: the velocity source in force,
+      Drift.slow_setting), so all three can be prepared from the window
+      once, and the placement reaches the scan area, the Topo window, the
+      Line window's heatmap and the Map window alike (Drift.result with
+      stripe None).  It never changes v.
   'anchor to topo' (grid and point files; off by default; the Topo window
       only): the MATLAB "drift for first point": the file is also shifted
       rigidly by -v (t_0 - t_topo start), t_topo the start of the topo under
@@ -517,7 +523,7 @@ class _BrowserCore:
         self.drift_params.update(drift_params or {})
         self.auto_on = True        # the 'auto drift' toggle starts on; off only redraws nominal positions
         self.manual_on = True      # the 'manual drift' toggle starts on (the manual velocities cover what they cover)
-        self.stripe_on = False     # the 'stripe match' toggle starts off (grid files; the Topo window takes this state at opening)
+        self.stripe_window = None  # the stripe window opened by 'stripe match' (stripe.StripeWindow)
         self.anchor_on = False     # 'anchor to topo' is the Topo window's toggle; the browser never applies it (off there)
         self.profile_window = None # the cross-section profile window (topo.ProfileWindow)
         self.profile_plots = ProfilePlots()   # the profile plots (topo.ProfilePlots): the profile windows' 'add' buttons
@@ -708,7 +714,7 @@ class _BrowserCore:
             w.show(grid)
         self.chk_auto.show(True)
         self.chk_manual.show(True)
-        self.chk_stripe.show(grid and bool(self.current.topo_pages))   # the Topo window's rule
+        self.btn_stripe.show(grid and bool(self.current.topo_pages) and self.drift is not None)   # the Topo window's rule
         self.rad_channel.show(grid or point)
         self.btn_add_new.show(point)
         self.btn_add_existing.show(point)
@@ -1188,16 +1194,17 @@ class _BrowserCore:
         if f.kind in ('grid', 'point', 'phase') and len(f.spec_xy_m):
             xy = f.spec_xy_m * k
             lines = None
-            stripe = self.stripe_on and f.kind == 'grid'
+            stripe = (f.kind == 'grid' and self.drift is not None
+                      and self.drift.fast_state(f, None, self.auto_on, self.manual_on) != 'off')
             if (self._drift_active() or stripe) and f.kind != 'phase':
-                # With both drift sources off and stripe matching on, the stripe matching still places
-                # the grid's lines along the fast axis (drift.Drift.result with a zero velocity).
-                d = self.drift.result(f, self.loaded, stripe, self.auto_on, self.manual_on, self.anchor_on)
+                # The grid's stored fast-axis state (the stripe window) places the lines along the fast
+                # axis, with both drift sources off as well (drift.Drift.result with a zero velocity).
+                d = self.drift.result(f, self.loaded, None, self.auto_on, self.manual_on, self.anchor_on)
                 if d is not None:
                     xy = np.where(np.isfinite(d['xy_corr']), d['xy_corr'], f.spec_xy_m) * k
                     # Every sweep's drift line: the line through its sweep (Drift.sweep_lines: the line's
                     # forward compression along a grid line with stripe matching, the velocity elsewhere).
-                    L = self.drift.sweep_lines(f, self.loaded, stripe, self.auto_on, self.manual_on, self.anchor_on)
+                    L = self.drift.sweep_lines(f, self.loaded, None, self.auto_on, self.manual_on, self.anchor_on)
                     lines = L * k if L is not None else np.stack([d['xy_corr'], d['xy_end']], axis=1) * k
                     corrected = True
                     source = d.get('source')
@@ -1225,7 +1232,8 @@ class _BrowserCore:
                         main = None
                     if main is not None:
                         plots.draw_grid_stripes(ax, f, main, second, pos_m * k, None if pos_s is None else pos_s * k,
-                                                float(np.linalg.norm(slow_step)) if slow_step is not None else None)
+                                                float(np.linalg.norm(slow_step)) if slow_step is not None else None,
+                                                top='reverse' if self._direction_of(f) == 'reverse' else 'forward')
                 ax.plot(xy[acq, 0], xy[acq, 1], ls='none', marker='o', ms=2.5, color='cyan',
                         mec='black', mew=0.3, label=f'spectra ({f.n_acquired} kept)')
                 sel = np.zeros(len(xy), dtype=bool)
@@ -1275,8 +1283,8 @@ class _BrowserCore:
             title += f"\n{self.covering_note}"
         srcs = f"auto {'on' if self.auto_on else 'off'}, manual {'on' if self.manual_on else 'off'}"
         if not (self.auto_on or self.manual_on):
-            title += ("\ndrift off: recorded positions; stripe match places the lines along the fast axis"
-                      if (self.stripe_on and f.kind == 'grid' and corrected) else "\ndrift off: recorded positions")
+            title += ("\ndrift off: recorded positions; the stripe matching places the lines along the fast axis"
+                      if (f.kind == 'grid' and corrected and d is not None and d.get('stripe')) else "\ndrift off: recorded positions")
         elif f.kind in ('grid', 'point'):
             what = "spectra" if f.kind == 'grid' else "sweeps"
             title += "\n" + (f"drift ({srcs}): topos skewed, {what} corrected by the {source} velocity (see console)"
@@ -1588,16 +1596,40 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _on_drift_toggle(self, which, flag):
-        """'auto drift' / 'manual drift' / 'stripe match': the scan area redrawn with the sources and the stripe matching as set."""
+        """'auto drift' / 'manual drift': the scan area redrawn with the sources as set."""
         if which == 'auto':
             self.auto_on = bool(flag)
-        elif which == 'manual':
-            self.manual_on = bool(flag)
         else:
-            self.stripe_on = bool(flag)
-        print(f"{'stripe match' if which == 'stripe' else which + ' drift'} {'on' if bool(flag) else 'off'}.")
+            self.manual_on = bool(flag)
+        print(f"{which} drift {'on' if bool(flag) else 'off'}.")
         self._draw_scan_area()
         self.fig.canvas.draw_idle()
+
+    def _on_stripe_window(self):
+        """
+        'stripe match': the stripe window of the current grid (stripe.StripeWindow),
+        opened at the slow-axis setting in force here and with the grid's
+        topo pass on top; one window at a time (a second press raises it).
+        A change made there reaches the scan area and every open window
+        through the Drift's subscribers.
+        """
+        f = self.current
+        if self.drift is None or f.kind != 'grid' or not f.topo_pages:
+            print("stripe match: the current file is not a grid with topo pages, or there is no drift model.")
+            return
+        w = self.stripe_window
+        if w is not None and w.is_open():
+            w.raise_()
+            return
+        from sm4_Browser.stripe import StripeWindow
+        self.drift.loaded = self.loaded
+        try:
+            self.stripe_window = StripeWindow(self.drift, f, self.scalefactor, list(self.topo_active),
+                                              setting=self.drift.slow_setting(f, self.auto_on, self.manual_on),
+                                              pass_top='reverse' if self._direction_of(f) == 'reverse' else 'forward')
+        except ValueError as exc:
+            print(f"stripe match: window not opened ({exc}).")
+            self.stripe_window = None
 
     def _on_drift_window(self):
         """
@@ -2108,7 +2140,7 @@ class _BrowserCore:
         self.children.append(TopoWindow(topo, list(self.topo_active), self.scalefactor, None, title,
                                         direction=self._direction_of(topo), spec=spec, drift=self.drift,
                                         auto_on=self.auto_on, manual_on=self.manual_on,
-                                        stripe_on=self.stripe_on, anchor_on=self.anchor_on,
+                                        anchor_on=self.anchor_on,
                                         spec_dir=self._direction_of(f) if f.kind == 'grid' else 'forward'))
 
     def _on_line(self):
@@ -2116,7 +2148,7 @@ class _BrowserCore:
         if f.kind != 'grid':
             return
         kw = self._line_window_kwargs()
-        kw['topo_lines'] = [(self.line_index, 'forward'), (self.line_index, 'reverse')]
+        kw['topo_lines'] = [(self.line_index, 'forward')]          # the line's forward row; the row controls add more
         kw['sm4'] = f
         try:
             analyzer = Line(f.path, chunk_index=self.line_index, cmap=self.line_window_kwargs.get('cmap', 'jet'),
@@ -2782,7 +2814,7 @@ class Browser(_BrowserCore):
         self.topo_box = QTopoProcessorBox(processor_labels(), self.topo_active)
         self.chk_auto = QCheck('auto drift', self.auto_on)
         self.chk_manual = QCheck('manual drift', self.manual_on)
-        self.chk_stripe = QCheck('stripe match', self.stripe_on)
+        self.btn_stripe = QPush('stripe match')
         self.btn_drift = QPush('drift')
         self.btn_saved = QPush('load saved averages')
         self.rad_channel = QRadio('channel', widgets.SPECS['channel']['labels'],
@@ -2792,7 +2824,7 @@ class Browser(_BrowserCore):
         bottom = QtWidgets.QHBoxLayout()
         nav = QtWidgets.QVBoxLayout()
         nav.addWidget(_row(self.btn_prev, self.btn_next, self.btn_topo, self.box_scale))
-        nav.addWidget(_row(self.chk_auto, self.chk_manual, self.chk_stripe, self.btn_drift))
+        nav.addWidget(_row(self.chk_auto, self.chk_manual, self.btn_stripe, self.btn_drift))
         nav.addWidget(_row(self.btn_saved))
         self.rad_show = QRadio('show', list(SHOW_MODES), self.show_mode, title='show')
         self.chk_kinds = QChecks('step through', ['topo', 'point', 'grid', 'phase', 'fft'], [True] * 5,
@@ -2917,7 +2949,7 @@ class Browser(_BrowserCore):
         self.btn_saved.on_change(self._on_load_saved)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.chk_stripe.on_change(lambda flag: self._on_drift_toggle('stripe', flag))
+        self.btn_stripe.on_change(self._on_stripe_window)
         self.btn_drift.on_change(self._on_drift_window)
         self.btn_section.on_change(self._on_section_line)
         self.btn_cross.on_change(self._on_cross_section)

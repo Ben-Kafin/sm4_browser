@@ -375,23 +375,139 @@ def _drift_window(b, exp):
     assert not w.is_open(), "a closed window still counts as open (qtplot Figure._on_close)"
 
 
-@check("H stripe match in the browser and the Topo window, with drift on and with drift none")
+@check("H stripe matching: the stored fast-axis state in the browser and the Topo window, with drift on and with drift none")
 def _stripe_browser(b, exp):
-    goto_kind(b, 'grid')
-    b._on_drift_toggle('stripe', True)
-    d = b.drift.result(b.current, b.loaded, True, b.auto_on, b.manual_on, b.anchor_on)
-    assert d is not None and d['stripe'] and d['lines']
+    f = goto_kind(b, 'grid')
+    d = b.drift
+    assert d.fast_state(f, None, b.auto_on, b.manual_on) == 'off'
+    setting = d.slow_setting(f, b.auto_on, b.manual_on)
+    assert setting == 'auto', setting
+    d.set_fast_state(f, 'auto', 'auto')
+    r = d.result(f, b.loaded, None, b.auto_on, b.manual_on, b.anchor_on)
+    assert r is not None and r['stripe'] == 'auto' and r['lines']
+    b._draw_scan_area()
+    # drift none: the 'off' set of the grid places it with a zero velocity once its fast axis is on
     b._on_drift_toggle('auto', False)
     b._on_drift_toggle('manual', False)
-    d0 = b.drift.result(b.current, b.loaded, True, False, False, False)
-    assert d0 is not None and d0['source'].startswith('none'), d0 and d0['source']
+    assert d.slow_setting(f, False, False) == 'off'
+    assert d.result(f, b.loaded, None, False, False, False) is None          # the 'off' set's fast axis is off
+    d.set_fast_state(f, 'off', 'auto')
+    d0 = d.result(f, b.loaded, None, False, False, False)
+    assert d0 is not None and d0['source'].startswith('none') and d0['stripe'] == 'auto', d0 and d0['source']
     b._on_topo_window()
     w = b.children[-1]
     w.draw()
+    assert hasattr(w, 'btn_stripe') and not hasattr(w, 'chk_stripe')
     plt.close(w.fig)
     b._on_drift_toggle('auto', True)
     b._on_drift_toggle('manual', True)
-    b._on_drift_toggle('stripe', False)
+    d.set_fast_state(f, 'off', 'off')
+    d.set_fast_state(f, 'auto', 'off')
+
+
+@check("G5 stripe window: handles, a drag along the line only, one point moves, the sets per setting, the cache")
+def _stripe_window(b, exp):
+    f = goto_kind(b, 'grid')
+    d = b.drift
+    assert b.stripe_window is None
+    b._on_stripe_window()
+    w = b.stripe_window
+    assert w is not None and w.is_open() and w.setting == 'auto' and w.top == 'forward'
+    assert d.fast_state(f, 'auto') == 'off' and not w._handles
+    w._on_fast('auto')                                              # the matching: handles appear
+    assert d.fast_state(f, 'auto') == 'auto' and w._handles, len(w._handles)
+    res = w._res
+    keys = [h[1] for h in w._handles]
+    assert any(k.startswith('E:') for k in keys) and any(k.startswith('R:') for k in keys)
+    # a drag: the mouse moves diagonally, the point moves along its line only
+    art, key, i, pos0, u = next(h for h in w._handles if h[1].startswith('E:') and h[2] == 2)
+    lines0 = {ln['i']: dict(ln) for ln in res['lines']}
+    class _E:
+        pass
+    ev = _E()
+    ev.artist = art
+    w._on_pick(ev)
+    assert w._drag is not None and d.fast_state(f, 'auto') == 'manual'
+    pts0 = d.stripe_points(f, 'auto')
+    assert len(pts0) == 2 * len(lines0) and abs(pts0[key] - lines0[i]['E']) < 1e-15
+    perp = np.array([-u[1], u[0]])
+    target = pos0 + 5e-10 * u + 3e-10 * perp                        # 5 A along the line, 3 A across
+    mv = _E()
+    mv.xdata, mv.ydata, mv.inaxes = target[0] * w.k, target[1] * w.k, w.ax
+    w._on_motion(mv)
+    w._on_release(mv)
+    pts1 = d.stripe_points(f, 'auto')
+    fast, _ = f.grid_axes()
+    assert abs((pts1[key] - pts0[key]) - 5e-10 * float(np.dot(u, fast))) < 1e-16, (pts1[key] - pts0[key])
+    assert all(abs(pts1[k] - pts0[k]) < 1e-18 for k in pts0 if k != key)
+    r1 = d.result(f, None, None, True, False)
+    l1 = {ln['i']: ln for ln in r1['lines']}
+    moved = [j for j in lines0 if abs(l1[j]['E'] - lines0[j]['E']) > 1e-15 or abs(l1[j]['R'] - lines0[j]['R']) > 1e-15
+             or abs(l1[j]['c'] - lines0[j]['c']) > 1e-15]
+    assert moved == [i], moved
+    # the handle sits where the placement puts the point (on the placed line) and moved along the scan
+    # axis by the projected amount; the placed direction and the recorded axis differ by the drift's tilt
+    h_new = next(h for h in w._handles if h[1] == key)
+    disp = h_new[3] - pos0
+    assert abs(disp[0] * fast[1] - disp[1] * fast[0]) < 1e-6 * np.linalg.norm(disp), disp
+    assert abs(float(np.dot(disp, fast)) - 5e-10 * float(np.dot(u, fast))) < 1e-16
+    assert abs(float(np.dot(u, fast))) > 0.999, u
+    xy1 = np.asarray(r1['xy_corr'])
+    cols_i = np.arange(i * f.n_fast, (i + 1) * f.n_fast)
+    kept_i = cols_i[np.asarray(f.acquired, dtype=bool)[cols_i]]
+    assert np.allclose(h_new[3], xy1[kept_i[-1]])
+    # the cache carries the set; another slow-axis setting has its own, untouched
+    rec = d.manual_record()['stripe'][f.name]
+    assert rec['auto']['fast'] == 'manual' and len(rec['auto']['points']) == len(pts1)
+    assert 'off' not in rec or not rec['off']['points']
+    w._on_slow('off')
+    assert w.setting == 'off' and d.fast_state(f, 'off') == 'off' and not d.stripe_points(f, 'off')
+    w._on_pass('reverse')
+    assert w.top == 'reverse'
+    w._on_slow('auto')
+    w._on_clear()
+    assert not d.stripe_points(f, 'auto') and d.fast_state(f, 'auto') == 'manual'
+    w._on_fast('off')
+    plt.close(w.fig)
+    b.stripe_window = None
+
+
+@check("G6 pass order everywhere; the Line window's forward row default and its rows skewed by the placement")
+def _pass_order_and_line(b, exp):
+    from sm4_Browser import plots
+    f = goto_kind(b, 'grid')
+    d = b.drift
+    # the browser's pass radio puts the chosen pass on top of the other (both drawn with a velocity)
+    b._on_direction('reverse')
+    assert b._direction_of(f) == 'reverse'
+    b._draw_scan_area()
+    b._on_direction('forward')
+    # the Map's embedded topo: both passes, the chosen on top
+    m = open_map(b)
+    m._on_drift_toggle('auto', True)
+    m._on_direction('reverse')
+    quads = m._topo_maps[id(m.ax_topo)]
+    assert len(quads) == 2 and quads[-1].zorder > quads[0].zorder and np.allclose(quads[-1].shift, m._topo_shift('reverse'), equal_nan=True)
+    m._on_direction('average')
+    quads = m._topo_maps[id(m.ax_topo)]
+    assert len(quads) == 2 and np.allclose(quads[-1].shift, m._topo_shift('forward'), equal_nan=True)
+    plt.close(m.fig)
+    # the Line window opens with the forward row only; its rows carry the placement's offsets
+    w = open_line(b)
+    assert w._int_topo_lines == [(w.chunk_index, 'forward')], w._int_topo_lines
+    d.set_fast_state(f, 'auto', 'auto')
+    w._int_apply_drift_toggle()
+    sh = w._int_shear()
+    assert sh is not None
+    res = d.result(w._int_sm4(), None, None, w._int_auto_on, w._int_manual_on)
+    assert res is not None and res['stripe'] == 'auto'
+    fast, _ = f.grid_axes()
+    cols = np.flatnonzero(w._int_kept_mask()) + w.chunk_index * len(w._int_pos)
+    off = ((np.asarray(res['xy_corr'])[cols] - np.asarray(f.spec_xy_m)[cols]) @ fast) * 1e10 / w.scalefactor
+    assert np.allclose(sh[:, 0], off, atol=1e-9), (sh[:3, 0], off[:3])          # the first edge: the row offset alone
+    assert np.nanmax(np.abs(off)) > 0
+    d.set_fast_state(f, 'auto', 'off')
+    plt.close(w._int_fig)
 
 
 @check("F1-F3 E-markers and the energy slice (Line window; line average)")
@@ -582,12 +698,14 @@ def _map_drift(b, exp):
     assert all(gx[0] < ax.get_position().bounds[0] or gx[1] > ax.get_position().bounds[1] for ax in m.grid_axes[:1])
     m.toggle_view()
     assert m.view == 'single' and not m.grid_topo_ax.get_visible()
-    # the pass radio: 'reverse' draws the reverse pass; 'average' both passes, the reverse under the forward
+    # the pass radio with a velocity on: both passes drawn, the chosen one on top ('average' counts as forward)
     m._on_direction('reverse')
-    assert len(m._topo_maps[id(m.ax_topo)]) == 1 and np.allclose(m._topo_maps[id(m.ax_topo)][0].shift, m._topo_shift('reverse'), equal_nan=True)
+    both = m._topo_maps[id(m.ax_topo)]
+    assert len(both) == 2 and both[-1].zorder > both[0].zorder
+    assert np.allclose(both[-1].shift, m._topo_shift('reverse'), equal_nan=True)
     m._on_direction('average')
     both = m._topo_maps[id(m.ax_topo)]
-    assert len(both) == 2 and both[0].zorder < both[1].zorder
+    assert len(both) == 2 and np.allclose(both[-1].shift, m._topo_shift('forward'), equal_nan=True)
     m._on_direction('forward')
     # drift off: the recorded frame, the topo as an image, no shift
     m._on_drift_toggle('auto', False)

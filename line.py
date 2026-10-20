@@ -574,24 +574,44 @@ class Line:
 
     def _int_shear(self):
         """
-        The within-sweep shear of every kept row with a drift source on
-        (Drift.row_shear with the 'auto drift' and 'manual drift' states,
-        never the stripe matching: the along-line drift at the energy-cell
-        edges of each sweep from the file's velocity, the before/after topo
-        pair's, auto or manual, converted to the position axis's units and
-        ordered as the heatmap's energy axis), (n_kept, n_e + 1); None with
-        both sources off or without a drift model.  The velocity's source
-        is kept for the stripe lines' colour (_int_drift_source).
+        The total skew of every kept row relative to the topo path, with a
+        drift source on or the grid's fast-axis placement set (the stripe
+        window): the row's along-line offset (its spectrum's placed
+        position minus the recorded one, projected on the line: the stripe
+        matching's placement and the slow-axis drift's along-line part,
+        Drift.result with the stored fast-axis state) plus the within-sweep
+        shear (Drift.row_shear: the along-line drift at the energy-cell
+        edges of each sweep, the line's own forward compression where the
+        placement measured one, the velocity otherwise), converted to the
+        position axis's units and ordered as the heatmap's energy axis,
+        (n_kept, n_e + 1); None with nothing to apply.  The stripe itself is
+        never moved: the rows move relative to it.  The velocity's source is
+        kept for the stripe lines' colour (_int_drift_source).
         """
-        if not self._int_drift_active():
+        if self._int_drift is None:
             return None
         if self._int_shear_cache is None:
+            sh = None
             try:
                 sm4 = self._int_sm4()
-                cols = np.flatnonzero(self._int_kept_mask()) + self.chunk_index * len(self._int_pos)
-                sh = self._int_drift.row_shear(sm4, cols, None, False, self._int_auto_on, self._int_manual_on)
-                res = self._int_drift.result(sm4, None, False, self._int_auto_on, self._int_manual_on)
-                self._int_drift_source = res.get('source') if res is not None else None
+                stripe = sm4.kind == 'grid' and self._int_drift.fast_state(sm4, None, self._int_auto_on, self._int_manual_on) != 'off'
+                if self._int_drift_active() or stripe:
+                    cols = np.flatnonzero(self._int_kept_mask()) + self.chunk_index * len(self._int_pos)
+                    sh = self._int_drift.row_shear(sm4, cols, None, None, self._int_auto_on, self._int_manual_on)
+                    res = self._int_drift.result(sm4, None, None, self._int_auto_on, self._int_manual_on)
+                    self._int_drift_source = res.get('source') if res is not None else None
+                    if res is not None:
+                        # Every row's along-line offset: where its spectrum was placed against where it was recorded.
+                        fast, _ = sm4.grid_axes()
+                        xy = np.asarray(sm4.spec_xy_m, dtype=np.float64)
+                        corr = np.asarray(res['xy_corr'], dtype=np.float64)
+                        off = np.full(len(cols), np.nan)
+                        ok = cols < min(len(xy), len(corr))
+                        off[ok] = (corr[cols[ok]] - xy[cols[ok]]) @ fast
+                        off = np.where(np.isfinite(off), off, 0.0)
+                        if sh is None:
+                            sh = np.zeros((len(cols), len(self.energy) + 1))
+                        sh = np.asarray(sh, dtype=np.float64) + off[:, None]
             except Exception as exc:
                 print(f"{self._int_tag()}: drift shear not available ({exc}); rows unsheared.")
                 sh = None
@@ -2601,7 +2621,7 @@ class Line:
 
         # --- Topography raw profiles (rows changeable in the window) ---
         if topo_lines is None:
-            topo_lines = [(self.chunk_index, 'forward'), (self.chunk_index, 'reverse')]
+            topo_lines = [(self.chunk_index, 'forward')]          # the line's forward row; the row controls add more
         self._int_rows_fig = None
         self._int_rows_widgets = []
         try:
