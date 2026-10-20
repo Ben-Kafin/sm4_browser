@@ -192,6 +192,12 @@ fits still use only finished sweeps, as before.
   heatmap or curve panel; Left/Right step the selected one by one recorded energy; Tab selects the next.
   The **Energy slice** panel shows the quantity against position at each E-marker. They are saved in the
   marker and line-average records.
+* **Map window drift**: with a drift source on, every map pixel sits at its spectrum's chained position (where
+  it started, by the time from the grid's first spectrum) plus the drift within its sweep up to the shown
+  energy, so the maps skew with the topo; the embedded topo is drawn as quads at the pixels' chained positions
+  (nothing clipped; the chosen pass, or both with `average`, the reverse under the forward); the frame widens
+  to hold every shifted pixel and stays put while stepping the energy; the grid view carries the topo in its
+  first cell; the companion uses the same bounds.
 * **E range / x range** boxes (Line window, top row): "lo, hi" sets the shown energy range (V) and the
   shown position range (Å); a blank box is the full range. The energy range is also the normalization
   range (with normalize on, every spectrum has unit area over the shown range, nothing else) and the

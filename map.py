@@ -20,14 +20,14 @@ from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_title
                                   iv_broadened)
 from sm4_Browser.normalization import normalize_abs
 from sm4_Browser.drift import DriftWindow
-from sm4_Browser.topo import processed_topo, TOPO_CMAP
+from sm4_Browser.topo import processed_topo, process_topo, TOPO_CMAP
 
 
 class Map:
     """
-    Grid file: a toggle between (a) a tiled grid of every energy and (b) one
-    energy beside the file's own embedded topography with energy arrows ('< E',
-    'E >') and a curve panel.  Maps are the channel (dI/dV, or IETS by the
+    Grid file: a toggle between (a) a tiled grid of the embedded topography
+    (first cell) and every energy, and (b) one energy beside the file's own
+    embedded topography with energy arrows ('< E', 'E >') and a curve panel.  Maps are the channel (dI/dV, or IETS by the
     'channel' radio) through the pipeline, every location calibrated against
     its own I(V) and unit-area normalized as the 'calibrate' / 'normalize' box
     says (both off at open), reshaped to (n_lines, n_fast) in the scan frame.
@@ -100,19 +100,25 @@ class Map:
         self.cmap = cmap
         # The window's own 'auto drift' and 'manual drift' toggles (set from the caller's states at
         # opening, independent after): with a drift source on, every pixel of every energy slice sits at
-        # its spectrum's anchor (the map topo pixel) plus the drift during the sweep up to that energy
-        # (Drift.map_shift from the file's velocity, the before/after topo pair's, auto or manual; the
-        # stripe matching never enters here), the embedded topo is skewed pixel by pixel
-        # (Drift.corrected_topo), and the spectra's drift lines are drawn on both panels in the auto or
-        # the manual colour.  'drift window' opens the file's before and after topos for marker pairs
+        # its spectrum's chained position (where the sweep started, by the time from the grid's first
+        # spectrum: Drift.result 'xy_corr', the same chain that places the topo) plus the drift within
+        # the sweep up to that energy (the sweep's dwell per point times the energy index: 'shift'), both
+        # from the file's velocity (the before/after topo pair's, auto or manual; the stripe matching never
+        # enters here); the embedded topo is drawn as quads with every pixel at its chained position
+        # (_draw_topo, plots.PixelMap: nothing is clipped), the frame widens to hold every shifted pixel
+        # (_drift_bounds), and the spectra's drift lines are drawn on both panels in the auto or the
+        # manual colour.  'drift window' opens the file's before and after topos for marker pairs
         # (drift.DriftWindow), whose span refreshes the maps at once.
         self.drift = drift
         self.auto_on = bool(auto_on and drift is not None)
         self.manual_on = bool(manual_on and drift is not None)
         self._drift_windows = []
         self._drift_source = None                   # the velocity's source of the last result (the lines' colour)
-        self._shift_m = None                        # Drift.map_shift (N, npts, 2), computed once per toggle
+        self._drift_res = None                      # Drift.result of the grid, once per toggle state (False: none)
+        self._bounds = None                         # _drift_bounds, memoized with _drift_res
         self._pixel_maps = {}                       # drift on: the PixelMap of the single view and of every grid map
+        self._topo_maps = {}                        # drift on: the topo passes' PixelMaps per axes (id(ax) -> [...])
+        self._grid_topo_stale = True                # the grid view's topo cell needs drawing
         self.divide_iv = bool(divide_iv)
         self.iv_broadening = float(iv_broadening)
         self.iv_zero_sub = bool(iv_zero_sub)        # the Feenstra settings (the companion's boxes)
@@ -130,7 +136,7 @@ class Map:
         self.view = 'single'
         self.active_procs = list(active_procs)
         self.direction = 'forward'
-        self.topo_img = self._topo_image('forward') if grid.topo_pages else None
+        self.has_topo = bool(grid.topo_pages)
         k = 1e9 / scalefactor
         l, r, b, t = [v * k for v in grid.frame_extent_m()]
         self.extent = [l, r, b, t]
@@ -209,15 +215,20 @@ class Map:
         self.ax_topo_cbar = plots.draw_topo_cbar(self.fig, self.TOPO_CBAR)
         self.gamma_single.attach(self.ax_map, gap_in=0.2)
         # Grid view axes (built once, hidden until toggled), one γ box under each map.
-        ncols = int(np.ceil(np.sqrt(self.n_e)))
-        nrows = int(np.ceil(self.n_e / ncols))
+        n_cells = self.n_e + 1                      # the topo first, then one map per energy
+        ncols = int(np.ceil(np.sqrt(n_cells)))
+        nrows = int(np.ceil(n_cells / ncols))
         # The grid stays under the pipeline box (top right); each cell keeps room under its map
         # for the 'γ' box, the energy written inside the map.
         gl, gb, gw, gh = 0.03, 0.14, 0.95, 0.78
         cw, ch = gw / ncols, gh / nrows
+        # The topo in the first cell (drawn by _draw_topo as the single view's topo is).
+        self.grid_topo_ax = self.fig.add_axes([gl + 0.08 * cw, gb + gh - ch + 0.38 * ch, 0.66 * cw, 0.60 * ch])
+        self.grid_topo_ax.set_xticks([])
+        self.grid_topo_ax.set_yticks([])
         self.grid_axes, self.grid_caxes, self.grid_gammas = [], [], []
         for e in range(self.n_e):
-            rr, cc = divmod(e, ncols)
+            rr, cc = divmod(e + 1, ncols)
             x0 = gl + cc * cw
             y0 = gb + gh - (rr + 1) * ch
             ax = self.fig.add_axes([x0 + 0.08 * cw, y0 + 0.38 * ch, 0.66 * cw, 0.60 * ch])
@@ -243,6 +254,7 @@ class Map:
             fig = self.fig
             self.drift.subscribe(self._refresh_drift, alive=lambda: plt.fignum_exists(fig.number))
             fig.canvas.mpl_connect('close_event', lambda event: self.drift.unsubscribe(self._refresh_drift))
+        self._draw_topo(self.ax_topo)
         self.recompute()
         self._apply_view()
         # The Feenstra companion: the four versions of the map, opened whatever the toggle's state.
@@ -311,48 +323,166 @@ class Map:
     def _drift_active(self):
         return self.drift is not None and (self.auto_on or self.manual_on)
 
-    def _topo_image(self, direction):
+    def _drift_result(self):
         """
-        The embedded topo of the grid (nm): with a drift source on, the two
-        passes placed by the grid's chained shifts (Drift.corrected_topo,
-        'average': both corrected passes combined, whatever the 'topo pass'
-        radio says); off, the pass the radio chose at the recorded pixels.
+        Drift.result of the grid for the window's toggles (the chained
+        placement: 'xy_corr' the corrected start of every spectrum, 'pix'
+        the corrected topo pixels, 'shift' the drift within every sweep),
+        computed once per toggle state; None with both toggles off or when
+        no correction can be made (the console says why).
         """
-        if self._drift_active():
+        if not self._drift_active():
+            return None
+        if self._drift_res is None:
             try:
-                return self.drift.corrected_topo(self.grid, 'average', self.active_procs, None,
-                                                 self.auto_on, self.manual_on) * 1e9
+                res = self.drift.result(self.grid, None, False, self.auto_on, self.manual_on)
             except Exception as exc:
-                print(f"Map window: drift correction of the topo not applied ({exc}).")
-        return processed_topo(self.grid, direction, self.active_procs) * 1e9
+                print(f"Map window: drift correction not available ({exc}); pixels unshifted.")
+                res = None
+            self._drift_res = res if res is not None else False
+            self._drift_source = res.get('source') if res is not None else None
+        return self._drift_res or None
+
+    def _to_frame_shift(self, d_m):
+        """Absolute displacements (..., 2) in metres into the frame's units (nm after the scale factor), same shape."""
+        d = np.asarray(d_m, dtype=np.float64)
+        return (d.reshape(-1, 2) @ self.grid.rotation() * 1e9 / self.scalefactor).reshape(d.shape)
+
+    def _chain_shift(self):
+        """The chained shift of every spectrum's start (its corrected position minus the recorded one), (N, 2) metres; None without a result."""
+        res = self._drift_result()
+        if res is None:
+            return None
+        xy = np.asarray(self.grid.spec_xy_m, dtype=np.float64)
+        corr = np.asarray(res['xy_corr'], dtype=np.float64)
+        n = min(len(xy), len(corr))
+        return corr[:n] - xy[:n]
 
     def _frame_shift(self, e):
         """
         The pixel shifts of energy slice e (ascending index) in the frame
-        (nm after the scale factor), (n_lines, n_fast, 2): Drift.map_shift
-        at that energy point, rotated into the scan frame; None with the
-        toggle off or without a drift model.
+        (nm after the scale factor), (n_lines, n_fast, 2): every pixel's
+        chained shift (where its spectrum started, by the time from the
+        grid's first spectrum: Drift.result 'xy_corr') plus the drift within
+        its sweep up to that energy point (the sweep's dwell per point times
+        the energy index: 'shift'), rotated into the scan frame; None with
+        the toggles off or without a drift model.
         """
-        if not self._drift_active():
-            return None
-        if self._shift_m is None:
-            try:
-                self._shift_m = self.drift.map_shift(self.grid, None, False, self.auto_on, self.manual_on)
-                res = self.drift.result(self.grid, None, False, self.auto_on, self.manual_on)
-                self._drift_source = res.get('source') if res is not None else None
-            except Exception as exc:
-                print(f"Map window: drift shift of the pixels not available ({exc}); pixels unshifted.")
-                self._shift_m = False
-        if self._shift_m is False or self._shift_m is None:
+        res = self._drift_result()
+        chain = self._chain_shift()
+        if res is None or chain is None or res.get('shift') is None:
             return None
         g = self.grid
         n = g.n_lines * g.n_fast
         col = int(self.order[e])
         s = np.full((n, 2), np.nan)
-        m = min(n, self._shift_m.shape[0])
-        s[:m] = self._shift_m[:m, col, :]
-        uv = s @ g.rotation() * 1e9 / self.scalefactor
-        return uv.reshape(g.n_lines, g.n_fast, 2)
+        m = min(n, len(chain), res['shift'].shape[0])
+        s[:m] = chain[:m] + res['shift'][:m, col, :]
+        return self._to_frame_shift(s).reshape(g.n_lines, g.n_fast, 2)
+
+    def _topo_shift(self, direction):
+        """
+        The chained shift of every pixel of a topo pass in the frame's units,
+        (ny, nx, 2; NaN where no spectrum places the pixel): Drift.result
+        'pix' minus the recorded pixel locations; None without a result, a
+        placement of that pass, or when the page's shape differs from it.
+        """
+        res = self._drift_result()
+        pix = None if res is None else (res.get('pix') or {}).get(direction)
+        if pix is None:
+            return None
+        rec = self.grid.pixel_xy_m(direction)
+        pix = np.asarray(pix, dtype=np.float64)
+        if pix.shape != rec.shape:
+            return None
+        return self._to_frame_shift(pix - rec)
+
+    def _drift_bounds(self):
+        """
+        The limits [l, r, b, t] of the frame with a drift source on: the
+        recorded frame widened to hold every map pixel at every energy and
+        every topo pixel at their shifts (nothing drawn leaves the view).
+        Memoized with the result.
+        """
+        if self._bounds is not None:
+            return self._bounds
+        l, r, b, t = self.extent
+        lo = np.array([min(l, r), min(b, t)])
+        hi = np.array([max(l, r), max(b, t)])
+        res = self._drift_result()
+        chain = self._chain_shift()
+        parts = []
+        if res is not None and chain is not None and res.get('shift') is not None:
+            g = self.grid
+            m = min(g.n_lines * g.n_fast, len(chain), res['shift'].shape[0])
+            parts.append(self._to_frame_shift(chain[:m, None, :] + res['shift'][:m, :, :]).reshape(-1, 2))
+        for direction in ('forward', 'reverse'):
+            sh = self._topo_shift(direction)
+            if sh is not None:
+                parts.append(sh.reshape(-1, 2))
+        if parts:
+            allsh = np.vstack(parts)
+            ok = np.all(np.isfinite(allsh), axis=1)
+            if ok.any():
+                lo = lo + np.minimum(0.0, allsh[ok].min(axis=0))
+                hi = hi + np.maximum(0.0, allsh[ok].max(axis=0))
+        self._bounds = [float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1])]
+        return self._bounds
+
+    def _draw_topo(self, ax, small=False):
+        """
+        The embedded topo into `ax` (the single view's topo panel; the grid
+        view's topo cell with small=True): with a drift source on, the
+        chosen pass's pixels as quads at their chained positions
+        (plots.PixelMap: nothing is clipped, a pixel no spectrum places is
+        not drawn; 'average' both passes, the reverse under the forward,
+        each at its own positions); off, the chosen pass at the recorded
+        pixels (plots.draw_topo_frame).  The limits are _frame_limits'.
+        """
+        for pm in self._topo_maps.pop(id(ax), []):
+            try:
+                pm.remove()
+            except Exception:
+                pass
+        ax.clear()
+        g = self.grid
+        fs = 7 if small else 9
+        if not self.has_topo:
+            ax.text(0.5, 0.5, "no topography page in this file", ha='center', va='center',
+                    transform=ax.transAxes, fontsize=fs)
+            return
+        corrected = self._drift_active() and self._topo_shift('forward') is not None
+        if corrected:
+            passes = [self.direction] if self.direction in ('forward', 'reverse') else ['reverse', 'forward']
+            maps = []
+            for p in passes:
+                if p == 'reverse' and len(g.topo_pages) < 2:
+                    continue
+                sh = self._topo_shift(p)
+                img = process_topo(g.topo_raw(p), self.active_procs) * 1e9
+                if sh is None or sh.shape[:2] != img.shape:
+                    print(f"Map window: the {p} topo pass has no placement; not drawn.")
+                    continue
+                img = np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan)
+                maps.append(plots.PixelMap(ax, img, self.extent, TOPO_CMAP, shift=sh,
+                                           zorder=1.0 if p == 'forward' else 0.5))
+            self._topo_maps[id(ax)] = maps
+            ax.set_aspect('equal', adjustable='box')
+            what = ("both passes" if len(maps) > 1 else passes[-1]) + ", drift corrected" \
+                + (f" ({self._drift_source})" if self._drift_source else "")
+        else:
+            img = processed_topo(g, self.direction, self.active_procs) * 1e9
+            plots.draw_topo_frame(ax, g, img, self.scalefactor, cmap=TOPO_CMAP)
+            what = self.direction
+        self._frame_limits(ax)
+        if small:
+            ax.set_title("Topo", fontsize=fs)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        else:
+            ax.set_title(f"Topography: {g.name}  [{what}]", fontsize=fs)
+            ax.set_xlabel("x (nm, scan frame)")
+            ax.set_ylabel("y (nm, scan frame)")
 
     def _frame_lines(self):
         """
@@ -415,12 +545,13 @@ class Map:
         self._drift_windows.append(w)
 
     def _refresh_drift(self):
-        """The drift state applied anew: the shifts dropped, the topo and the maps redrawn."""
-        self._shift_m = None
+        """The drift state applied anew: the result dropped, the topo and the maps redrawn."""
+        self._drift_res = None
+        self._bounds = None
         self._lines_memo = None
-        self.topo_img = self._topo_image(self.direction) if self.grid.topo_pages else None
-        self.ax_topo.clear()
         self._clear_pixel_maps()
+        self._draw_topo(self.ax_topo)
+        self._grid_topo_stale = True
         self.draw_single()
         if self.view == 'grid':
             self.draw_grid()
@@ -617,6 +748,7 @@ class Map:
                 'texts': self._curve_texts(q),
                 'avg_on': self.avg_on,
                 'extent': self.extent,
+                'limits': self._drift_bounds() if self._drift_active() else None,
                 'shift': self._frame_shift(self.e_index),
                 'drift_lines': self._frame_lines(),
                 'marker_points': [(self.pixel_xy(px), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
@@ -681,21 +813,13 @@ class Map:
         ax.set_xlabel("x (nm, scan frame)")
         ax.set_ylabel("y (nm, scan frame)")
         self.gamma_single.set(self.gammas[self.e_index])
-        at = self.ax_topo
-        if not at.images:
-            if self.topo_img is not None:
-                plots.draw_topo_frame(at, self.grid, self.topo_img, self.scalefactor, cmap=TOPO_CMAP)
-                at.set_title(f"Topography: {self.grid.name}  "
-                             + ("[both passes, drift corrected]" if self._drift_active() else f"[{self.direction}]"), fontsize=9)
-                at.set_xlabel("x (nm, scan frame)")
-                at.set_ylabel("y (nm, scan frame)")
-            else:
-                at.text(0.5, 0.5, "no topography page in this file", ha='center', va='center',
-                        transform=at.transAxes)
-        # The markers and the curve panel follow the maps.
+        # The markers and the curve panel follow the maps (the topo panel is _draw_topo's).
         self._redraw_markers()
 
     def draw_grid(self):
+        if self._grid_topo_stale:
+            self._draw_topo(self.grid_topo_ax, small=True)
+            self._grid_topo_stale = False
         lo, hi = self._limits()
         for e, ax in enumerate(self.grid_axes):
             m = self.maps[e]
@@ -757,9 +881,12 @@ class Map:
             self.rad_sweeps.set(self.grid.sweep_mode)
             return
         print(f"Map window: the maps show the {label} sweep(s) of every pixel.")
-        self._shift_m = None
+        self._drift_res = None
+        self._bounds = None
         self._lines_memo = None
         self._clear_pixel_maps()
+        self._draw_topo(self.ax_topo)
+        self._grid_topo_stale = True
         self.recompute()
         self._redraw_markers()
 
@@ -767,14 +894,16 @@ class Map:
         if label == self.direction or not self.grid.topo_pages:
             return
         self.direction = label
-        self.topo_img = self._topo_image(label)
-        self.ax_topo.clear()
+        self._draw_topo(self.ax_topo)
+        self._grid_topo_stale = True
+        if self.view == 'grid':
+            self.draw_grid()
         self.draw_single()
         self.fig.canvas.draw_idle()
 
     def _frame_limits(self, ax):
-        """Axis limits of the scan frame in normal orientation (the extent itself may be reversed)."""
-        l, r, b, t = self.extent
+        """Axis limits of the scan frame in normal orientation (the extent itself may be reversed); with a drift source on, widened to hold every shifted pixel (_drift_bounds)."""
+        l, r, b, t = self._drift_bounds() if self._drift_active() else self.extent
         ax.set_xlim(min(l, r), max(l, r))
         ax.set_ylim(min(b, t), max(b, t))
 
@@ -783,7 +912,7 @@ class Map:
         for ax in (self.ax_topo, self.ax_map, self.cax_map, self.ax_curve, self.ax_topo_cbar):
             ax.set_visible(single)
         self.gamma_single.show(single)
-        for ax in self.grid_axes + self.grid_caxes:
+        for ax in [self.grid_topo_ax] + self.grid_axes + self.grid_caxes:
             ax.set_visible(not single)
         for g in self.grid_gammas:
             g.show(not single)
@@ -903,7 +1032,7 @@ class Map:
         groups = self.groups()
         lines = self._frame_lines()
         for ax in (self.ax_map, self.ax_topo):
-            if ax is self.ax_topo and self.topo_img is None:
+            if ax is self.ax_topo and not self.has_topo:
                 continue
             if lines is not None:
                 self._marker_artists.extend(plots.draw_drift_lines(ax, lines, color=plots.drift_color(self._drift_source)))

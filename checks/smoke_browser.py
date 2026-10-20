@@ -525,6 +525,79 @@ def _line_ranges(b, exp):
     plt.close(w._int_fig)
 
 
+@check("G2 Map window: pixels skewed by the chain plus the sweep drift, the topo unclipped, the grid view's topo")
+def _map_drift(b, exp):
+    from sm4_Browser import plots
+    m = open_map(b)
+    assert m.drift is not None and m.has_topo
+    l, r, bb, t = m.extent
+    frame = (min(l, r), max(l, r), min(bb, t), max(bb, t))
+    m._on_drift_toggle('auto', False)                                # the window opens with the browser's states
+    m._on_drift_toggle('manual', False)
+    assert m._frame_shift(m.e_index) is None                        # both toggles off: no shift
+    off_lim = (m.ax_map.get_xlim(), m.ax_map.get_ylim())             # the frame, widened to the box's aspect
+    m._on_drift_toggle('auto', True)
+    assert m.auto_on
+    res = m.drift.result(m.grid, None, False, True, False)
+    assert res is not None and res.get('shift') is not None, "the synthetic grid should get an auto velocity"
+    n = m.n_lines * m.n_fast
+    k = 1e9 / m.scalefactor
+    chain = np.asarray(res['xy_corr'])[:n] - np.asarray(m.grid.spec_xy_m)[:n]
+    assert np.nanmax(np.abs(chain)) > 0, "the chain should move later spectra"
+    sh = m._frame_shift(m.e_index)
+    assert sh is not None and sh.shape == (m.n_lines, m.n_fast, 2)
+    col = int(m.order[m.e_index])
+    expect = (chain + res['shift'][:n, col, :]) @ m.grid.rotation() * k
+    assert np.allclose(sh.reshape(-1, 2), expect, equal_nan=True)
+    # the chain dominates the within-sweep drift: the shift is not the sweep drift alone
+    sweep_only = res['shift'][:n, col, :] @ m.grid.rotation() * k
+    assert not np.allclose(np.nan_to_num(sh.reshape(-1, 2)), np.nan_to_num(sweep_only))
+    # the single view's map carries that shift; the topo is quads with the chain's pixel shifts
+    pm = m._pixel_maps['single']
+    assert isinstance(pm, plots.PixelMap) and np.allclose(pm.shift, sh, equal_nan=True)
+    tmaps = m._topo_maps.get(id(m.ax_topo))
+    assert tmaps, "the topo should be drawn as quads with a drift source on"
+    tsh = m._topo_shift('forward')
+    assert tsh is not None and np.allclose(tmaps[-1].shift, tsh, equal_nan=True)
+    # every drawn quad (map and topo) lies inside the limits, which hold the recorded frame too
+    quads = np.vstack([q._q.reshape(-1, 2) for q in tmaps] + [pm._q.reshape(-1, 2)])
+    ok = np.all(np.isfinite(quads), axis=1)
+    x0, x1 = m.ax_map.get_xlim()
+    y0, y1 = m.ax_map.get_ylim()
+    assert x0 <= frame[0] + 1e-9 and x1 >= frame[1] - 1e-9 and y0 <= frame[2] + 1e-9 and y1 >= frame[3] - 1e-9
+    assert quads[ok, 0].min() >= x0 - 1e-6 and quads[ok, 0].max() <= x1 + 1e-6, (quads[ok, 0].min(), quads[ok, 0].max(), x0, x1)
+    assert quads[ok, 1].min() >= y0 - 1e-6 and quads[ok, 1].max() <= y1 + 1e-6, (quads[ok, 1].min(), quads[ok, 1].max(), y0, y1)
+    assert np.allclose(m.ax_topo.get_xlim(), (x0, x1)) and np.allclose(m.ax_topo.get_ylim(), (y0, y1))
+    # the limits do not jump while stepping the energy
+    m.step(1)
+    assert np.allclose(m.ax_map.get_xlim(), (x0, x1)) and np.allclose(m.ax_map.get_ylim(), (y0, y1))
+    # the companion gets the same bounds
+    v = m.feenstra_view()
+    assert v['limits'] is not None and np.allclose(v['limits'], m._drift_bounds())
+    # the grid view shows the topo in its first cell, the energy maps after it
+    m.toggle_view()
+    assert m.view == 'grid' and m.grid_topo_ax.get_visible() and m._topo_maps.get(id(m.grid_topo_ax))
+    assert len(m.grid_axes) == m.n_e and all(ax.get_visible() for ax in m.grid_axes)
+    gx = m.grid_topo_ax.get_position().bounds
+    assert all(gx[0] < ax.get_position().bounds[0] or gx[1] > ax.get_position().bounds[1] for ax in m.grid_axes[:1])
+    m.toggle_view()
+    assert m.view == 'single' and not m.grid_topo_ax.get_visible()
+    # the pass radio: 'reverse' draws the reverse pass; 'average' both passes, the reverse under the forward
+    m._on_direction('reverse')
+    assert len(m._topo_maps[id(m.ax_topo)]) == 1 and np.allclose(m._topo_maps[id(m.ax_topo)][0].shift, m._topo_shift('reverse'), equal_nan=True)
+    m._on_direction('average')
+    both = m._topo_maps[id(m.ax_topo)]
+    assert len(both) == 2 and both[0].zorder < both[1].zorder
+    m._on_direction('forward')
+    # drift off: the recorded frame, the topo as an image, no shift
+    m._on_drift_toggle('auto', False)
+    assert m._frame_shift(m.e_index) is None and not m._topo_maps.get(id(m.ax_topo))
+    assert np.allclose(m.ax_map.get_xlim(), off_lim[0]) and np.allclose(m.ax_map.get_ylim(), off_lim[1])
+    assert (x1 - x0) > (off_lim[0][1] - off_lim[0][0]) - 1e-9 and (y1 - y0) > (off_lim[1][1] - off_lim[1][0]) - 1e-9
+    assert m.ax_topo.images, "the topo should be an image with the drift off"
+    plt.close(m.fig)
+
+
 def widgets_text(lo, hi):
     from sm4_Browser.widgets import RangeBox
     return RangeBox.text_of((lo, hi))

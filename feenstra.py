@@ -416,7 +416,8 @@ class FeenstraWindow:
         return (view['kind'], v.get('note'), v.get('title'), self._sig(v.get('top')), self.gammas[key].value,
                 self._sig(view.get('shear')), self._sig(view.get('shift')), self._sig(view.get('stripe')),
                 self._sig(view.get('pos')), self._sig(view.get('kept')), tuple(view.get('extent') or ()),
-                str(view.get('cmap')), self._sig(view.get('drift_lines')), tuple(view.get('e_range') or ()))
+                str(view.get('cmap')), self._sig(view.get('drift_lines')), tuple(view.get('e_range') or ()),
+                tuple(view.get('limits') or ()))
 
     def _draw_top(self, view, v, key, col, kind):
         """The heatmap (line) or map of one column with its colour bar (and the stripe)."""
@@ -456,7 +457,7 @@ class FeenstraWindow:
             top.tick_params(labelleft=False)             # the stripe carries the position labels
             top.set_xlabel("Energy (eV)")
         else:
-            l, r, b, t = view['extent']
+            l, r, b, t = view.get('limits') or view['extent']      # the Map's widened bounds with a drift source on
             top.set_xlim(min(l, r), max(l, r))
             top.set_ylim(min(b, t), max(b, t))
             top.set_aspect('equal', adjustable='box')
