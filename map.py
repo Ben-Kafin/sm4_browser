@@ -501,35 +501,48 @@ class Map:
 
     def _drift_bounds(self):
         """
-        The limits [l, r, b, t] of the frame with a drift source on: the
-        recorded frame widened to hold every map pixel at every energy and
-        every topo pixel at their shifts (nothing drawn leaves the view);
-        the recorded frame itself without a result.  Memoized with the
-        result (_bounds).
+        The limits [l, r, b, t] whenever a result places the pixels: the
+        bounding box of everything drawn, exactly (edge to edge, no
+        margin): every acquired map pixel's cell at every energy (the maps
+        are NaN only where never acquired) and every placed topo pixel's
+        cell at their shifts (plots.pixel_bounds), and the spectra's drift
+        lines (_frame_lines; the markers sit on the pixels).  Every energy
+        counts, so the view holds still while the energy is stepped.  The
+        recorded frame without a result, or when nothing is drawn.
+        Memoized with the result (_bounds).
         """
         if self._bounds is not None:
             return self._bounds
         l, r, b, t = self.extent
-        lo = np.array([min(l, r), min(b, t)])
-        hi = np.array([max(l, r), max(b, t)])
+        frame = [min(l, r), max(l, r), min(b, t), max(b, t)]
         res = self._drift_result()
         chain = self._chain_shift()
-        parts = []
+        g = self.grid
+        boxes = []
         if res is not None and chain is not None and res.get('shift') is not None:
-            g = self.grid
-            m = min(g.n_lines * g.n_fast, len(chain), res['shift'].shape[0])
-            parts.append(self._to_frame_shift(chain[:m, None, :] + res['shift'][:m, :, :]).reshape(-1, 2))
+            n = g.n_lines * g.n_fast
+            m = min(n, len(chain), res['shift'].shape[0])
+            s = np.full((n, self.n_e, 2), np.nan)
+            s[:m] = chain[:m, None, :] + res['shift'][:m][:, self.order, :]
+            sh = self._to_frame_shift(s).reshape(g.n_lines, g.n_fast, self.n_e, 2).transpose(2, 0, 1, 3)
+            acq = np.zeros(n, dtype=bool)
+            a = np.asarray(g.acquired, dtype=bool)[:n]
+            acq[:len(a)] = a
+            boxes.append(plots.pixel_bounds(np.where(acq.reshape(g.n_lines, g.n_fast), 0.0, np.nan), self.extent, sh))
         for direction in ('forward', 'reverse'):
             sh = self._topo_shift(direction)
-            if sh is not None:
-                parts.append(sh.reshape(-1, 2))
-        if parts:
-            allsh = np.vstack(parts)
-            ok = np.all(np.isfinite(allsh), axis=1)
-            if ok.any():
-                lo = lo + np.minimum(0.0, allsh[ok].min(axis=0))
-                hi = hi + np.maximum(0.0, allsh[ok].max(axis=0))
-        self._bounds = [float(lo[0]), float(hi[0]), float(lo[1]), float(hi[1])]
+            if sh is None:
+                continue
+            try:
+                img = process_topo(g.topo_raw(direction), self.active_procs)
+            except Exception:
+                continue
+            if sh.shape[:2] != img.shape:
+                continue
+            boxes.append(plots.pixel_bounds(np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan), self.extent, sh))
+        pts = [np.array([[bx[0], bx[2]], [bx[1], bx[3]]]) for bx in boxes if bx is not None]
+        box = plots.drawn_box(*pts, self._frame_lines()) if res is not None else None
+        self._bounds = list(box) if box is not None else frame
         return self._bounds
 
     def _draw_topo(self, ax, small=False):
@@ -1092,7 +1105,7 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def _frame_limits(self, ax):
-        """Axis limits of the scan frame in normal orientation (the extent itself may be reversed); whenever a result places the pixels (a drift source on, or the stripe matching alone), widened to hold every shifted pixel (_drift_bounds)."""
+        """Axis limits of the scan frame in normal orientation (the extent itself may be reversed); whenever a result places the pixels (a drift source on, or the stripe matching alone), the box of everything drawn, edge to edge (_drift_bounds)."""
         l, r, b, t = self._drift_bounds() if self._drift_result() is not None else self.extent
         ax.set_xlim(min(l, r), max(l, r))
         ax.set_ylim(min(b, t), max(b, t))

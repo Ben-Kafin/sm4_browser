@@ -891,9 +891,11 @@ def _map_drift(b, exp):
     m._on_drift_toggle('auto', False)                                # the window opens with the browser's states
     m._on_drift_toggle('manual', False)
     assert m._frame_shift(m.e_index) is None                        # both toggles off: no shift
-    off_lim = (m.ax_map.get_xlim(), m.ax_map.get_ylim())             # the frame, widened to the box's aspect
+    plt._app().processEvents()                                      # the deferred placement of the box runs
+    off_lim = (m.ax_map.get_xlim(), m.ax_map.get_ylim())             # the frame
     m._on_drift_toggle('auto', True)
     assert m.auto_on
+    plt._app().processEvents()
     res = m.drift.result(m.grid, None, False, True, False)
     assert res is not None and res.get('shift') is not None, "the synthetic grid should get an auto velocity"
     n = m.n_lines * m.n_fast
@@ -926,17 +928,25 @@ def _map_drift(b, exp):
     assert not np.allclose(m.marker_xy(px0, True), m.pixel_xy(px0))
     # a drag lands on the pixel drawn under the cursor
     assert m.xy_pixel_drawn(*m.marker_xy(m.marker_px[1], True), True) == tuple(m.marker_px[1])
-    # every drawn quad (map and topo) lies inside the limits, which hold the recorded frame too
-    quads = np.vstack([q._q.reshape(-1, 2) for q in tmaps] + [pm._q.reshape(-1, 2)])
-    ok = np.all(np.isfinite(quads), axis=1)
+    # every drawn quad (map and topo) lies inside the limits, which are exactly the box of everything drawn
+    # with every energy counted (the acquired map pixels at every energy's shift, the placed topo pixels,
+    # the drift lines): edge to edge, no margin, the recorded frame no longer forced in
+    drawn_q = lambda q: q._q.reshape(-1, 4, 2)[np.isfinite(q.img).ravel()].reshape(-1, 2)
+    quads = np.vstack([drawn_q(q) for q in tmaps] + [drawn_q(pm)])
     x0, x1 = m.ax_map.get_xlim()
     y0, y1 = m.ax_map.get_ylim()
-    assert x0 <= frame[0] + 1e-9 and x1 >= frame[1] - 1e-9 and y0 <= frame[2] + 1e-9 and y1 >= frame[3] - 1e-9
-    assert quads[ok, 0].min() >= x0 - 1e-6 and quads[ok, 0].max() <= x1 + 1e-6, (quads[ok, 0].min(), quads[ok, 0].max(), x0, x1)
-    assert quads[ok, 1].min() >= y0 - 1e-6 and quads[ok, 1].max() <= y1 + 1e-6, (quads[ok, 1].min(), quads[ok, 1].max(), y0, y1)
+    assert quads[:, 0].min() >= x0 - 1e-6 and quads[:, 0].max() <= x1 + 1e-6, (quads[:, 0].min(), quads[:, 0].max(), x0, x1)
+    assert quads[:, 1].min() >= y0 - 1e-6 and quads[:, 1].max() <= y1 + 1e-6, (quads[:, 1].min(), quads[:, 1].max(), y0, y1)
+    assert np.allclose(plots.pixel_bounds(pm.img, m.extent, pm.shift), plots.drawn_box(drawn_q(pm)))   # the helper = the quads drawn
+    acq_img = np.where(np.asarray(m.grid.acquired, dtype=bool)[:n].reshape(m.n_lines, m.n_fast), 0.0, np.nan)
+    boxes = [plots.pixel_bounds(acq_img, m.extent, m._frame_shift(e)) for e in range(m.n_e)]
+    pts = [np.array([[bx[0], bx[2]], [bx[1], bx[3]]]) for bx in boxes if bx is not None] + [drawn_q(q) for q in tmaps]
+    exp_box = plots.drawn_box(*pts, m._frame_lines())
+    assert np.allclose((x0, x1, y0, y1), exp_box), ((x0, x1, y0, y1), exp_box)
     assert np.allclose(m.ax_topo.get_xlim(), (x0, x1)) and np.allclose(m.ax_topo.get_ylim(), (y0, y1))
     # the limits do not jump while stepping the energy
     m.step(1)
+    plt._app().processEvents()
     assert np.allclose(m.ax_map.get_xlim(), (x0, x1)) and np.allclose(m.ax_map.get_ylim(), (y0, y1))
     # the companion gets the same bounds
     v = m.feenstra_view()
@@ -960,9 +970,12 @@ def _map_drift(b, exp):
     m._on_direction('forward')
     # drift off: the recorded frame, the topo as an image, no shift
     m._on_drift_toggle('auto', False)
+    plt._app().processEvents()
     assert m._frame_shift(m.e_index) is None and not m._topo_maps.get(id(m.ax_topo))
     assert np.allclose(m.ax_map.get_xlim(), off_lim[0]) and np.allclose(m.ax_map.get_ylim(), off_lim[1])
-    assert (x1 - x0) > (off_lim[0][1] - off_lim[0][0]) - 1e-9 and (y1 - y0) > (off_lim[1][1] - off_lim[1][0]) - 1e-9
+    assert off_lim[0][0] <= frame[0] + 1e-9 and off_lim[0][1] >= frame[1] - 1e-9 and off_lim[1][0] <= frame[2] + 1e-9 \
+        and off_lim[1][1] >= frame[3] - 1e-9, "drift off: the recorded frame"
+    assert not (np.allclose((x0, x1), off_lim[0]) and np.allclose((y0, y1), off_lim[1])), "the limits follow the shifted pixels"
     assert m.ax_topo.images, "the topo should be an image with the drift off"
     plt.close(m.fig)
 
@@ -1075,8 +1088,9 @@ def _title_rule(b, exp):
     assert st("Scan area: 5 files") == "Scan area"
 
 
-@check("G7 drift window: the other topo's recorded frame on each panel, on top of everything; the titles; one centred view; the step")
+@check("G7 drift window: the other topo's recorded frame on each panel, on top of everything; the titles; one view edge to edge; the step")
 def _drift_outline(b, exp):
+    from sm4_Browser import plots
     goto_kind(b, 'grid')
     b._on_drift_window()
     w = b.drift_window
@@ -1097,7 +1111,8 @@ def _drift_outline(b, exp):
                 if getattr(art, 'axes', None) is ax:
                     assert art.get_zorder() < line.get_zorder(), own.name
             assert ax.get_title() == own.name, (ax.get_title(), own.name)
-        # one view on both panels: the same limits, the same box, the two frames together centred
+        # one view on both panels: the same limits, the same box, edge to edge around the two frames and the
+        # file's spectra (plots.fit_limits: no margin)
         allc = np.vstack([w.a.corners_m() * w.k_of(w.a.path), w.b.corners_m() * w.k_of(w.b.path)])
         (xa0, xa1), (ya0, ya1) = w.ax_a.get_xlim(), w.ax_a.get_ylim()
         (xb0, xb1), (yb0, yb1) = w.ax_b.get_xlim(), w.ax_b.get_ylim()
@@ -1105,10 +1120,14 @@ def _drift_outline(b, exp):
         ga, gb = w.ax_a.vb.geometry(), w.ax_b.vb.geometry()
         ra, rb = (ga.width(), ga.height()), (gb.width(), gb.height())
         assert abs(ra[0] - rb[0]) < 1.0 and abs(ra[1] - rb[1]) < 1.0, (ra, rb)
-        cx, cy = 0.5 * (allc[:, 0].min() + allc[:, 0].max()), 0.5 * (allc[:, 1].min() + allc[:, 1].max())
+        ff = w.f
+        sp = None
+        if ff.kind != 'topo' and len(ff.spec_xy_m):
+            xy = np.asarray(ff.spec_xy_m, dtype=np.float64) * w.k_of(ff.path)
+            sp = xy[np.asarray(ff.acquired, dtype=bool)[:len(xy)]] if ff.kind == 'grid' else xy
+        box = plots.drawn_box(allc, sp)
         tol = 1e-6 * max(xa1 - xa0, ya1 - ya0)
-        assert abs(0.5 * (xa0 + xa1) - cx) < tol and abs(0.5 * (ya0 + ya1) - cy) < tol, "the two frames are not centred"
-        assert xa0 < allc[:, 0].min() and xa1 > allc[:, 0].max() and ya0 < allc[:, 1].min() and ya1 > allc[:, 1].max()
+        assert np.allclose([xa0, xa1, ya0, ya1], box, atol=tol, rtol=0), ((xa0, xa1, ya0, ya1), box)
         assert abs((xa1 - xa0) / (ya1 - ya0) - ra[0] / ra[1]) < 0.02, "the view is not at equal aspect in the box"
 
     check_frames()
@@ -2011,6 +2030,118 @@ def _records_helpers(b, exp):
     exec(compile(ast.Module(body=[fn], type_ignores=[]), path, 'exec'), ns)
     assert ns['tag_of']('A_CT_2024_01_01_10_00_00_000.sm4') == '2024_01_01_10_00_00_000'
     assert ns['tag_of']('plain_2024.sm4') == 'plain_2024'
+    b._goto(0)
+
+
+def _drawn_pts(ax):
+    """Every finite point drawn on ax as the windows draw: the lines' data and the collections' quads (an image is passed by its corners)."""
+    pts = []
+    for ln in ax.lines:
+        x, y = ln.get_xdata(), ln.get_ydata()
+        if len(x) == len(y):
+            pts.append(np.column_stack([x, y]))
+    for c in ax.collections:
+        if hasattr(c, '_segments'):                      # a LineCollection (the drift lines)
+            pts.extend(np.asarray(seg, dtype=np.float64).reshape(-1, 2) for seg in c._segments)
+        else:                                            # a PolyCollection (the grid's stripes)
+            pts.append(np.asarray(c._verts, dtype=np.float64).reshape(-1, 2))
+    return pts
+
+
+def _assert_edge_to_edge(ax, *extra, what=''):
+    """The limits of ax are exactly the bounding box of everything drawn (the lines, the collections, `extra`): nothing outside, no margin."""
+    from sm4_Browser import plots
+    plt._app().processEvents()                      # the deferred placement of the box runs (an equal aspect)
+    box = plots.drawn_box(*(_drawn_pts(ax) + list(extra)))
+    assert box is not None, what
+    (x0, x1), (y0, y1) = ax.get_xlim(), ax.get_ylim()
+    tol = 1e-6 * max(x1 - x0, y1 - y0, 1e-12)
+    assert np.allclose((x0, x1, y0, y1), box, atol=tol, rtol=0), (what, (x0, x1, y0, y1), box)
+    return box
+
+
+@check("N1 limits: every spatial panel edge to edge around everything drawn, no margin (the helpers; the Topo window, the scan area, the stripe window, the drift window; the Map window in G2)")
+def _edge_to_edge(b, exp):
+    from sm4_Browser import plots
+    from sm4_Browser.scanlayer import record_corners
+    # the helpers: the box of points and quads, non-finite skipped; the limits set to it exactly, a flat box widened
+    box = plots.drawn_box(np.array([[1.0, 2.0], [np.nan, 0.0]]), None, np.zeros((0, 2)), np.array([[[3.0, -1.0]] * 4]))
+    assert box == (1.0, 3.0, -1.0, 2.0), box
+    assert plots.drawn_box(None, np.full((2, 2), np.nan)) is None
+    fig = plt.figure(figsize=(4, 3))
+    ax = fig.add_subplot(111)
+    ax.plot([0.0, 1.0], [0.0, 1.0])
+    assert plots.fit_limits(ax, np.array([[0.0, 0.0], [1.0, 1.0]]), np.array([[5.0, -2.0]])) == (0.0, 5.0, -2.0, 1.0)
+    assert np.allclose(ax.get_xlim(), (0.0, 5.0)) and np.allclose(ax.get_ylim(), (-2.0, 1.0))
+    assert plots.fit_limits(ax, np.array([[2.0, 3.0]])) == (1.5, 2.5, 2.5, 3.5)
+    assert plots.fit_limits(ax) is None and np.allclose(ax.get_xlim(), (1.5, 2.5))
+    plt.close(fig)
+    # pixel_bounds: every finite pixel's cell plus its shift (NaN as 0), a NaN pixel not counted; a cube of shifts at once
+    img = np.array([[1.0, 2.0, np.nan], [4.0, 5.0, 6.0]])
+    assert plots.pixel_bounds(img, [0, 3, 0, 2]) == (0.0, 3.0, 0.0, 2.0)
+    assert plots.pixel_bounds(np.array([[1.0, np.nan], [np.nan, np.nan]]), [0, 2, 0, 2]) == (0.0, 1.0, 0.0, 1.0)
+    sh = np.zeros((2, 3, 2))
+    sh[0, 0] = (-0.5, -0.25)
+    sh[0, 2] = (10.0, 10.0)                                      # the NaN pixel: not drawn, not counted
+    sh[1, 2] = (np.nan, 0.5)
+    assert plots.pixel_bounds(img, [0, 3, 0, 2], sh) == (-0.5, 3.0, -0.25, 2.5)
+    assert plots.pixel_bounds(img, [3, 0, 2, 0], None) == (0.0, 3.0, 0.0, 2.0)               # a reversed extent
+    cube = np.stack([sh, np.zeros((2, 3, 2)) + (0.0, 1.0)])
+    assert plots.pixel_bounds(img, [0, 3, 0, 2], cube) == (-0.5, 3.0, -0.25, 3.0)
+    assert plots.pixel_bounds(np.full((2, 3), np.nan), [0, 3, 0, 2]) is None
+    # the windows, with a velocity on and the grid's stripe matching placed (lines and stripes drawn)
+    f = goto_kind(b, 'grid')
+    d = b.drift
+    auto0, manual0 = b.auto_on, b.manual_on
+    b._on_drift_toggle('auto', True)
+    b._on_drift_toggle('manual', False)
+    setting = d.slow_setting(f, b.auto_on, b.manual_on)
+    fast0 = d.fast_state(f, setting)
+    d.set_fast_state(f, setting, 'auto')
+    # the Topo window: the frame, the corrected spectra, their drift lines and the grid's pixels, exactly
+    b._on_topo_window()
+    w = b.children[-1]
+    k = 1e9 / w.scalefactor
+    l, r, bb, t = [v * k for v in w.topo.frame_extent_m()]
+    frame = np.array([[l, bb], [r, t]])
+    _assert_edge_to_edge(w.ax, frame, what='Topo window, drift on')
+    assert w.ax.collections and any(len(ln.get_xdata()) > 2 for ln in w.ax.lines), "the stripes and the drift lines are drawn"
+    w._on_drift_toggle('auto', False)
+    _assert_edge_to_edge(w.ax, frame, what='Topo window, drift off')
+    plt.close(w.fig)
+    # the scan area's full extent: the shown topos' corners, every position, the drift lines, the stripes, then the box's aspect
+    b._draw_scan_area()
+    corners = [record_corners(b.layer.records[p], b.k_of(p), b._direction_of_path(p), b._layer_model(p, b.layer.records[p]))
+               for p, it in b.layer.items.items() if it['im'].get_visible() and p in b.layer.records]
+    assert corners, "topos shown on the scan area"
+    full_box = plots.drawn_box(*(_drawn_pts(b.ax_scan) + corners))
+    assert np.allclose(b.view.full, b.view.fit_to_box(full_box)), (b.view.full, full_box)
+    fx0, fx1, fy0, fy1 = b.view.full
+    assert (abs(fx0 - full_box[0]) < 1e-9 and abs(fx1 - full_box[1]) < 1e-9) or (abs(fy0 - full_box[2]) < 1e-9 and abs(fy1 - full_box[3]) < 1e-9), \
+        "one axis of the full extent is the drawn box exactly (the other widened to the box's aspect)"
+    # the stripe window: the reference topos' frames, the stripes, the spectra, the start and the handles
+    assert b.stripe_window is None
+    b._on_stripe_window()
+    w = b.stripe_window
+    assert w is not None and w._handles, "handles under the stripe matching"
+    ref = d.stripe_reference(f, *w.flags())
+    ref_corners = [e['f'].corners_m() * w.k for e in (ref.entries if ref else [])]
+    _assert_edge_to_edge(w.ax, *ref_corners, what='stripe window')
+    plt.close(w.fig)
+    b.stripe_window = None
+    # the drift window: one view edge to edge around the two frames and the file's spectra (G7 checks the rest)
+    b._on_drift_window()
+    w = b.drift_window
+    plt._app().processEvents()
+    allc = np.vstack([w.a.corners_m() * w.k_of(w.a.path), w.b.corners_m() * w.k_of(w.b.path)])
+    xy = np.asarray(w.f.spec_xy_m, dtype=np.float64) * w.k_of(w.f.path)
+    box = plots.drawn_box(allc, xy[np.asarray(w.f.acquired, dtype=bool)[:len(xy)]])
+    for ax in (w.ax_a, w.ax_b):
+        assert np.allclose(ax.get_xlim() + ax.get_ylim(), box), (ax.get_xlim(), ax.get_ylim(), box)
+    plt.close(w.fig)
+    d.set_fast_state(f, setting, fast0)
+    b._on_drift_toggle('auto', auto0)
+    b._on_drift_toggle('manual', manual0)
     b._goto(0)
 
 

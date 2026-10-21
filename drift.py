@@ -3423,12 +3423,18 @@ class DriftWindow:
         absolute positions, every object at the scale in force at its own file's time (the panels
         are in calibrated nm: the topo image at its scale, the file's spectra at the file's, the
         other topo's recorded frame at that topo's), titled with its file, the frame drawn last and
-        on top, one view centred on both frames.  No drift correction: the drift is measured here.
+        on top, one view on both panels edge to edge around the two frames and the file's spectra.
+        No drift correction: the drift is measured here.
         """
         from sm4_Browser import plots
         from sm4_Browser import topo as topo_mod
         f = self.f
         corners = []
+        spectra = None               # the file's spectra (drawn on both panels), for the limits
+        if f.kind != 'topo' and len(f.spec_xy_m):
+            xy = np.asarray(f.spec_xy_m, dtype=np.float64) * self.k_of(f.path)
+            acq = np.asarray(f.acquired, dtype=bool)[:len(xy)] if f.kind == 'grid' else np.ones(len(xy), dtype=bool)
+            spectra = xy[acq]
         self._outlines = {}          # panel -> the artists of the other topo's recorded frame (drawn last)
         for ax, t, other, label in ((self.ax_a, self.a, self.b, "earlier"), (self.ax_b, self.b, self.a, "later")):
             ax.clear()
@@ -3436,10 +3442,8 @@ class DriftWindow:
             plots.draw_topo_absolute(ax, t, img, self.scale_of(t.path), cmap=plots.TOPO_CMAP)
             corners.append(t.corners_m() * self.k_of(t.path))
             corners.append(other.corners_m() * self.k_of(other.path))
-            if f.kind != 'topo' and len(f.spec_xy_m):
-                xy = np.asarray(f.spec_xy_m, dtype=np.float64) * self.k_of(f.path)
-                acq = np.asarray(f.acquired, dtype=bool)[:len(xy)] if f.kind == 'grid' else np.ones(len(xy), dtype=bool)
-                ax.plot(xy[acq, 0], xy[acq, 1], ls='none', marker='o', ms=2.5, color='cyan', mec='black', mew=0.3)
+            if spectra is not None:
+                ax.plot(spectra[:, 0], spectra[:, 1], ls='none', marker='o', ms=2.5, color='cyan', mec='black', mew=0.3)
             # The title above the panel is the name of the file drawn in it; the rest of the line
             # (earlier or later, the pass, the start time, whether it is the window's file) goes to
             # the window's info panel (qtplot.short_title).
@@ -3453,15 +3457,12 @@ class DriftWindow:
             # The other topo of the pair as its recorded frame, drawn last: a thin black outline on
             # top of everything on the panel (the markers and arrows drawn later sit below its zorder).
             self._outlines[ax] = plots.draw_topo_outline(ax, other, self.scale_of(other.path))
-        # One view on both panels: the outline of the two frames together, centred, with a margin.
-        # The limits are set on each axes (not only on the one the other shares), so that each
-        # panel's box is shrunk to the equal aspect the same way and neither image sits off-centre.
-        allc = np.vstack(corners)
-        mx = 0.05 * max(np.ptp(allc[:, 0]), 1e-9)
-        my = 0.05 * max(np.ptp(allc[:, 1]), 1e-9)
+        # One view on both panels: everything drawn, edge to edge (plots.fit_limits): the two frames
+        # together and the file's spectra.  The limits are set on each axes (not only on the one the
+        # other shares), so that each panel's box is shrunk to the equal aspect the same way and
+        # neither image sits off-centre.
         for ax in (self.ax_a, self.ax_b):
-            ax.set_xlim(allc[:, 0].min() - mx, allc[:, 0].max() + mx)
-            ax.set_ylim(allc[:, 1].min() - my, allc[:, 1].max() + my)
+            plots.fit_limits(ax, *corners, spectra)
 
     def _write_help(self):
         """The help line under the panels, for the pair shown (its seeding velocity)."""

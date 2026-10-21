@@ -84,9 +84,13 @@ the spectra panels of the current file and its information. Below each, the cont
 **The scan area and its toolbar.** The toolbar has Home, Pan, Zoom and Save. A scroll notch zooms
 by 1.2 about the cursor (both axes together, the equal aspect kept), a left drag pans, a double
 click centres the view on the clicked point at the same zoom, Home (button or key) shows the full
-extent, and with the cursor over the scan area `R` saves the view and `space` returns to it. The
+extent (everything drawn, edge to edge: the topographies, every position, the drift lines, a grid's
+stripes), and with the cursor over the scan area `R` saves the view and `space` returns to it. The
 view persists while stepping; when the file just loaded lies outside it, the view relocates to it at
 the same zoom. The panel keeps one size and shape; the equal aspect is kept by adjusting the ranges.
+Every spatial panel (the scan area, the Topo, Map, drift and stripe windows) is edge to edge around
+everything it draws, with no margin (`plots.fit_limits`); an explicit crop takes precedence where a
+window has one (the Line window's cursors).
 The topo colour bar at its right is the colour map of every topography. A grid's own topography
 pixels are drawn under its markers as bands; the current grid's selected line is red with a white
 square at its start; every other point or phase file is a diamond, grey when it was taken before the
@@ -275,7 +279,9 @@ console) in its own scan frame, aspect locked, at the current file's scale, with
 nm; its own `auto drift`, `manual drift` and `anchor to topo` toggles (set from the browser's at
 opening, independent after); the spectra file shown with it at its corrected positions with its
 drift lines; a grid's own topography pixels over the image with the `topo pass` radio; for a grid
-the `stripe` toggle (the file's one shared state, as the browser's) and `stripe match`.
+the `stripe` toggle (the file's one shared state, as the browser's) and `stripe match`. The view is
+edge to edge around everything drawn: the frame, the positions, the drift lines and the grid's
+pixels, wherever the drift puts them.
 
 ### Line window
 
@@ -312,7 +318,8 @@ per map; one `γ` box per energy slice. The markers are the Line window's method
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
 spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
 position plus the drift within its sweep up to the shown energy, the embedded topography is drawn as
-quads at the pixels' chained positions, the frame widens to hold every shifted pixel, and every
+quads at the pixels' chained positions, the view is edge to edge around every pixel drawn at every
+energy and the drift lines (it holds still while the energy is stepped), and every
 marker and group centre sits on its pixel as drawn (the map's shift at the shown energy, the
 topography's chained shift; a drag lands on the pixel drawn under the cursor; the composer's symbols
 follow); with both sources off but the grid's stripe matching set, the lines' placement alone does
@@ -382,7 +389,7 @@ The manual drift of the current file (`drift.DriftWindow`): the pair its auto ve
 the earlier topography on the left and the later on the right, each titled with its file's name,
 each drawn at the scale in force at its own time with no drift correction (the drift is measured
 here), and on each panel the other topography's recorded frame as a thin black outline drawn on top,
-both panels on one view centred on the two frames. A click on either topography places a numbered
+both panels on one view edge to edge around the two frames and the file's spectra. A click on either topography places a numbered
 marker and, with a velocity governing the pair, its partner on the other topography where that
 velocity puts the same feature (hollow until moved); the k-th marker on the left pairs with the k-th
 on the right, each pair in its own colour with its displacement arrow on both panels; `Markers` is
@@ -401,8 +408,8 @@ while the stepped topographies are drawn at their own. Every window redraws at o
 
 The stripe matching of the current grid (`stripe.py`): the earlier topographies under the grid as
 the scan area places them, everything drawn at the grid file's scale, the grid's two stripe passes at their placed positions and a handle at
-every movable point, each line's forward end (circle) and return point (diamond); the grid's start
-is anchored. Three titled radio boxes: `drift` (`off`, `auto`, `manual`) is the velocity source the
+every movable point, each line's forward end (circle) and return point (diamond), the view edge to
+edge around all of it; the grid's start is anchored. Three titled radio boxes: `drift` (`off`, `auto`, `manual`) is the velocity source the
 window works under and chooses which of the grid's three stored sets is edited; `stripe` (`off`,
 `auto`, `manual`) is that set's state: off places the lines by the velocity alone, auto by the
 extrema matching, manual by the matching with the dragged points; `pass` picks the pass drawn on
@@ -736,7 +743,8 @@ the stripe matching (G, H), the E-markers and ranges (F), the title rule (T), te
 labels (I), the stores and the flags (J), the scale timeline (K), the section path (L) and the fixes
 of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
 occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
-heatmap shear, the qtplot rules, the records helpers). The other
+heatmap shear, the qtplot rules, the records helpers) and the limits (N: every spatial panel edge to
+edge around everything drawn). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
 pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on

@@ -384,6 +384,8 @@ class TopoWindow:
         Everything drawn anew: the image in its scan frame with the height colour bar, the spectra
         file's positions in that frame (corrected with a source on, with their drift lines in the
         source's colour), a grid's own topo pixels, and the title with the pass and drift state.
+        The limits fit everything drawn exactly (plots.fit_limits: the frame, the positions, the
+        drift lines and the grid's pixels; edge to edge, no margin).
         """
         ax = self.ax
         ax.clear()
@@ -397,6 +399,8 @@ class TopoWindow:
         im = plots.draw_topo_frame(ax, self.topo, img, self.scalefactor, cmap=TOPO_CMAP)
         self.cbar = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03, label="height (nm)")
         k = 1e9 / self.scalefactor
+        l, r, b, t = [v * k for v in self.topo.frame_extent_m()]
+        parts = [np.array([[l, b], [r, t]])]        # everything drawn, for the limits: the frame first
         f = self.spec
         corrected = False
         source = None
@@ -431,22 +435,27 @@ class TopoWindow:
                             to_frame = lambda p: (self.topo.to_frame_m(np.asarray(p).reshape(-1, 2)) * k).reshape(np.asarray(p).shape)
                             width = (float(np.linalg.norm(f.spec_xy_m[f.n_fast] - f.spec_xy_m[0])) * k
                                      if f.n_lines > 1 and len(f.spec_xy_m) > f.n_fast else None)
-                            plots.draw_grid_stripes(ax, f, main, second, to_frame(pos_m),
-                                                    None if pos_s is None else to_frame(pos_s), width,
-                                                    top=self.spec_dir)
+                            parts.append(plots.draw_grid_stripes(ax, f, main, second, to_frame(pos_m),
+                                                                 None if pos_s is None else to_frame(pos_s), width,
+                                                                 top=self.spec_dir))
                     except Exception as exc:
                         print(f"Topo window: the grid's topo pixels not drawn ({exc}).")
                 ax.plot(uv[acq, 0], uv[acq, 1], ls='none', marker='o', ms=2.5, color='cyan', mec='black', mew=0.3,
                         label=f'spectra ({int(acq.sum())} kept)')
+                parts.append(uv[acq])
                 if lines is not None:
                     plots.draw_drift_lines(ax, lines[acq], color=color)
+                    parts.append(lines[acq])
                 ax.legend(loc='upper right', frameon=False, fontsize=8)
             else:
                 show = uv if corrected or f.kind == 'phase' else uv[:1]
                 plots.draw_point_sweeps(ax, show, corrected=corrected, lines=lines, color=color)
+                parts.extend([show, lines if corrected else None])
         elif self.marker_xy_m is not None:
             uv = self.topo.to_frame_m(self.marker_xy_m) * k
             plots.draw_point_sweeps(ax, uv, corrected=len(uv) > 1)
+            parts.append(uv)
+        plots.fit_limits(ax, *parts)                 # edge to edge around everything drawn
         ax.set_xlabel("x (nm, scan frame)")
         ax.set_ylabel("y (nm, scan frame)")
         tag = ""

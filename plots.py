@@ -654,6 +654,95 @@ def draw_topo_frame(ax, sm4, img, scalefactor, **imshow_kw):
     return im
 
 
+# ---------------------------------------------------------------------- #
+#  Limits: every spatial panel edge to edge around everything it draws    #
+# ---------------------------------------------------------------------- #
+
+def drawn_box(*parts):
+    """
+    The bounding box (x0, x1, y0, y1) of everything in `parts`: each an
+    array of points whose last axis is (x, y), of any shape (a frame's two
+    opposite corners, a polyline, a set of quads), or None; non-finite
+    points are skipped.  None when no finite point is given.
+    """
+    pts = []
+    for p in parts:
+        if p is None:
+            continue
+        a = np.asarray(p, dtype=np.float64)
+        if a.size == 0 or a.shape[-1] != 2:
+            continue
+        a = a.reshape(-1, 2)
+        pts.append(a[np.all(np.isfinite(a), axis=1)])
+    if not pts:
+        return None
+    allp = np.vstack(pts)
+    if len(allp) == 0:
+        return None
+    return (float(allp[:, 0].min()), float(allp[:, 0].max()), float(allp[:, 1].min()), float(allp[:, 1].max()))
+
+
+def fit_limits(ax, *parts):
+    """
+    The limits of ax set to the bounding box of `parts` (drawn_box)
+    exactly: edge to edge, no margin, everything drawn inside the panel.
+    The rule of every spatial panel (the Topo window, the Map window, the
+    scan area's full extent, the stripe window, the drift window); an
+    explicit crop takes precedence where a window has one (the Line
+    window's cursors).  A box with no width or no height gets half a unit
+    either side on that axis.  Nothing changes when no finite point is
+    given.  Returns the box applied, or None.
+    """
+    box = drawn_box(*parts)
+    if box is None:
+        return None
+    x0, x1, y0, y1 = box
+    if x1 <= x0:
+        x0, x1 = x0 - 0.5, x1 + 0.5
+    if y1 <= y0:
+        y0, y1 = y0 - 0.5, y1 + 0.5
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
+    return (x0, x1, y0, y1)
+
+
+def pixel_bounds(img, extent, shift=None):
+    """
+    The bounding box (x0, x1, y0, y1) of the pixels a PixelMap of `img`
+    (ny, nx) over `extent` [l, r, b, t] draws: every finite pixel's cell
+    (column j from the left edge, row i from the bottom), displaced by
+    `shift` (ny, nx, 2) as the map displaces it (a NaN shift counts as 0;
+    no displacement when None or of another shape).  Leading axes on `img`
+    and on `shift` (an energy cube: (n_e, ny, nx) and (n_e, ny, nx, 2), or
+    one image under many shifts) broadcast together: the box of every map
+    at once.  None when no pixel is finite.
+    """
+    a = np.asarray(img, dtype=np.float64)
+    if a.ndim < 2 or a.size == 0:
+        return None
+    ny, nx = a.shape[-2:]
+    l, r, b, t = [float(v) for v in extent]
+    dx, dy = (r - l) / nx, (t - b) / ny
+    jj, ii = np.meshgrid(np.arange(nx), np.arange(ny))
+    c0 = np.stack([l + jj * dx, b + ii * dy], axis=-1)              # (ny, nx, 2): one corner of every cell
+    c1 = c0 + np.array([dx, dy])                                    # the opposite corner
+    lo, hi = np.minimum(c0, c1), np.maximum(c0, c1)
+    drawn = np.isfinite(a)
+    if shift is not None:
+        s = np.asarray(shift, dtype=np.float64)
+        if s.ndim >= 3 and s.shape[-3:] == (ny, nx, 2):
+            s = np.where(np.isfinite(s), s, 0.0)
+            lo = lo + s
+            hi = hi + s
+    shape = np.broadcast_shapes(drawn.shape, lo.shape[:-1])
+    drawn = np.broadcast_to(drawn, shape)
+    if not drawn.any():
+        return None
+    lo = np.broadcast_to(lo, shape + (2,))[drawn]
+    hi = np.broadcast_to(hi, shape + (2,))[drawn]
+    return (float(lo[:, 0].min()), float(hi[:, 0].max()), float(lo[:, 1].min()), float(hi[:, 1].max()))
+
+
 def draw_point_sweeps(ax, xy, corrected, ends=None, lines=None, color=None):
     """
     The sweeps of the current single point at positions xy (n, 2; the drawing
@@ -909,10 +998,12 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None, top='fo
     leave them black).  `top` names the pass drawn on top of the other
     ('forward': the reverse band under the forward one; 'reverse': the
     other way round), the browser's, the Topo window's and the stripe
-    window's pass radio.  Nothing is drawn when fwd is None.
+    window's pass radio.  Nothing is drawn when fwd is None.  Returns the
+    quads drawn, (n, 4, 2) in the axes' units (the callers fit their
+    limits around them), or None when nothing is drawn.
     """
     if fwd is None or pos_f is None:
-        return
+        return None
 
     def scale_of(a):
         """A Normalize from a pass's own finite min to max (None when it holds no finite pixel)."""
@@ -942,7 +1033,8 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None, top='fo
 
     norm_f = scale_of(fwd)
     if norm_f is None:
-        return
+        return None
+    drawn = []
     quads_f, colors_f = band(np.asarray(fwd, dtype=np.float64), np.asarray(pos_f, dtype=np.float64), norm_f)
     if rev is not None and pos_r is not None:
         norm_r = scale_of(rev)
@@ -951,9 +1043,12 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None, top='fo
             if quads_r:
                 ax.add_collection(PolyCollection(np.array(quads_r), facecolors=colors_r, edgecolors='none',
                                                  zorder=1.5 if top == 'reverse' else 1.4, antialiased=False))
+                drawn.extend(quads_r)
     if quads_f:
         ax.add_collection(PolyCollection(np.array(quads_f), facecolors=colors_f, edgecolors='none',
                                          zorder=1.4 if top == 'reverse' else 1.5, antialiased=False))
+        drawn.extend(quads_f)
+    return np.array(drawn, dtype=np.float64).reshape(-1, 4, 2) if drawn else None
 
 
 if __name__ == '__main__':

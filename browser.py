@@ -1376,8 +1376,9 @@ class _BrowserCore:
         The scan area for the current file: the overlays cleared, the layer updated (the files the
         'show' mode shows, each at its own scale and drift model), the other spectra files'
         diamonds, the current file's spectrum positions (corrected with a source on, with their
-        drift lines), a grid's own topo stripes and highlighted line, the view kept or relocated to
-        the file (widgets.ViewNavigator.keep), the title with the drift state, the section path.
+        drift lines), a grid's own topo stripes and highlighted line, the full extent edge to edge
+        around everything drawn, the view kept or relocated to the file (widgets.ViewNavigator.keep),
+        the title with the drift state, the section path.
         """
         ax = self.ax_scan
         self._clear_overlays()
@@ -1444,9 +1445,11 @@ class _BrowserCore:
                         print(f"{f.name}: the grid's topo pixels not drawn ({exc}).")
                         main = None
                     if main is not None:
-                        plots.draw_grid_stripes(ax, f, main, second, pos_m * k, None if pos_s is None else pos_s * k,
-                                                float(np.linalg.norm(slow_step)) if slow_step is not None else None,
-                                                top='reverse' if self._direction_of(f) == 'reverse' else 'forward')
+                        quads = plots.draw_grid_stripes(ax, f, main, second, pos_m * k, None if pos_s is None else pos_s * k,
+                                                        float(np.linalg.norm(slow_step)) if slow_step is not None else None,
+                                                        top='reverse' if self._direction_of(f) == 'reverse' else 'forward')
+                        if quads is not None:
+                            pts.append(quads.reshape(-1, 2))
                 ax.plot(xy[acq, 0], xy[acq, 1], ls='none', marker='o', ms=2.5, color='cyan',
                         mec='black', mew=0.3, label=f'spectra ({f.n_acquired} kept)')
                 sel = np.zeros(len(xy), dtype=bool)
@@ -1463,27 +1466,28 @@ class _BrowserCore:
                 if lines is not None:
                     # Every kept spectrum's drift line through its own sweep.
                     plots.draw_drift_lines(ax, lines[acq], markers=False, color=line_color)
+                    pts.append(lines[acq].reshape(-1, 2))
                 ax.legend(loc='upper right', frameon=False, fontsize=8)
             else:
                 plots.draw_point_sweeps(ax, xy, corrected, lines=lines, color=line_color)
-        if pts:
-            allp = np.vstack(pts)
-            x0, x1 = float(np.min(allp[:, 0])), float(np.max(allp[:, 0]))
-            y0, y1 = float(np.min(allp[:, 1])), float(np.max(allp[:, 1]))
+                if corrected and lines is not None:
+                    pts.append(lines.reshape(-1, 2))
+        box = plots.drawn_box(*pts)
+        if box is not None:
+            x0, x1, y0, y1 = box
             span = max(x1 - x0, y1 - y0)
             if span < 1.0:                      # a lone point: a 10 nm window around it
                 cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
                 x0, x1, y0, y1 = cx - 5.0, cx + 5.0, cy - 5.0, cy + 5.0
-            mx = 0.05 * max(x1 - x0, 1e-9)
-            my = 0.05 * max(y1 - y0, 1e-9)
             if focus is not None:
                 fx0, fx1, fy0, fy1 = focus
                 if max(fx1 - fx0, fy1 - fy0) < 1.0:   # a lone position: a 10 nm window around it
                     cx, cy = 0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1)
                     focus = (cx - 5.0, cx + 5.0, cy - 5.0, cy + 5.0)
-            # The full extent; the zoomed or panned view is kept, relocating to the current
-            # file when that lies outside it (widgets.ViewNavigator.keep).
-            self.view.keep(x0 - mx, x1 + mx, y0 - my, y1 + my, focus=focus)
+            # The full extent: everything drawn, edge to edge (the topos' corners, every position,
+            # the drift lines, a grid's stripes); the zoomed or panned view is kept, relocating to
+            # the current file when that lies outside it (widgets.ViewNavigator.keep).
+            self.view.keep(x0, x1, y0, y1, focus=focus)
         ax.ticklabel_format(useOffset=False, style='plain')
         ax.set_aspect('equal', adjustable='datalim')      # the box never changes: the axis ranges do
         ax.set_xlabel("x (nm, absolute)")

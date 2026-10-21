@@ -211,8 +211,8 @@ class StripeWindow:
         the bottom), the grid's stripes (topo.grid_stripe_layers, plots.draw_grid_stripes; at the
         corrected pixel positions when there is a placement, else the recorded ones), the kept
         spectra's placed positions (cyan dots), the grid's start (white square), the handles
-        (handle_positions), the limits around everything, the title, the status text; the 'fast
-        axis' radio set to the stored state.
+        (handle_positions), the limits edge to edge around everything drawn (plots.fit_limits), the
+        title, the status text; the 'fast axis' radio set to the stored state.
         """
         ax = self.ax
         ax.clear()
@@ -241,13 +241,14 @@ class StripeWindow:
         xy = np.asarray(res['xy_corr'] if res is not None else g.spec_xy_m, dtype=np.float64)
         xy = np.where(np.isfinite(xy), xy, np.asarray(g.spec_xy_m, dtype=np.float64)[:len(xy)])
         acq = np.asarray(g.acquired, dtype=bool)[:len(xy)]
+        quads = None
         try:
             main, second, pos_m, pos_s = grid_stripe_layers(g, self.top, self.active, pix)
             if main is not None:
                 width = (float(np.linalg.norm(g.spec_xy_m[g.n_fast] - g.spec_xy_m[0])) * k
                          if g.n_lines > 1 and len(g.spec_xy_m) > g.n_fast else None)
-                plots.draw_grid_stripes(ax, g, main, second, pos_m * k, None if pos_s is None else pos_s * k, width,
-                                        top=self.top)
+                quads = plots.draw_grid_stripes(ax, g, main, second, pos_m * k, None if pos_s is None else pos_s * k,
+                                                width, top=self.top)
         except Exception as exc:
             print(f"stripe window: the grid's stripes not drawn ({exc}).")
         ax.plot(xy[acq, 0] * k, xy[acq, 1] * k, ls='none', marker='o', ms=2.0, color='cyan', mec='black', mew=0.3,
@@ -260,13 +261,11 @@ class StripeWindow:
             h, = ax.plot([pos[0] * k], [pos[1] * k], ls='none', marker='o' if kind == 'E' else 'D', ms=7,
                          mfc=self.HANDLE_COLORS[kind], mec='black', mew=0.8, zorder=2.5, picker=8, label=key)
             self._handles.append((h, key, i, pos, self.line_direction(res, i)))
-        # Limits: the reference topos and the grid, with a margin.
-        pts = np.vstack(corners + [xy[acq] * k]) if (corners or acq.any()) else xy * k
-        mx = 0.05 * max(np.ptp(pts[:, 0]), 1e-9)
-        my = 0.05 * max(np.ptp(pts[:, 1]), 1e-9)
+        # Limits: everything drawn, edge to edge (plots.fit_limits): the reference topos' frames, the
+        # grid's stripes, the kept spectra, the start marker and the handles.
         ax.set_aspect('equal', adjustable='box')
-        ax.set_xlim(pts[:, 0].min() - mx, pts[:, 0].max() + mx)
-        ax.set_ylim(pts[:, 1].min() - my, pts[:, 1].max() + my)
+        handles = np.array([h[3] for h in self._handles], dtype=np.float64).reshape(-1, 2) * k
+        plots.fit_limits(ax, *corners, quads, xy[acq] * k, xy[:1] * k, handles)
         ax.set_xlabel("x (nm, absolute)")
         ax.set_ylabel("y (nm, absolute)")
         ax.ticklabel_format(useOffset=False, style='plain')
