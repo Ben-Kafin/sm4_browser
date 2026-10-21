@@ -2150,5 +2150,80 @@ def _edge_to_edge(b, exp):
     b._goto(0)
 
 
+def _row_heights(axes):
+    """The placed heights (px) of the axes' boxes, after the deferred placement."""
+    plt._app().processEvents()
+    return [ax.vb.geometry().height() for ax in axes]
+
+
+def _assert_row(axes, what=''):
+    """Every axes of a row at one height (within a pixel); every aspect-locked one at its data aspect (within 1 %)."""
+    hs = _row_heights(axes)
+    assert max(hs) - min(hs) < 1.0, (what, hs)
+    for ax in axes:
+        want = ax._aspect_want()
+        if want is not None:
+            g = ax.vb.geometry()
+            assert abs(g.height() / g.width() - want) < 0.01 * want, (what, g.width(), g.height(), want)
+    return hs[0]
+
+
+@check("N2 rows: every row of panels at one height, spatial panels keeping their aspect, the rest following (Map single and grid views, its companion, the Topo window, the composer, the drift window); one label between the map's colour bar and the curves")
+def _rows(b, exp):
+    from sm4_Browser import plots
+    m = open_map(b)
+    m._on_drift_toggle('auto', False)
+    m._on_drift_toggle('manual', False)
+    row = [m.ax_topo, m.ax_topo_cbar, m.ax_map, m.cax_map, m.ax_curve]
+    assert m.ax_topo._row is row[0]._row and all(ax._row is row[0]._row for ax in row), "one row object"
+    h_off = _assert_row(row, 'Map single view, drift off')
+    cell_h = m.ax_curve._cell_px()[3]
+    assert h_off < cell_h - 1.0, "the colour bars and the curve panel shrink to the square frame"
+    assert m.cax_map._colorbar._label and m.ax_curve.get_ylabel() == '', (m.cax_map._colorbar._label, m.ax_curve.get_ylabel())
+    # the drift's box changes the map's aspect: the row follows
+    m._on_drift_toggle('auto', True)
+    h_on = _assert_row(row, 'Map single view, drift on')
+    assert abs(h_on - h_off) > 0.5 or np.allclose(m._drift_bounds(), m.extent), (h_on, h_off)
+    # the grid view: every row of cells at one height, the colour bars with their maps
+    m.toggle_view()
+    rows = {}
+    for ax in [m.grid_topo_ax] + m.grid_axes + m.grid_caxes:
+        rows.setdefault(id(ax._row), ax._row)
+    assert len(rows) >= 1 and all(len(r) >= 2 for r in rows.values())
+    for r in rows.values():
+        if any(ax.get_visible() for ax in r):
+            _assert_row([ax for ax in r if ax.get_visible()], 'Map grid view')
+    m.toggle_view()
+    # the companion of the map: the maps and their colour bars at one height
+    fw = m.feenstra
+    if fw is not None and fw.is_open() and fw.kind == 'map':
+        _assert_row([a for d in fw.cols for a in (d['top'], d['cbar'])], 'Map companion')
+    # the composer: an image panel's row sets the height, the spectrum panel takes it
+    m._on_add_to_plot('map')
+    m._on_add_to_plot('topo')
+    m._on_add_to_plot('spectra')
+    comp = m.composer
+    assert comp is not None and comp.is_open() and len(comp.panels) >= 3, len(comp.panels)
+    for r in range(comp._rows):
+        _assert_row([ax for i, (ax, _, _) in enumerate(comp.panels) if i // comp.COLUMNS == r], f'composer row {r}')
+    plt.close(comp.fig)
+    plt.close(m.fig)
+    # the Topo window: the height colour bar as tall as the image
+    b._on_topo_window()
+    w = b.children[-1]
+    _assert_row([w.ax, w.cbar.ax], 'Topo window')
+    if w.ax._own_height() < w.ax._cell_px()[3] - 1.0:          # the image shrunk in its cell: the bar with it
+        assert w.cbar.ax.vb.geometry().height() < w.cbar.ax._cell_px()[3] - 1.0, "the bar follows the shrunk image"
+    w._on_drift_toggle('auto', not w.auto_on)              # the bar is remade with the image: still one row
+    _assert_row([w.ax, w.cbar.ax], 'Topo window, redrawn')
+    plt.close(w.fig)
+    # the drift window: both panels at one height
+    b._on_drift_window()
+    w = b.drift_window
+    _assert_row([w.ax_a, w.ax_b], 'drift window')
+    plt.close(w.fig)
+    b._goto(0)
+
+
 if __name__ == '__main__':
     sys.exit(0 if run(sys.argv[1:]) else 1)

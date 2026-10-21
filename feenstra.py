@@ -417,6 +417,12 @@ class FeenstraWindow:
             self.gammas[key].show(True)
         if kind == 'line':
             self._topo_cbar = plots.draw_topo_cbar(self.fig, self.TOPO_CBAR)
+        # The top row across the columns (the maps or heatmaps, their colour bars, the stripes and
+        # the topo ramp): one height, a map's aspect setting it (qtplot Figure.align_row).
+        top_row = [a for d in cols for a in (d.get('stripe'), d.get('top'), d.get('cbar'), d.get('panel')) if a is not None]
+        if self._topo_cbar is not None:
+            top_row.append(self._topo_cbar)
+        self.fig.align_row(*top_row)
         self.cols = cols
         self.kind = kind
 

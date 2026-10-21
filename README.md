@@ -281,7 +281,8 @@ opening, independent after); the spectra file shown with it at its corrected pos
 drift lines; a grid's own topography pixels over the image with the `topo pass` radio; for a grid
 the `stripe` toggle (the file's one shared state, as the browser's) and `stripe match`. The view is
 edge to edge around everything drawn: the frame, the positions, the drift lines and the grid's
-pixels, wherever the drift puts them.
+pixels, wherever the drift puts them; the height colour bar is as tall as the image, whatever
+shape the view gives it.
 
 ### Line window
 
@@ -328,7 +329,13 @@ plot` under the topography, the map and the curve panel copies that panel as sho
 composer (`composer.py`): one figure four square panels wide, the topography first, the maps in
 order of energy titled by bias, then the spectra, every spectrum with its own symbol drawn on every
 map at its position, every spectrum panel with a down arrow at each collected map's bias, maps with
-a 1 nm scale bar; Delete over a panel removes it, `new plot` empties the figure.
+a 1 nm scale bar; Delete over a panel removes it, `new plot` empties the figure. The top row
+of the single view is one row (the row rule, `qtplot.py`): the topography and the map keep their
+aspect, whatever shape the drift gives their view, and set the height; the two colour bars and
+the curve panel take it. One label sits between the map's colour bar and the curves, the bar's
+(the curves share its quantity and units). The grid view's rows and the composer's rows follow
+the same rule (a composer map with a non-square view shrinks, the spectrum panels of its row
+with it).
 
 ### Averaging windows (avg1, avg2, ...)
 
@@ -389,7 +396,7 @@ The manual drift of the current file (`drift.DriftWindow`): the pair its auto ve
 the earlier topography on the left and the later on the right, each titled with its file's name,
 each drawn at the scale in force at its own time with no drift correction (the drift is measured
 here), and on each panel the other topography's recorded frame as a thin black outline drawn on top,
-both panels on one view edge to edge around the two frames and the file's spectra. A click on either topography places a numbered
+both panels on one view edge to edge around the two frames and the file's spectra, at one height. A click on either topography places a numbered
 marker and, with a velocity governing the pair, its partner on the other topography where that
 velocity puts the same feature (hollow until moved); the k-th marker on the left pairs with the k-th
 on the right, each pair in its own colour with its displacement arrow on both panels; `Markers` is
@@ -450,7 +457,9 @@ Every window with its own `Feenstra` toggle (Line, Map, averaging, line average)
 (`feenstra.py`) with four versions of its spectra side by side: the dI/dV as the main window shows
 it with the toggle off, the current, its I/V, and the ratio, following the main window live; its
 `0Vsub`, `broadened` and `width (V)` boxes are the main window's Feenstra settings, and its own
-`calibrate` / `normalize` box governs the four panels.
+`calibrate` / `normalize` box governs the four panels. Its top row (the maps or heatmaps, their
+colour bars, the stripes and the topo ramp) is one row: a map's aspect sets the height, the rest
+take it.
 
 ## Files the package writes and reads
 
@@ -541,7 +550,11 @@ section path, the coordinates and the caches.
 The drawing and window layer: the subset of matplotlib's interface the package uses, rebuilt on
 pyqtgraph, so every window is written as if for matplotlib (`Figure`, `Axes` placed at figure
 fractions, `Line2D`, `AxesImage`, `QuadMesh`, `Text`, `Annotation`, `Colorbar`, `GridSpec`, the
-mouse, key, pick and close events, `NavigationToolbar`, `FigureManager`). It also holds the
+mouse, key, pick and close events, `NavigationToolbar`, `FigureManager`), plus the row rule
+(`Figure.align_row`: the panels of one row take one height, the one a locked aspect among them
+asks for, spatial panels keeping their aspect and colour bars, ramps and curve panels stretching
+or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row).
+It also holds the
 text-size rule (`window_zoom`, `ZOOM_MIN`, `ZOOM_MAX`, `FONT_SCALE`), the title rule
 (`short_title`, `is_file_name`, `file_stamp`), the saving dialog and the CSV export, the crash log
 and the `watchdog`, and the check of the Qt binding at import.
@@ -743,8 +756,8 @@ the stripe matching (G, H), the E-markers and ranges (F), the title rule (T), te
 labels (I), the stores and the flags (J), the scale timeline (K), the section path (L) and the fixes
 of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
 occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
-heatmap shear, the qtplot rules, the records helpers) and the limits (N: every spatial panel edge to
-edge around everything drawn). The other
+heatmap shear, the qtplot rules, the records helpers) and the layout (N: every spatial panel edge to
+edge around everything drawn; every row of panels at one height). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
 pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on

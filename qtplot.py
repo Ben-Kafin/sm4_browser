@@ -2417,27 +2417,52 @@ class Axes:
     def get_subplotspec(self):
         return self._spec
 
+    def _cell_px(self):
+        """The axes' cell: its figure-fraction rectangle in canvas pixels from the top left, (x0, y0, w, h)."""
+        W, H = self.figure._canvas_size()
+        x, y, w, h = self.get_position().bounds
+        return (x * W, (1.0 - y - h) * H, w * W, h * H)
+
+    def _aspect_want(self):
+        """The box's height over its width that an adjustable-'box' locked aspect asks for, from the limits set; None when the box is free."""
+        if not (getattr(self, '_adjust_box', False) and self.vb.state['aspectLocked']):
+            return None
+        tx, ty = getattr(self, '_target_x', None), getattr(self, '_target_y', None)
+        if tx is None or ty is None or not (tx[1] > tx[0] and ty[1] > ty[0]):
+            return None
+        return (ty[1] - ty[0]) / (tx[1] - tx[0]) * float(self.vb.state['aspectLocked'])
+
+    def _own_height(self):
+        """The height (px) the box takes on its own: its cell's, shrunk to its locked aspect (adjustable 'box')."""
+        x0, y0, w, h = self._cell_px()
+        want = self._aspect_want()
+        if want is not None and w > 0 and h > 0 and h / w > want:
+            return w * want
+        return h
+
     def _px_rect(self):
         """
         The box as drawn, (x0, y0, w, h) in canvas pixels from the top left: the figure-fraction
-        rectangle, shrunk for an adjustable-'box' aspect and moved clear of keep_clear_of's other
-        axes.
+        rectangle, at the height of its row when it is in one (Figure.align_row: the smallest height
+        a locked aspect among the row's visible panels asks for), else shrunk for its own
+        adjustable-'box' aspect; a locked aspect then sets the width; the box stays centred on its
+        cell; then moved clear of keep_clear_of's other axes.
         """
-        W, H = self.figure._canvas_size()
-        x, y, w, h = self.get_position().bounds
-        r = (x * W, (1.0 - y - h) * H, w * W, h * H)
-        if getattr(self, '_adjust_box', False) and self.vb.state['aspectLocked']:
+        x0, y0, w, h = self._cell_px()
+        row = getattr(self, '_row', None)
+        if row is not None:
+            hh = min([m._own_height() for m in row if m._visible and m.figure is self.figure] + [h])
+        else:
+            hh = self._own_height()
+        if hh < h and w > 0 and h > 0:
+            y0, h = y0 + 0.5 * (h - hh), hh
+        want = self._aspect_want()
+        if want is not None and w > 0 and h > 0:
             # matplotlib's adjustable='box': the box shrinks (about its centre) to the data's aspect.
-            tx, ty = getattr(self, '_target_x', None), getattr(self, '_target_y', None)
-            if tx is not None and ty is not None and tx[1] > tx[0] and ty[1] > ty[0] and r[2] > 0 and r[3] > 0:
-                want = (ty[1] - ty[0]) / (tx[1] - tx[0]) * float(self.vb.state['aspectLocked'])
-                bw, bh = r[2], r[3]
-                if bh / bw > want:
-                    nh = bw * want
-                    r = (r[0], r[1] + 0.5 * (bh - nh), bw, nh)
-                else:
-                    nw = bh / want
-                    r = (r[0] + 0.5 * (bw - nw), r[1], nw, bh)
+            nw = h / want
+            if nw < w:
+                x0, w = x0 + 0.5 * (w - nw), nw
+        r = (x0, y0, w, h)
         other = getattr(self, '_clear_of', None)
         if other is not None and other._visible:
             # This axes' left tick labels start right of the other axes' right-hand labels.
@@ -2553,6 +2578,8 @@ class Axes:
         keep_legend_clear re-run on a size change.
         """
         self._place_pending = False
+        if getattr(self.figure, '_closed', False):
+            return                                     # a placement queued (a row member re-placed) after the window closed
         x0, y0, w, h = self._px_rect()
         w, h = max(w, 1.0), max(h, 1.0)
         self.vb.setGeometry(QtCore.QRectF(x0, y0, w, h))
@@ -2673,6 +2700,15 @@ class Axes:
     def remove(self):
         fig = self.figure
         sc = fig.canvas.scene()
+        row = getattr(self, '_row', None)
+        if row is not None:                        # the row goes on without this axes
+            try:
+                row.remove(self)
+            except ValueError:
+                pass
+            self._row = None
+            for m in row:
+                m._request_place()
         for ins in list(self._insets):
             ins.remove()
         if self._legend is not None:
@@ -3051,6 +3087,9 @@ class Axes:
         if abs(self.vb.geometry().width() - w) > 0.5 or abs(self.vb.geometry().height() - h) > 0.5 \
                 or abs(self.vb.geometry().x() - x0) > 0.5 or abs(self.vb.geometry().y() - y0) > 0.5:
             self._request_place()
+            for m in (getattr(self, '_row', None) or []):      # the row follows this box's height
+                if m is not self:
+                    m._request_place()
 
     def get_aspect(self):
         return self._aspect
@@ -4437,8 +4476,35 @@ class Figure:
             hh = h * shrink
             cw = min(cb_w, (hh * H / float(aspect)) / W)
             cax = Axes(self, rect=[x0 + w - cb_w, y0 + (h - hh) / 2.0, cw, hh])
+            # The bar is as tall as the axes it belongs to, whatever aspect the axes' data give it (align_row).
+            row = getattr(ax, '_row', None)
+            if row is not None:
+                row.append(cax)
+                cax._row = row
+                cax._request_place()
+            else:
+                self.align_row(ax, cax)
         cb = Colorbar(self, mappable, cax, label=label, parent_axes=ax, parent_rect=parent_rect)
         return cb
+
+    def align_row(self, *axes):
+        """
+        One row of panels: every axes given takes the same height, the smallest an adjustable-'box'
+        locked aspect among the row's visible panels asks for (Axes._own_height; a spatial panel
+        keeps its aspect, its width following; a colour bar, a ramp or a curve panel stretches or
+        squishes to the height), each centred on its own cell, so that a row stays neat whatever
+        shape the data give its spatial panels.  A limits change on one re-places them all; an axes
+        belongs to one row, and a removed axes leaves its row.  Returns the row (a list).
+        """
+        row = [ax for ax in axes if ax is not None]
+        for ax in row:
+            old = getattr(ax, '_row', None)
+            if old is not None and ax in old:
+                old.remove(ax)
+            ax._row = row
+        for ax in row:
+            ax._request_place()
+        return row
 
     # --- output, closing ---
 

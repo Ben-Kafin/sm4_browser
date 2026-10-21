@@ -110,7 +110,7 @@ class Map:
     MAP_X, MAP_W = 0.36, 0.28
     CBAR_X, CBAR_W = 0.645, 0.012
     CURVE_X, CURVE_W = 0.72, 0.26
-    TOPO_CBAR = [0.326, 0.14, 0.008, 0.78]
+    TOPO_CBAR = [0.326, 0.17, 0.008, 0.75]    # the topo ramp on the topo's cell: the row rule centres it with the topo
     # The 'Markers' slider stack.
     SLIDER_X = 0.45
     SLIDER_Y0, SLIDER_PITCH = 0.02, 0.025
@@ -296,6 +296,9 @@ class Map:
         self.ax_curve = self.fig.add_axes([self.CURVE_X, self.PANEL_BOTTOM_MIN, self.CURVE_W, self.PANEL_H_MAX])
         self.ax_curve.keep_clear_of(self.cax_map)        # the curves never run into the colour bar's labels
         self.ax_topo_cbar = plots.draw_topo_cbar(self.fig, self.TOPO_CBAR)
+        # One row: the topo and the map keep their aspect (the frame, or the drift's wider box) and set
+        # the height; the two colour bars and the curve panel take it (qtplot Figure.align_row).
+        self.fig.align_row(self.ax_topo, self.ax_topo_cbar, self.ax_map, self.cax_map, self.ax_curve)
         self.gamma_single.attach(self.ax_map, gap_in=0.2)
         # Grid view axes (built once, hidden until toggled), one γ box under each map.
         n_cells = self.n_e + 1                      # the topo first, then one map per energy
@@ -325,6 +328,13 @@ class Map:
             g.on_change(lambda value, e=e: self._on_gamma_grid(e, value))
             g.show(False)
             self.grid_gammas.append(g)
+        # Each row of cells is one row: the maps (and the topo) set the height, their colour bars take it.
+        for rr in range(nrows):
+            members = [self.grid_topo_ax] if rr == 0 else []
+            for e in range(self.n_e):
+                if divmod(e + 1, ncols)[0] == rr:
+                    members += [self.grid_axes[e], self.grid_caxes[e]]
+            self.fig.align_row(*members)
         self.grid_ims = [None] * self.n_e
         self.grid_labels = [None] * self.n_e      # the grid view's energy label per cell, made once (_grid_label)
         self.maps = None
@@ -1329,6 +1339,9 @@ class Map:
         plots.draw_marker_curves(self.ax_curve, self.V, markers, group_items, self.avg_on, self.stack_on,
                                  self.substack_on, self._curve_texts(), offset_frac=self.STACK_OFFSET_FRAC)
         self.ax_curve.title.set_fontsize(9)
+        # One label between the map's colour bar and the curves: the bar's (the quantity and its units,
+        # the curves' too); the curve panel carries none of its own.
+        self.ax_curve.set_ylabel('')
 
     # --- dragging ---
 

@@ -184,6 +184,10 @@ class FigureComposer:
             else:
                 info = self._draw_image_panel(ax, it, spectra)
             self.panels.append((ax, it, info))
+        # Each row of panels: the image panels keep their aspect (a map's collected limits need not be
+        # square) and set the row's height, the spectrum panels take it (qtplot Figure.align_row).
+        for r in range(rows):
+            self.fig.align_row(*[ax for i, (ax, _, _) in enumerate(self.panels) if i // self.COLUMNS == r])
         self.fig.canvas.draw_idle()
 
     def _draw_image_panel(self, ax, it, spectra):

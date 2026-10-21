@@ -92,10 +92,20 @@ def calibrate(energy, curves, iv, vmod=None):
 
     The calibrated dI/dV is then  a_j · LIA_j(V) + b_j, which
     simultaneously recovers the scale and offset in a single fit.
-    X and ΔI are referenced at the data point nearest 0 V; V is the
-    energy axis itself.  (When the bias range does not contain 0 V the
-    reference is the sweep end nearest 0 V and the b·V term is then not
-    b·(V − V_ref), which biases the fit.)
+    X and ΔI are referenced at the sample nearest 0 V, V_ref; V is the
+    energy axis itself.  The exact relation integrated from V_ref is
+    ΔI = a·X + b·(V − V_ref): the fit's b·V leaves out the constant
+    −b·V_ref, and a regression without an intercept is unbiased only
+    when that constant is zero.  No sample needs to sit at 0 V exactly:
+    with 0 V inside the window V_ref lies within half an energy step of
+    it and the omission is small (a synthetic check with the reference
+    5 mV from 0 V moved a by 0.3 % and b by 2 %).  With 0 V outside the
+    window V_ref is the sweep end nearest 0 V and the fit is biased (the
+    same check with the window ending 0.1 V from 0 V moved a by 9 to 18 %
+    and b by 65 to 77 %; windows further out, −2 to −0.8 V or +2 to +5 V,
+    lost b almost entirely, −85 %, with a off by 3 to 7 %); the sweep's
+    recorded direction makes no difference (the energies are sorted).  The
+    regressor V − V_ref would remove the bias for every window.
 
     Parameters
     ----------
@@ -215,8 +225,14 @@ def calibrate_iets(energy, curves, iv, vmod=None):
     solved with numpy.linalg.solve as calibrate solves its 2 by 2 system.
     The calibrated curve is a_j · S_j(V) + b_j (in the Current page's units
     per V²), in the original energy ordering.  As in calibrate, V is the
-    energy axis itself, not V − V_ref, so a window without 0 V biases the
-    fit.
+    energy axis itself: the exact relation holds in V − V_ref, and expanding
+    b·(V − V_ref)²/2 + c·(V − V_ref) the free c absorbs the linear part but
+    the constant b·V_ref²/2 − c·V_ref is left out of a fit without an
+    intercept.  The three regressors Z, V²/2 and V are nearly collinear, so
+    the fit is far more sensitive to the reference than calibrate's: in a
+    synthetic check a reference 5 mV from 0 V (0 V inside the window, not
+    sampled) moved a by 17 % and b by 70 %, and a window without 0 V gave
+    values of the wrong size and sign.  A window with 0 V sampled is exact.
 
     Parameters: as calibrate (energy in V, any order; curves the
     second-harmonic page's data as the loader gives it, never filtered; iv

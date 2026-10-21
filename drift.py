@@ -3373,6 +3373,7 @@ class DriftWindow:
             pass
         self.ax_a = self.fig.add_axes([0.05, 0.30, 0.42, 0.64])
         self.ax_b = self.fig.add_axes([0.55, 0.30, 0.42, 0.64], sharex=self.ax_a, sharey=self.ax_a)
+        self.fig.align_row(self.ax_a, self.ax_b)   # one row: the same height whatever shape the view takes
         # The topos of the file's segment in time order: what the step buttons walk through.
         seg = drift.segment_key_of(f.path)
         self.members = list(drift.segment_members(seg)) if seg is not None else []
