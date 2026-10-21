@@ -2353,6 +2353,12 @@ def _didv_filters(b, exp):
     assert np.allclose(out_d, filters.filter_lia(spiky, hp, None), rtol=1e-9, atol=0)
     # the Line window: the record keeps the dI/dV toggles, restore puts them back
     w = open_line(b)
+    before = np.array(w._int_curves, dtype=np.float64)
+    w._int_filters.set_params(None, None, {'window': 2, 'n_sigma': 0.5}, sp)   # strong dI/dV filters
+    w._int_on_filter_change()
+    after = np.array(w._int_curves, dtype=np.float64)
+    ok = np.isfinite(before) & np.isfinite(after)
+    assert ok.any() and not np.allclose(before[ok], after[ok], rtol=1e-9, atol=0), "the dI/dV toggles reach the Line window's heatmap"
     w._int_filters.set_params(None, None, hp, None)
     w._int_on_filter_change()
     assert w._int_hampel_didv == hp and w._int_sgolay_didv is None and w._int_hampel_params is None

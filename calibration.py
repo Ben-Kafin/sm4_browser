@@ -468,8 +468,9 @@ if __name__ == '__main__':
         ax.plot(V, X_all, **faint)
         ax.plot(V, cf.X, **bold)
         ax.axvline(Vs[i0], color='0.5', lw=0.8, ls=':')
-        ax.set_ylabel(f"X = ∫ LIA dV, referenced at the anchor ({uL}·V)")
-        ax.set_title(f"integrated raw dI/dV: X(V) − X(V_bias), V_bias = {Vs[i0]:+.3f} V")
+        ax.set_ylabel(f"X = ∫ LIA dV from V_bias ({uL}·V)")
+        ax.set_title(f"the regressor X(V) = ∫ LIA dV from V_bias = {Vs[i0]:+.3f} V (0 there by construction; "
+                     "the current it builds is in the panel below)")
 
         ax = axes[0, 2]
         ax.plot(V, iv_raw, **faint)

@@ -516,7 +516,8 @@ class Line:
         curves = self._pipeline(self._int_raw, self._int_iv, hampel_filter_params, sgolay_filter_params,
                                 self._int_apply_calibration, self._int_divide_iv, self._int_iv_width(),
                                 self._int_apply_normalize, iv_zero_sub=self._int_iv_zero_sub,
-                                norm_range=self._int_e_range)
+                                norm_range=self._int_e_range, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
+                                ref=getattr(self, '_int_ref', None))
         return self._int_orient(curves)
 
     def _int_source_label(self):
@@ -1385,6 +1386,7 @@ class Line:
         self._int_curves = curves
         self._int_draw_heatmap()
         self._redraw_curves()
+        self._int_feenstra_refresh()                 # the companion's four versions follow the filters
 
     def _int_quantity(self):
         """Name of the displayed quantity: dI/dV, (dI/dV)/(I/V), or d2I/dV2 (IETS), with the flags that are off."""
