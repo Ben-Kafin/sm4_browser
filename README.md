@@ -106,6 +106,7 @@ them.
 | `show` | which files the scan area shows: `up to current`, `all`, or `last 25` (the loaded set) |
 | `step through`, `min (min)` | the kinds the stepping stops at, and the shortest duration a file must have |
 | `auto drift`, `manual drift` | the two velocity sources applied to every file (see [Concepts](#concepts)); off only redraws |
+| `stripe` | the current grid's stripe matching on or off under every drift setting at once: one state per file, shown by this toggle and by the Topo, Line and Map windows' toggles alike, the latest change winning; on keeps a setting's auto or manual choice and turns an off setting to auto, or to manual where it holds dragged points |
 | `stripe match` | the stripe window of the current grid |
 | `drift` | the manual drift window of the current file |
 | `anchor to topo` | grid and point files: the file moved rigidly to where the surface sat when the topography under it began (see [Concepts](#concepts)); off at start |
@@ -273,8 +274,8 @@ most recent loaded one whose footprint contains its position, else the most rece
 console) in its own scan frame, aspect locked, at the current file's scale, with the colour bar in
 nm; its own `auto drift`, `manual drift` and `anchor to topo` toggles (set from the browser's at
 opening, independent after); the spectra file shown with it at its corrected positions with its
-drift lines; a grid's own topography pixels over the image with the `topo pass` radio; `stripe
-match` for a grid.
+drift lines; a grid's own topography pixels over the image with the `topo pass` radio; for a grid
+the `stripe` toggle (the file's one shared state, as the browser's) and `stripe match`.
 
 ### Line window
 
@@ -293,9 +294,11 @@ back), the `line` box with `< line` / `line >`, the window's
 own `Feenstra` toggle with its companion, the `calibrate` / `normalize` box, the filters,
 `sweeps` for a file with several sweeps per pixel, `profile` per topography row (the raw heights
 of the forward and reverse passes), `save` (the marker record), `line → new avg` / `line → existing
-avg`, `Send to fit`, `drift window`, and its own drift toggles. The heatmap rows are sheared by the
-drift during each sweep and carry the stripe matching's along-line placement; the stripe never
-moves.
+avg`, `Send to fit`, `drift window`, its own drift toggles, and the `stripe` toggle (the file's one
+shared state, as the browser's) with `stripe match`. Each heatmap row sits on its own topography
+pixel at its first energy (the pixel was recorded seconds before the sweep began; the placement and
+the slow drift move pixel and spectrum alike) and is sheared by the drift during the sweep from
+there; the stripe never moves.
 
 ### Map window and the figure composer
 

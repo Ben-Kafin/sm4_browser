@@ -16,8 +16,9 @@ the window's own 'Feenstra' toggle with its Feenstra companion
 (widgets.PipelineBox, top right as in every window), the 'channel' radio,
 the 'sweeps' radio of a file with several sweeps per pixel, the crop
 cursors on the heatmap with their riding boxes and the 'crop' / 'uncrop'
-buttons, the window's own 'auto drift' / 'manual drift' toggles
-and 'drift window', the 'line' box with its '< line' / 'line >' arrows,
+buttons, the window's own 'auto drift' / 'manual drift' / 'stripe'
+toggles, 'drift window' and 'stripe match', the 'line' box with its
+'< line' / 'line >' arrows,
 the topo-row controls (with a 'profile' button per row), 'save' (the
 marker record averages/<file stem>_line<k>_markers.json), 'line → new
 avg' / 'line → existing avg' (this line into a line average,
@@ -618,19 +619,23 @@ class Line:
 
     def _int_shear(self):
         """
-        The total skew of every kept row relative to the topo path, with a
-        drift source on or the grid's fast-axis placement set (the stripe
-        window): the row's along-line offset (its spectrum's placed
-        position minus the recorded one, projected on the line: the stripe
-        matching's placement and the slow-axis drift's along-line part,
-        Drift.result with the stored fast-axis state) plus the within-sweep
-        shear (Drift.row_shear: the along-line drift at the energy-cell
-        edges of each sweep, the line's own forward compression where the
-        placement measured one, the velocity otherwise), converted to the
-        position axis's units and ordered as the heatmap's energy axis,
-        (n_kept, n_e + 1); None with nothing to apply.  The stripe itself is
-        never moved: the rows move relative to it.  The velocity's source is
-        kept for the stripe lines' colour (_int_drift_source).
+        The total skew of every kept row relative to the topo stripe, with
+        a drift source on or the grid's fast-axis placement set (the stripe
+        window): the row's along-line offset against its own topo pixel
+        (its spectrum's placed position minus the placed position of the
+        pixel recorded at its location, projected on the line: the seconds
+        between the pixel and the sweep's start, Drift.result with the
+        stored fast-axis state; the placement and the slow drift move the
+        pixel and the spectrum alike, so they never enter) plus the
+        within-sweep shear (Drift.row_shear: the along-line drift at the
+        energy-cell edges of each sweep, the line's own forward compression
+        where the placement measured one, the velocity otherwise),
+        converted to the position axis's units and ordered as the heatmap's
+        energy axis, (n_kept, n_e + 1); None with nothing to apply.  The
+        stripe itself is never moved: the rows move relative to it, from
+        next to nothing at the first energy to the sweep's drift at the
+        last.  The velocity's source is kept for the stripe lines' colour
+        (_int_drift_source).
         """
         if self._int_drift is None:
             return None
@@ -645,14 +650,22 @@ class Line:
                     res = self._int_drift.result(sm4, None, None, self._int_auto_on, self._int_manual_on)
                     self._int_drift_source = res.get('source') if res is not None else None
                     if res is not None:
-                        # Every row's along-line offset: where its spectrum was placed against where it was recorded.
+                        # Every row's along-line offset against its own topo pixel: where its spectrum was
+                        # placed against where the pixel recorded at its location was placed (the same
+                        # chain; the seconds between the pixel and the sweep's start), never against the
+                        # recorded position, which would carry the whole placement and the slow drift since
+                        # the file's first spectrum into the stripe's frame.
                         fast, _ = sm4.grid_axes()
-                        xy = np.asarray(sm4.spec_xy_m, dtype=np.float64)
                         corr = np.asarray(res['xy_corr'], dtype=np.float64)
-                        off = np.full(len(cols), np.nan)
-                        ok = cols < min(len(xy), len(corr))
-                        off[ok] = (corr[cols[ok]] - xy[cols[ok]]) @ fast
-                        off = np.where(np.isfinite(off), off, 0.0)
+                        off = np.zeros(len(cols))
+                        pix_f = (res.get('pix') or {}).get('forward')
+                        if pix_f is not None and sm4.topo_pages:
+                            pix_f = np.asarray(pix_f, dtype=np.float64)
+                            idx, _ = sm4.spectrum_pixels('forward')
+                            ok = (cols < min(len(corr), len(idx))) & (idx[np.minimum(cols, len(idx) - 1), 0] >= 0)
+                            p = pix_f[idx[cols[ok], 0], idx[cols[ok], 1]]
+                            d = (corr[cols[ok]] - p) @ fast
+                            off[ok] = np.where(np.isfinite(d), d, 0.0)
                         if sh is None:
                             sh = np.zeros((len(cols), len(self.energy) + 1))
                         sh = np.asarray(sh, dtype=np.float64) + off[:, None]
@@ -667,7 +680,8 @@ class Line:
         return self._int_shear_cache
 
     def _int_apply_drift_toggle(self):
-        """The toggles' states applied: the shear recomputed, the heatmap rebuilt, the stripe redrawn, the companion refreshed."""
+        """The toggles' states applied (and after every manual change of the drift, Drift.subscribe): the 'stripe' toggle synced, the shear recomputed, the heatmap rebuilt, the stripe redrawn, the companion refreshed."""
+        self._int_sync_stripe_toggle()
         self._int_shear_cache = None
         if self._int_im is not None:
             self._int_im.set_shear(self._int_shear())
@@ -697,6 +711,50 @@ class Line:
               + (" (rows sheared by the drift during their sweeps; the stripe untouched)."
                  if self._int_drift_active() else
                  (" (rows placed by the stripe matching alone)." if stripe else " (rows plain).")))
+
+    def _int_sync_stripe_toggle(self):
+        """The 'stripe' toggle shows the grid's stripe matching under the window's drift setting (Drift.stripe_on); off without a drift model or a grid."""
+        chk = getattr(self, '_int_chk_stripe', None)
+        if chk is None:
+            return
+        on = False
+        if self._int_drift is not None:
+            sm4 = self._int_sm4()
+            on = self._int_drift.stripe_on(sm4, self._int_auto_on, self._int_manual_on)
+        chk.set(bool(on))
+
+    def _int_on_stripe_toggle(self, flag):
+        """'stripe': the grid's stripe matching on or off under every drift setting at once (Drift.set_stripe_on: one state per file, every window's toggle follows); refused, the toggle put back, without a drift model or a grid with topo pages."""
+        sm4 = self._int_sm4() if self._int_drift is not None else None
+        if sm4 is None or sm4.kind != 'grid' or not sm4.topo_pages:
+            print(f"{self._int_tag()}: no drift model at hand, or no grid with topo pages; the stripe toggle stays off.")
+            self._int_chk_stripe.set(False)
+            self._int_fig.canvas.draw_idle()
+            return
+        self._int_drift.set_stripe_on(sm4, flag)
+        self._int_sync_stripe_toggle()
+
+    def _int_on_stripe_window(self):
+        """'stripe match': the grid's stripe window (stripe.StripeWindow), one at a time, opened at the window's drift setting with the forward pass on top."""
+        if self._int_drift is None:
+            print(f"{self._int_tag()}: no drift model at hand; no stripe window.")
+            return
+        sm4 = self._int_sm4()
+        if sm4.kind != 'grid' or not sm4.topo_pages:
+            print(f"{self._int_tag()}: not a grid with topo pages; no stripe window.")
+            return
+        w = self._int_stripe_window
+        if w is not None and w.is_open():
+            w.raise_()
+            return
+        from sm4_Browser.stripe import StripeWindow
+        try:
+            self._int_stripe_window = StripeWindow(self._int_drift, sm4, self.scalefactor, list(self._int_topo_active),
+                                                   setting=self._int_drift.slow_setting(sm4, self._int_auto_on,
+                                                                                        self._int_manual_on),
+                                                   pass_top='forward')
+        except ValueError as exc:
+            print(f"{self._int_tag()}: stripe window not opened ({exc}).")
 
     def _int_on_drift_window(self):
         """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow; partners seeded by the velocity governing the pair); a change applied there reaches every subscriber of the Drift, this window included."""
@@ -2576,13 +2634,21 @@ class Line:
         fw = fig.get_size_inches()[0]
         x_auto = 0.53
         x_manual = x_auto + widgets.SPECS['auto drift']['w'] / fw + 0.003
-        x_win = x_manual + widgets.SPECS['manual drift']['w'] / fw + 0.003
+        x_stripe = x_manual + widgets.SPECS['manual drift']['w'] / fw + 0.003
+        x_stripe_win = x_auto + widgets.SPECS['drift window']['w'] / fw + 0.003
         self._int_chk_auto = widgets.make(fig, 'auto drift', x_auto, 0.125, value=self._int_auto_on)
         self._int_chk_auto.on_change(lambda flag: self._int_on_drift_toggle('auto', flag))
         self._int_chk_manual = widgets.make(fig, 'manual drift', x_manual, 0.125, value=self._int_manual_on)
         self._int_chk_manual.on_change(lambda flag: self._int_on_drift_toggle('manual', flag))
-        self._int_btn_drift_win = widgets.make(fig, 'drift window', x_win, 0.127)
+        # The grid's stripe matching: the 'stripe' toggle beside the drift toggles (one state per file,
+        # Drift.set_stripe_on) and, on the row above with 'drift window', the 'stripe match' button.
+        self._int_chk_stripe = widgets.make(fig, 'stripe', x_stripe, 0.125, value=False)
+        self._int_chk_stripe.on_change(self._int_on_stripe_toggle)
+        self._int_btn_drift_win = widgets.make(fig, 'drift window', x_auto, 0.167)
         self._int_btn_drift_win.on_change(self._int_on_drift_window)
+        self._int_btn_stripe_win = widgets.make(fig, 'stripe match', x_stripe_win, 0.167)
+        self._int_btn_stripe_win.on_change(self._int_on_stripe_window)
+        self._int_sync_stripe_toggle()
         self._int_rad_channel = widgets.make(fig, 'channel', 0.12, 0.005, value=STS.CHANNEL_NAMES[self.channel])
         # The E-markers (energy markers, vertical lines at an energy; the position markers are unchanged):
         # their count slider under the 'Markers' stack (0 clears them); the readout goes to the
@@ -2950,6 +3016,7 @@ class Line:
         self._int_profile_windows = []        # profile windows opened from the topo rows stay referenced
         self._int_profile_plots = profile_plots   # the browser's profile plots (topo.ProfilePlots) for their 'add' buttons
         self._int_drift_windows = []          # drift windows opened from here stay referenced
+        self._int_stripe_window = None        # the stripe window opened by 'stripe match' (one at a time)
 
         # --- Raw LIA and I(V) columns of the displayed line (pipeline input) ---
         self._int_load_source()

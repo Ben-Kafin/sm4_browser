@@ -7,7 +7,7 @@ the 'cmap norm' colour-scale toggle, and one 'γ' box per energy slice.
 Also in the window: the 'channel' radio (dI/dV or IETS), the 'topo pass'
 radio of the embedded topo, the 'sweeps' radio of a file with several
 sweeps per pixel, the filter box, the window's own 'auto drift' / 'manual
-drift' toggles and 'drift window' (the pixels and the topo at their
+drift' / 'stripe' toggles, 'drift window' and 'stripe match' (the pixels and the topo at their
 drift-corrected positions), 'map → new avg' / 'map → existing avg' (the
 whole map into an averaging window), the figure composer buttons ('add to
 plot' under each panel, 'new plot'; composer.py), and 'Send to fit'.  The
@@ -170,6 +170,7 @@ class Map:
         self.auto_on = bool(auto_on and drift is not None)
         self.manual_on = bool(manual_on and drift is not None)
         self._drift_windows = []
+        self.stripe_window = None                   # the stripe window opened by 'stripe match' (one at a time)
         self._drift_source = None                   # the velocity's source of the last result (the lines' colour)
         self._drift_res = None                      # Drift.result of the grid, once per toggle state (False: none)
         self._bounds = None                         # _drift_bounds, memoized with _drift_res
@@ -242,10 +243,17 @@ class Map:
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
         self.chk_auto = widgets.make(self.fig, 'auto drift', 0.26, 0.112, value=self.auto_on)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
-        self.chk_manual = widgets.make(self.fig, 'manual drift', 0.53, 0.112, value=self.manual_on)
+        self.chk_manual = widgets.make(self.fig, 'manual drift', 0.55, 0.112, value=self.manual_on)
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.btn_drift_win = widgets.make(self.fig, 'drift window', 0.612, 0.114)
+        self.btn_drift_win = widgets.make(self.fig, 'drift window', 0.63, 0.114)
         self.btn_drift_win.on_change(self._on_drift_window)
+        # The grid's stripe matching: the 'stripe' toggle (one state per file, Drift.set_stripe_on) and
+        # the 'stripe match' button, between the two drift toggles.
+        self.chk_stripe = widgets.make(self.fig, 'stripe', 0.42, 0.116, value=False)
+        self.chk_stripe.on_change(self._on_stripe_toggle)
+        self.btn_stripe_win = widgets.make(self.fig, 'stripe match', 0.47, 0.118)
+        self.btn_stripe_win.on_change(self._on_stripe_window)
+        self._sync_stripe_toggle()
         self.btn_view = widgets.make(self.fig, 'Grid view', 0.92, 0.065)
         self.btn_view.on_change(self.toggle_view)
         self.steps = widgets.StepButtons(self.fig, '< E', 'E >', 0.895, 0.01)
@@ -632,6 +640,41 @@ class Map:
         self._refresh_drift()
         print(f"Map window: {which} drift {'on' if flag else 'off'}.")
 
+    def _sync_stripe_toggle(self):
+        """The 'stripe' toggle shows the grid's stripe matching under the window's drift setting (Drift.stripe_on); off without a drift model."""
+        chk = getattr(self, 'chk_stripe', None)
+        if chk is None:
+            return
+        on = self.drift is not None and self.drift.stripe_on(self.grid, self.auto_on, self.manual_on)
+        chk.set(bool(on))
+
+    def _on_stripe_toggle(self, flag):
+        """'stripe': the grid's stripe matching on or off under every drift setting at once (Drift.set_stripe_on: one state per file, every window's toggle follows); refused, the toggle put back, without a drift model or topo pages."""
+        if self.drift is None or not self.grid.topo_pages:
+            print("Map window: no drift model at hand, or no topo pages; the stripe toggle stays off.")
+            self.chk_stripe.set(False)
+            self.fig.canvas.draw_idle()
+            return
+        self.drift.set_stripe_on(self.grid, flag)
+        self._sync_stripe_toggle()
+
+    def _on_stripe_window(self):
+        """'stripe match': the grid's stripe window (stripe.StripeWindow), one at a time, opened at the window's drift setting with the pass of the 'topo pass' radio on top."""
+        if self.drift is None or not self.grid.topo_pages:
+            print("Map window: no drift model at hand, or no topo pages; no stripe window.")
+            return
+        w = self.stripe_window
+        if w is not None and w.is_open():
+            w.raise_()
+            return
+        from sm4_Browser.stripe import StripeWindow
+        try:
+            self.stripe_window = StripeWindow(self.drift, self.grid, self.scalefactor, list(self.active_procs),
+                                              setting=self.drift.slow_setting(self.grid, self.auto_on, self.manual_on),
+                                              pass_top='reverse' if self.rad_dir.value == 'reverse' else 'forward')
+        except ValueError as exc:
+            print(f"Map window: stripe window not opened ({exc}).")
+
     def _on_drift_window(self):
         """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow; partners seeded by the velocity governing the pair); a change applied there reaches every subscriber of the Drift, this window included."""
         if self.drift is None:
@@ -645,7 +688,8 @@ class Map:
         self._drift_windows.append(w)
 
     def _refresh_drift(self):
-        """The drift state applied anew (a toggle, a sweep view, a change in any drift window): the memoized result, bounds and lines dropped, the pixel maps removed, the topo and the maps redrawn."""
+        """The drift state applied anew (a toggle, a sweep view, a change in any drift or stripe window): the 'stripe' toggle synced, the memoized result, bounds and lines dropped, the pixel maps removed, the topo and the maps redrawn."""
+        self._sync_stripe_toggle()
         self._drift_res = None
         self._bounds = None
         self._lines_memo = None

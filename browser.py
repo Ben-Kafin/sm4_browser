@@ -922,6 +922,8 @@ class _BrowserCore:
         self.chk_manual.show(True)
         self.chk_anchor.show(True)
         self.btn_stripe.show(grid and bool(self.current.topo_pages) and self.drift is not None)   # the Topo window's rule
+        self.chk_stripe.show(grid and bool(self.current.topo_pages) and self.drift is not None)
+        self._sync_stripe_toggle()
         self.rad_channel.show(grid or point)
         self.btn_add_new.show(point)
         self.btn_add_existing.show(point)
@@ -1833,8 +1835,31 @@ class _BrowserCore:
         else:
             self.anchor_on = bool(flag)
         print(f"{'anchor to topo' if which == 'anchor' else which + ' drift'} {'on' if bool(flag) else 'off'}.")
+        self._sync_stripe_toggle()                 # the setting in force changed: its stored stripe state shows
         self._draw_scan_area()
         self.fig.canvas.draw_idle()
+
+    def _sync_stripe_toggle(self):
+        """The 'stripe' toggle shows the current grid's stripe matching under the setting in force (Drift.stripe_on); off for any other file."""
+        f = self.current
+        on = self.drift is not None and f is not None and self.drift.stripe_on(f, self.auto_on, self.manual_on)
+        self.chk_stripe.set(bool(on))
+
+    def _on_stripe_toggle(self, flag):
+        """
+        'stripe': the current grid's stripe matching on or off under every
+        drift setting at once (Drift.set_stripe_on: one state per file;
+        every window's toggle for the file follows through the Drift's
+        subscribers).  Refused, with the toggle put back, for a file that
+        is not a grid with topo pages or without a drift model.
+        """
+        f = self.current
+        if self.drift is None or f is None or f.kind != 'grid' or not f.topo_pages:
+            print("stripe: the current file is not a grid with topo pages, or there is no drift model.")
+            self.chk_stripe.set(False)
+            return
+        self.drift.set_stripe_on(f, flag)
+        self._sync_stripe_toggle()
 
     def _on_stripe_window(self):
         """
@@ -1887,6 +1912,7 @@ class _BrowserCore:
     def _on_manual_changed(self):
         """The Drift's manual state changed (a span applied or cleared, in any drift window): the scan area redrawn."""
         self._drift_version = getattr(self, '_drift_version', 0) + 1
+        self._sync_stripe_toggle()
         self._draw_scan_area()
         self.fig.canvas.draw_idle()
 
@@ -3305,6 +3331,7 @@ class Browser(_BrowserCore):
         self.chk_auto = QCheck('auto drift', self.auto_on)
         self.chk_manual = QCheck('manual drift', self.manual_on)
         self.chk_anchor = QCheck('anchor to topo', self.anchor_on)
+        self.chk_stripe = QCheck('stripe', False)          # the current grid's stripe matching on / off (Drift.set_stripe_on)
         self.btn_stripe = QPush('stripe match')
         self.btn_drift = QPush('drift')
         self.btn_saved = QPush('load saved averages')
@@ -3315,8 +3342,8 @@ class Browser(_BrowserCore):
         bottom = QtWidgets.QHBoxLayout()
         nav = QtWidgets.QVBoxLayout()
         nav.addWidget(_row(self.btn_prev, self.btn_next, self.btn_topo, self.box_scale))
-        nav.addWidget(_row(self.chk_auto, self.chk_manual, self.btn_stripe, self.btn_drift))
-        nav.addWidget(_row(self.chk_anchor, self.btn_saved))     # under the drift toggles: their row has no room for a fifth control at the design size
+        nav.addWidget(_row(self.chk_auto, self.chk_manual, self.chk_stripe, self.btn_drift))
+        nav.addWidget(_row(self.chk_anchor, self.btn_stripe, self.btn_saved))     # under the drift toggles: their row has no room for a fifth control at the design size
         self.rad_show = QRadio('show', list(SHOW_MODES), self.show_mode, title='show')
         self.chk_kinds = QChecks('step through', ['topo', 'point', 'grid', 'phase', 'fft'], [True] * 5,
                                  title='step through')
@@ -3462,6 +3489,7 @@ class Browser(_BrowserCore):
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
         self.chk_anchor.on_change(lambda flag: self._on_drift_toggle('anchor', flag))
         self.btn_stripe.on_change(self._on_stripe_window)
+        self.chk_stripe.on_change(self._on_stripe_toggle)
         self.btn_drift.on_change(self._on_drift_window)
         self.btn_section.on_change(self._on_section)
         self.btn_clear.on_change(self._on_clear_path)

@@ -79,6 +79,7 @@ SPECS = {
     'broadened': _spec('check', 1.35, 0.30),
     'auto drift': _spec('check', 1.1, 0.38),                      # the tracker's drift (KAZE pairs)
     'manual drift': _spec('check', 1.25, 0.38),                   # the marker / typed drift (the MATLAB method)
+    'stripe': _spec('check', 0.75, 0.38),                         # grids: the stripe matching on / off, one state per file (Drift.set_stripe_on)
     'stripe match': _spec('button', 1.2, 0.36),                   # grids: opens the stripe window (stripe.StripeWindow)
     'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift): the browser's and the Topo window's toggle
     'cmap norm': _spec('check', 1.4, 0.38),

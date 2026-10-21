@@ -340,17 +340,29 @@ class TopoWindow:
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
         self.chk_manual = widgets.make(self.fig, 'manual drift', 0.18, 0.015, value=self.manual_on)
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.btn_stripe = widgets.make(self.fig, 'stripe match', 0.36, 0.015)
-        self.btn_stripe.on_change(self._on_stripe_window)
         self.chk_anchor = widgets.make(self.fig, 'anchor to topo', 0.53, 0.015, value=self.anchor_on)
         self.chk_anchor.on_change(lambda flag: self._on_drift_toggle('anchor', flag))
+        # The grid's stripe matching: the 'stripe' toggle (one state per file, Drift.set_stripe_on) and
+        # the 'stripe match' button, the row above the drift toggles.
+        self.chk_stripe = widgets.make(self.fig, 'stripe', 0.02, 0.075, value=False)
+        self.chk_stripe.on_change(self._on_stripe_toggle)
+        self.btn_stripe = widgets.make(self.fig, 'stripe match', 0.13, 0.077)
+        self.btn_stripe.on_change(self._on_stripe_window)
         is_grid = spec is not None and spec.kind == 'grid' and bool(spec.topo_pages)
         self.btn_stripe.show(is_grid and drift is not None)
+        self.chk_stripe.show(is_grid and drift is not None)
+        self._sync_stripe_toggle()
         # The grid's own topo pass (the 'topo pass' radio of the scan area, for the grid's topo).
         self.txt_dir = self.fig.text(0.80, 0.135, 'line/map topo', fontsize=8, ha='left', va='bottom', visible=is_grid)
         self.rad_dir = widgets.make(self.fig, 'topo pass', 0.80, 0.015, value=self.spec_dir)
         self.rad_dir.on_change(self._on_spec_dir)
         self.rad_dir.show(is_grid)
+        # Every manual change of the drift (a span, a stripe set's state or points, in any window)
+        # redraws this window and keeps its 'stripe' toggle current; the subscription ends with it.
+        if drift is not None:
+            fig = self.fig
+            drift.subscribe(self._on_drift_changed, alive=lambda: plt.fignum_exists(fig))
+            fig.canvas.mpl_connect('close_event', lambda event: drift.unsubscribe(self._on_drift_changed))
         self.draw()
         plt.show()
 
@@ -460,6 +472,28 @@ class TopoWindow:
             self.manual_on = bool(flag)
         else:
             self.anchor_on = bool(flag)
+        self._sync_stripe_toggle()                 # the setting in force changed: its stored stripe state shows
+        self.draw()
+
+    def _sync_stripe_toggle(self):
+        """The 'stripe' toggle shows the grid's stripe matching under the setting in force (Drift.stripe_on); off without a grid or a drift model."""
+        on = self.drift is not None and self.spec is not None and self.drift.stripe_on(self.spec, self.auto_on, self.manual_on)
+        self.chk_stripe.set(bool(on))
+
+    def _on_stripe_toggle(self, flag):
+        """'stripe': the grid's stripe matching on or off under every drift setting at once (Drift.set_stripe_on: one state per file, every window's toggle follows); refused, the toggle put back, without a grid with topo pages or a drift model."""
+        f = self.spec
+        if self.drift is None or f is None or f.kind != 'grid' or not f.topo_pages:
+            print("Topo window: no grid with topo pages, or no drift model; the stripe toggle stays off.")
+            self.chk_stripe.set(False)
+            self.fig.canvas.draw_idle()
+            return
+        self.drift.set_stripe_on(f, flag)
+        self._sync_stripe_toggle()
+
+    def _on_drift_changed(self):
+        """The Drift's manual state changed (a span, a stripe set's state or points, in any window): the toggle and the drawing follow."""
+        self._sync_stripe_toggle()
         self.draw()
 
     def _on_stripe_window(self):

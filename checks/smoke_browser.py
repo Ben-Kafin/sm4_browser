@@ -479,12 +479,54 @@ def _stripe_browser(b, exp):
     b._on_topo_window()
     w = b.children[-1]
     w.draw()
-    assert hasattr(w, 'btn_stripe') and not hasattr(w, 'chk_stripe')
+    assert hasattr(w, 'btn_stripe') and hasattr(w, 'chk_stripe')        # the button and the shared toggle (H2)
     plt.close(w.fig)
     b._on_drift_toggle('auto', True)
     b._on_drift_toggle('manual', True)
     d.set_fast_state(f, 'off', 'off')
     d.set_fast_state(f, 'auto', 'off')
+
+
+@check("H2 the 'stripe' toggle: one state per file under every drift setting; the browser's, the Topo window's and the Line window's toggles follow; 'stripe match' in the Line window")
+def _stripe_toggle(b, exp):
+    f = goto_kind(b, 'grid')
+    d = b.drift
+    for s in d.SLOW_SETTINGS:
+        d.set_fast_state(f, s, 'off')
+    d.clear_stripe_points(f, 'auto')
+    assert not b.chk_stripe.value
+    w = open_line(b)
+    b._on_topo_window()
+    tw = b.children[-1]
+    assert not w._int_chk_stripe.value and not tw.chk_stripe.value
+    b._on_stripe_toggle(True)                                   # the browser's toggle: on under every setting
+    assert all(d.fast_state(f, s) == 'auto' for s in d.SLOW_SETTINGS), [d.fast_state(f, s) for s in d.SLOW_SETTINGS]
+    assert b.chk_stripe.value and w._int_chk_stripe.value and tw.chk_stripe.value
+    # the stripe window's choice of manual for one setting (a dragged point) keeps every toggle on
+    d.set_stripe_point(f, 'auto', 'E:0', 1e-9)
+    d.set_fast_state(f, 'auto', 'manual')
+    assert b.chk_stripe.value and w._int_chk_stripe.value and tw.chk_stripe.value
+    w._int_on_stripe_toggle(False)                              # the Line window's toggle: off everywhere
+    assert all(d.fast_state(f, s) == 'off' for s in d.SLOW_SETTINGS)
+    assert not b.chk_stripe.value and not w._int_chk_stripe.value and not tw.chk_stripe.value
+    tw._on_stripe_toggle(True)                                  # the Topo window's: on; 'auto' holds a point -> manual
+    assert d.fast_state(f, 'auto') == 'manual' and d.fast_state(f, 'off') == 'auto' and d.fast_state(f, 'manual') == 'auto'
+    assert b.chk_stripe.value and w._int_chk_stripe.value and tw.chk_stripe.value
+    # the stripe window's 'off' for the setting in force: the toggles of the windows under it go off
+    d.set_fast_state(f, d.slow_setting(f, b.auto_on, b.manual_on), 'off')
+    assert not b.chk_stripe.value and not w._int_chk_stripe.value and not tw.chk_stripe.value
+    # the Line window's 'stripe match' opens the stripe window once
+    w._int_on_stripe_window()
+    sw = w._int_stripe_window
+    assert sw is not None and sw.is_open() and sw.grid is f
+    w._int_on_stripe_window()
+    assert w._int_stripe_window is sw
+    plt.close(sw.fig)
+    for s in d.SLOW_SETTINGS:
+        d.set_fast_state(f, s, 'off')
+    d.clear_stripe_points(f, 'auto')
+    plt.close(tw.fig)
+    plt.close(w._int_fig)
 
 
 @check("G5 stripe window: handles, a drag along the line only, one point moves, the sets per setting, the cache")
@@ -574,7 +616,7 @@ def _pass_order_and_line(b, exp):
     quads = m._topo_maps[id(m.ax_topo)]
     assert len(quads) == 2 and np.allclose(quads[-1].shift, m._topo_shift('forward'), equal_nan=True)
     plt.close(m.fig)
-    # the Line window opens with the forward row only; its rows carry the placement's offsets
+    # the Line window opens with the forward row only; its rows sit on their own pixels and carry the within-sweep shear
     w = open_line(b)
     assert w._int_topo_lines == [(w.chunk_index, 'forward')], w._int_topo_lines
     d.set_fast_state(f, 'auto', 'auto')
@@ -585,9 +627,19 @@ def _pass_order_and_line(b, exp):
     assert res is not None and res['stripe'] == 'auto'
     fast, _ = f.grid_axes()
     cols = np.flatnonzero(w._int_kept_mask()) + w.chunk_index * len(w._int_pos)
-    off = ((np.asarray(res['xy_corr'])[cols] - np.asarray(f.spec_xy_m)[cols]) @ fast) * 1e10 / w.scalefactor
-    assert np.allclose(sh[:, 0], off, atol=1e-9), (sh[:3, 0], off[:3])          # the first edge: the row offset alone
-    assert np.nanmax(np.abs(off)) > 0
+    corr = np.asarray(res['xy_corr'])
+    pix_f = np.asarray(res['pix']['forward'])
+    idx, _ = f.spectrum_pixels('forward')
+    # the first edge: the row against its own placed topo pixel only (the seconds between pixel and sweep),
+    # never the placement's shift of the spectrum against its recorded position
+    off = np.array([((corr[k] - pix_f[idx[k, 0], idx[k, 1]]) @ fast) if idx[k, 0] >= 0 else 0.0
+                    for k in cols]) * 1e10 / w.scalefactor
+    assert np.allclose(sh[:, 0], off, atol=1e-9), (sh[:3, 0], off[:3])
+    step = float(np.linalg.norm(f.spec_xy_m[1] - f.spec_xy_m[0])) * 1e10 / w.scalefactor
+    assert np.nanmax(np.abs(off)) < step, (np.nanmax(np.abs(off)), step)
+    placed = ((corr[cols] - np.asarray(f.spec_xy_m)[cols]) @ fast) * 1e10 / w.scalefactor
+    assert np.nanmax(np.abs(placed)) > step                                       # the placement did move the spectra
+    assert np.nanmax(np.abs(sh[:, -1] - sh[:, 0])) > 0                            # the within-sweep shear grows along the sweep
     d.set_fast_state(f, 'auto', 'off')
     plt.close(w._int_fig)
 

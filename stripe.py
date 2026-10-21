@@ -51,7 +51,7 @@ settings_<stamp>.json, Drift._save_manual) and tells every window
 matching.
 
 Everything applies at once wherever the grid is drawn: the scan area, the
-Topo window, the Line window's heatmap (its rows sheared by the placement),
+Topo window, the Line window's heatmap (its rows sheared within their sweeps by the placement's forward compression),
 the Map window's pixels and embedded topo.
 """
 
