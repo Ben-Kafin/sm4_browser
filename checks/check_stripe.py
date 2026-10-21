@@ -6,6 +6,8 @@ Stripe matching against known truth (synthetic experiments, checks/synth.py):
      exactly, and zero with drift none;
   3. drift none + stripe match: line starts still offset along the fast axis, factors still measured;
   4. the factors differ between drift settings (the lines overlap other extrema);
+  7. without drift, the chained line starts along the fast axis are recovered against the
+     experiment's true_starts (run between 4 and 5);
   5. a grid half off the reference topo: the lines on it are still placed and fitted from the part
      on the topo;
   6. a grid across two topos: lines matched against both (named in the report).
@@ -28,11 +30,17 @@ RESULTS = []
 
 
 def ok(name, cond, detail=''):
+    """Record and print one result: PASS or FAIL, the name, the detail in parentheses."""
     RESULTS.append(bool(cond))
     print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
 
 
 def experiment(tmp, v, b_true, grid_centre=(0.0, 0.0), second_topo=None):
+    """
+    A synthetic experiment under velocity v: a 128 px reference topo, a second topo (a smaller one
+    at `second_topo` when given), the grid (GRID, at grid_centre, with the true stripe compression
+    b_true), a later topo.  Returns (experiment, the grid's path).
+    """
     exp = synth.Experiment(tmp, v=v)
     t = synth.T_REF
     exp.topo(t, center=(0.0, 0.0), size_m=24e-9, n=128, period=5e-4)
@@ -50,6 +58,7 @@ def experiment(tmp, v, b_true, grid_centre=(0.0, 0.0), second_topo=None):
 
 
 def drift_for(exp):
+    """A Drift built on the experiment's files as the browser builds it (header scan, kinds, geometries, the tracker run); returns (drift, loader)."""
     from sm4_Browser import sm4file
     from sm4_Browser.drift import Drift, DRIFT_PARAMS
     files = sm4file.list_sm4_files(exp.directory)
@@ -68,6 +77,7 @@ def drift_for(exp):
 
 
 def run():
+    """The checks of the module docstring in order, each printed; returns True when all passed."""
     with contextlib.redirect_stdout(io.StringIO()) as log:
         tmp = tempfile.mkdtemp(prefix='sm4stripe_')
         v = np.array([12e-12, -6e-12])

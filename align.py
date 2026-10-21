@@ -7,8 +7,13 @@ alignment editor, the common energy and position grids, the resampling of
 heatmaps and stripe profiles onto them, and the average with or without
 crop.  Nothing here draws or holds a widget.
 
-Positions are in Å along a line (each line's own axis starts at 0); maps
-are non-decreasing arrays of the same length as the line's positions.
+Positions are in Å along a line (line.line_axis: the recorded distance
+from the line's first spectrum, divided by the file's scale factor, so
+each line's own axis starts at 0); maps are non-decreasing arrays of the
+same length as the line's positions, giving the main-frame (or common)
+position of every location.  "Acquired" is the kept mask of the line's
+spectra (STS.acquired): a never-acquired location has no curve and takes
+no part in the DTW.
 
 The alignment, step by step (lineavg.LineAverage.run):
   1. DTW: for every line but the main, the monotonic path over all of its
@@ -54,8 +59,9 @@ import numpy as np
 def common_energy(energies, tol=1e-9):
     """
     The common energy grid of several lines: the finest energy step among
-    them over the range they all share, the points of the finest-step line
-    within that range (so lines sharing one axis keep their own points).
+    them (each line's median step) over the range they all share, the
+    points of the finest-step line within that range (so lines sharing one
+    axis keep their own points; `tol` lets the range's end points in).
     `energies` are the lines' axes in any order.  ValueError when the
     shared range is shorter than a step.  Returns the ascending grid.
     """
@@ -137,7 +143,9 @@ def dtw_path(cost):
     The monotonic path from (0, 0) to (n-1, m-1) through an (n, m) cost
     matrix (steps (1, 0), (0, 1), (1, 1)) that minimizes the summed cost:
     every location of either sequence paired with at least one of the
-    other, one-to-many allowed, no band.  Returns ([(i, j), ...], total).
+    other, one-to-many allowed, no band.  Returns ([(i, j), ...], total),
+    the path in order from (0, 0).  Plain Python loops over the n x m
+    matrix (the lines hold tens of locations).
     """
     cost = np.asarray(cost, dtype=np.float64)
     n, m = cost.shape
@@ -181,8 +189,9 @@ def dtw_map(path, pos_a, pos_main):
     position), and a run of a's last locations paired with the main's last
     position alone after it; a's first (last) location paired with several
     of the main's first (last) positions takes the last (first) of them, so
-    the main's own overhang is not covered by stretched data.  Returns a
-    non-decreasing array of len(pos_a).
+    the main's own overhang is not covered by stretched data.  a's own
+    step is its mean spacing (the main's when a has one location).
+    Returns a non-decreasing array of len(pos_a).
     """
     pos_a = np.asarray(pos_a, dtype=np.float64)
     pos_main = np.asarray(pos_main, dtype=np.float64)
@@ -221,7 +230,10 @@ def fill_map(mapped, acquired, pos_own):
     A map known at the acquired locations only (`mapped` of len(pos_own),
     meaningful where `acquired`): the others filled by linear interpolation
     over the acquired neighbours, and beyond the first or last acquired
-    location continued at the line's own step.
+    location continued at the line's own step (its mean spacing).  With no
+    acquired location the line's own positions are returned (the identity
+    map); with every location acquired `mapped` itself.  Returns a
+    non-decreasing array.
     """
     mapped = np.array(mapped, dtype=np.float64)
     acquired = np.asarray(acquired, dtype=bool)
@@ -270,8 +282,9 @@ def align_to_main(didv_a, iv_a, pos_a, acq_a, didv_main, iv_main, pos_main, acq_
 def map_at(p, pos_own, mapped):
     """
     A map (own positions -> mapped positions, both non-decreasing) at any
-    own positions p: linear between the locations, continued at the end
-    slopes outside them (a line's own step beyond its ends).
+    own positions p: linear between the locations, continued outside them
+    at the slope of the first (last) segment (slope 1 when that segment has
+    no length); with a single location, slope 1 through it.
     """
     pos_own = np.asarray(pos_own, dtype=np.float64)
     mapped = np.asarray(mapped, dtype=np.float64)
@@ -302,10 +315,12 @@ def marker_map(pos_own, dtw_mapped, markers_own, markers_main):
     (marker j of the line at its own position markers_own[j] lands at the
     main's own position markers_main[j]), and outside the outer markers
     the DTW map continued, shifted so that it joins the marker map at the
-    outer marker.  The markers are paired by index and must be in the same
-    order in the line and in the main (ValueError otherwise).  With no
-    marker on either side the DTW map is returned as it is.  Returns the
-    map at the line's locations (non-decreasing).
+    outer marker.  The markers are paired by index (sorted by the main's
+    positions; the line's must then be non-decreasing) and must be as many
+    on both sides (ValueError otherwise).  With no marker on either side
+    the DTW map is returned as it is (made non-decreasing).  With one
+    marker there is no section: the DTW map shifted to put the marker at
+    the main's.  Returns the map at the line's locations (non-decreasing).
     """
     pos_own = np.asarray(pos_own, dtype=np.float64)
     dtw_mapped = np.asarray(dtw_mapped, dtype=np.float64)
@@ -358,14 +373,15 @@ def equalize_stretch(maps, positions, main):
     The common frame of N lines from their main-frame maps (maps[k] at the
     line's own positions[k]; the main's map is its own positions): every
     line's log-stretch as a function of the main-frame position (0 where
-    the line is absent), their equal-weight mean mu over all N lines at
-    every point of a fine main-frame axis (the main's step over the union
-    of the mapped ranges), and the frame Q(q) = q_c + integral from the
-    main's centre q_c of exp(-mu), so that the lines' stretches into the
-    common frame sum to zero everywhere, the main's net displacement stays
-    0, and the displacements the maps gave are left alone.  Returns
-    (common maps [the common position of every location of every line],
-    axis, Q on it).
+    the line is absent; the main's is 0 everywhere and is skipped), their
+    equal-weight mean mu over all N lines (the sum divided by N) at every
+    point of a fine main-frame axis (the main's step over the union of the
+    mapped ranges, a step beyond each end), and the frame Q(q) = q_c +
+    integral from the main's centre q_c of exp(-mu) (trapezoids on the
+    axis), so that the lines' stretches into the common frame sum to zero
+    everywhere, the main's net displacement stays 0, and the displacements
+    the maps gave are left alone.  Returns (common maps [the common
+    position of every location of every line], axis, Q on it).
     """
     N = len(maps)
     pm = np.asarray(positions[main], dtype=np.float64)
@@ -438,7 +454,8 @@ def resample_rows(q, rows, grid):
     (finite), NaN when either is not acquired; outside the first and last
     location NaN (half a step of coverage is added at each end: a grid
     point within half the local step of an end location takes that
-    location).
+    location).  Locations sharing a position are merged first
+    (_merge_ties); fewer than two locations give all NaN.
     """
     q = np.asarray(q, dtype=np.float64)
     rows = np.asarray(rows, dtype=np.float64)
@@ -515,8 +532,8 @@ def stripe_positions(pos, n_cells):
 
 
 if __name__ == '__main__':
-    # Checks on arrays: a line against itself gives the identity map at cost 0; a line
-    # against a copy stretched by 1.2 is undone by the equalizing to within the grid.
+    # Checks on arrays: a line against itself gives the identity map at cost 0, the equalizing
+    # leaves the identity, and the resampling onto the common grid covers every pixel.
     rng = np.random.default_rng(0)
     E = np.linspace(-2.0, -0.8, 121)
     pos = np.arange(32) * 1.2

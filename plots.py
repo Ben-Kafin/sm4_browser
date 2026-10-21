@@ -3,24 +3,35 @@ Every drawing of data into axes (qtplot: matplotlib's interface on
 pyqtgraph), and nothing else: no widget is built or read here.  The windows own their data and state, draw through
 these functions, and take their events from widgets.py.
 
-  heat_norm, draw_heatmap, update_heatmap, draw_colorbar : STS heatmaps and
-      maps with the colour-map gamma (a PowerNorm for gamma != 1)
+  heat_norm, finite_range, energy_range_scale, draw_heatmap,
+      update_heatmap, draw_colorbar : STS heatmaps and maps with the
+      colour-map gamma (a PowerNorm for gamma != 1) and their colour bars
   RowHeatmap, row_edges : a heatmap whose rows sit at their own positions
       (the Line window: the kept spectra at their recorded positions), each
       row's cells sheared along the position axis by the drift during its
       sweep
   PixelMap : a map whose pixels sit at their own shifted positions (the Map
       window with drift correction on)
-  draw_topo_stripe, draw_marker_curves, draw_sweeps : the Line / Map / Feenstra
-      panels
+  draw_topo_stripe, draw_stripe_drift_lines, draw_marker_curves,
+      draw_sweeps : the Line / Map / Feenstra panels
   TOPO_CMAP, draw_topo_absolute, draw_topo_frame, draw_point_sweeps,
       draw_grid_stripes, draw_drift_lines, draw_topo_cbar : topography drawing
-  draw_section_path, draw_drift_markers : the browser's section path
-      and the manual-drift markers on the scan area
+  draw_section_path, draw_drift_markers, draw_topo_outline : the browser's
+      section path, the manual-drift markers of the drift window, and the
+      other topo's recorded frame on a drift-window panel
   draw_profiles : the raw forward/reverse topo profiles and cross sections
       (the profile window) as curves of height against position
   draw_profile_pairs : several forward/reverse pairs in one axes (the
       profile plot): one colour per pair, forward solid, reverse dashed
+  drift_color, marker_color, e_marker_color and the colour constants : one
+      colour rule per kind of line or marker, shared by every window
+
+Positions handed to these functions are in the drawing units of the axes
+they draw into.  The topography functions that take a Sm4File and a
+`scalefactor` (draw_topo_absolute, draw_topo_frame, draw_topo_outline)
+convert the recorded metres themselves: calibrated nm = metres x 1e9 /
+scalefactor, the scale in force at the file's time (scales.Scales), as the
+scan area and every window draw.
 """
 
 if __package__ in (None, ''):
@@ -40,10 +51,10 @@ DRIFT_LINE_COLOR = '#ffffff'
 DRIFT_LINE_EDGE = 'black'
 MANUAL_DRIFT_COLOR = '#ff2a2a'
 CONFIRMED_DRIFT_COLOR = '#ffd84a'
-# The manual-drift markers: pair k in its own colour (both markers and the arrow), the same
-# in the browser and the drift window; red, green, blue first, then yellow, magenta, cyan,
-# orange, purple: the eight chromatic basic colour terms (Boynton and Olson) that read apart
-# on the topo colour map, so the 'Markers' sliders run 1 to len(MARKER_COLORS)
+# The manual-drift markers of the drift window: pair k in its own colour (both markers and the
+# arrow, the same on both panels); red, green, blue first, then yellow, magenta, cyan, orange,
+# purple: the eight chromatic basic colour terms (Boynton and Olson) that read apart on the
+# topo colour map, so the drift window's 'Markers' slider tops out at len(MARKER_COLORS)
 # (widgets.MARKER_PAIRS_MAX).  The earlier marker of a pair is a circle, the later a square.
 MARKER_COLORS = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff', '#ff8000', '#8000ff']
 SECTION_LINE_COLOR = '#ff00ff'        # the browser's section path (draggable numbered points)
@@ -55,9 +66,11 @@ PROFILE_REVERSE_COLOR = '#d62728'
 
 def drift_color(source):
     """
-    The drift-line colour of a file's velocity source (Drift result
-    'source'): manual sources take MANUAL_DRIFT_COLOR, 'auto (confirmed)'
-    CONFIRMED_DRIFT_COLOR, the tracker's DRIFT_LINE_COLOR.
+    The drift-line colour of a file's velocity source (the Drift result's
+    'source' string): a source starting with 'manual' ('manual (markers)',
+    'manual (typed)') takes MANUAL_DRIFT_COLOR, 'auto (confirmed)'
+    CONFIRMED_DRIFT_COLOR, anything else (the tracker's 'auto ...', or
+    None) DRIFT_LINE_COLOR.
     """
     source = source or ''
     if source.startswith('manual'):
@@ -73,6 +86,7 @@ E_MARKER_COLORS = ['#000000', '#ff00ff', '#ff7f0e', '#ffffff', '#8b4513', '#ffd7
 
 
 def e_marker_color(k):
+    """The colour of E-marker `k` (from 0): E_MARKER_COLORS in turn."""
     return E_MARKER_COLORS[k % len(E_MARKER_COLORS)]
 
 
@@ -97,7 +111,10 @@ def heat_norm(gamma, vmin, vmax):
     The colour normalization of an STS heatmap: a PowerNorm with exponent
     gamma over [vmin, vmax] (((x - vmin) / (vmax - vmin)) ** gamma), a
     plain Normalize for gamma 1, so a gamma of 1 draws exactly as before.
-    vmin is the data minimum everywhere, so no value falls below it.
+    A non-finite range becomes [0, 1], an empty one [vmin, vmin + 1].  A
+    value below vmin (a vmin above the data minimum: energy_range_scale,
+    the Map window's shared limits) takes the lowest colour, one above
+    vmax the highest.
     """
     vmin, vmax = float(vmin), float(vmax)
     if not np.isfinite(vmin) or not np.isfinite(vmax):
@@ -139,9 +156,11 @@ def energy_range_scale(img, energy, e_range):
 def draw_heatmap(ax, img, extent, cmap, gamma=1.0, vmin=None, vmax=None, origin='upper', aspect='auto',
                  interpolation=None):
     """
-    An STS heatmap or map into `ax` (imshow): its own min and max as the
-    colour limits unless vmin / vmax are given, the colour-map gamma applied.
-    Returns the AxesImage.
+    An STS heatmap or map into `ax` (imshow): its own finite min and max as
+    the colour limits unless vmin / vmax are given, the colour-map gamma
+    applied (heat_norm); `extent` None draws at pixel indices;
+    `interpolation` is passed on for the publication export (on screen
+    every data pixel is a block).  Returns the AxesImage.
     """
     lo, hi = finite_range(img)
     vmin = lo if vmin is None else float(vmin)
@@ -186,13 +205,16 @@ class RowHeatmap:
     the midpoint to its upper, row_edges), and, with `shear` (n_rows, n_e +
     1), every row's n_e + 1 cell edges displaced along the position axis by
     its own shear (the drift during its sweep: the row's cells slide
-    relative to one another, nothing moves along the energy axis).  All
+    relative to one another, nothing moves along the energy axis; a NaN
+    shear counts as 0, a shear with fewer rows leaves the remaining rows
+    unsheared).  The colour scale is heat_norm(gamma, vmin, vmax), the
+    finite minimum and maximum of img when vmin / vmax are not given.  All
     cells are one quad item (qtplot.QuadItem: one filled path per colour,
     cached as a pixmap, so markers dragged over it never refill it).  The
     interface of an AxesImage as the windows use it: set_data, get_array,
     set_norm, norm, cmap, remove; `mappable` is the ScalarMappable for the
-    colour bar (draw_colorbar takes the object itself).  NaN cells are not
-    drawn.
+    colour bar (draw_colorbar takes the object itself); set_shear gives new
+    shears and extent() the outer edges.  NaN cells are not drawn.
     """
 
     def __init__(self, ax, img, energy, rows, cmap, gamma=1.0, shear=None, vmin=None, vmax=None):
@@ -290,10 +312,14 @@ class PixelMap:
     """
     A map whose pixels sit at their own positions: img (n_lines, n_fast)
     over the frame `extent` [l, r, b, t], pixel (i, j) a quad at its nominal
-    cell displaced by shift[i, j] (n_lines, n_fast, 2; the frame's units;
-    zero where None), drawn as one quad item (qtplot.QuadItem).  The
-    interface the windows use: set_data, get_array, set_norm, norm, cmap,
-    remove, and `mappable` for the colour bar.  NaN pixels are not drawn.
+    cell (row i from the bottom edge, column j from the left) displaced by
+    shift[i, j] (n_lines, n_fast, 2; the frame's units; NaN counts as 0;
+    no displacement when `shift` is None or its shape does not match img),
+    drawn as one quad item (qtplot.QuadItem) at `zorder`.  The colour scale
+    is heat_norm(gamma, vmin, vmax), the finite minimum and maximum of img
+    when not given.  The interface the windows use: set_data, get_array,
+    set_norm, norm, cmap, remove, set_shift, and `mappable` for the colour
+    bar.  NaN pixels are not drawn.
     """
 
     def __init__(self, ax, img, extent, cmap, gamma=1.0, shift=None, vmin=None, vmax=None, zorder=1.0):
@@ -369,8 +395,11 @@ class PixelMap:
 def draw_colorbar(fig, im, cax, label=None, labelsize=None):
     """
     The colour bar of an image (or a RowHeatmap / PixelMap, through its
-    mappable) into `cax`.  A colour bar already in `cax` is updated in place
-    (the colour map, the norm's ticks, the label) instead of being rebuilt.
+    mappable) into `cax`, with `label` and the tick-label size `labelsize`
+    (points) when given.  A colour bar already in `cax` is updated in place
+    (the colour map, the norm's ticks, the label) instead of being rebuilt,
+    and the mappable is linked to it so that later set_norm calls keep it
+    current.  Returns the qtplot.Colorbar.
     """
     m = getattr(im, 'mappable', im)
     cb = getattr(cax, '_colorbar', None)
@@ -465,7 +494,10 @@ def draw_marker_curves(ax, energy, markers, groups, avg_on, stack_on, substack_o
     its members above it (highest key at the top) in the group's colour, the
     blocks ordered by their centres (lowest at the bottom); offsets
     offset_frac of the largest curve range per curve, one full range between
-    blocks; the legend lists the top block first.
+    blocks; the legend lists the top block first.  The y limits keep the
+    legend clear of the curves (Axes.keep_legend_clear).  With show_title
+    False the title goes to the figure's info panel (Figure._set_info)
+    instead of the axes.
     """
     # Fast path while a marker is dragged: the same curves (count, colours, labels' layout) with new
     # data are updated in place instead of clearing and rebuilding the panel.
@@ -538,11 +570,13 @@ def draw_marker_curves(ax, energy, markers, groups, avg_on, stack_on, substack_o
 
 def draw_sweeps(ax, entries, average, stack_on, substack_on, offset_frac=0.25):
     """
-    One sweep panel of the averaging window's companion: every kept sweep
-    of every entry in the entry's colour (or, stacked with 'substack' off,
-    one mean per entry), the run's average in black; stacked: offset by
-    offset_frac of the largest range per curve, the average at the
-    bottom, as the averaging window stacks.
+    One sweep panel of the Feenstra companion of the averaging window
+    (feenstra.FeenstraWindow, kind 'sweeps'): every kept sweep of every
+    entry in the entry's colour (or, stacked with 'substack' off, one mean
+    per entry, labelled '<label> (mean)'), the run's average in black;
+    stacked: offset by offset_frac of the largest range per curve, the
+    first entry's first sweep at the top and the average at the bottom, as
+    the averaging window stacks; a legend at the upper right.
       entries : [{'label', 'color', 'V', 'sweeps' (npts, n)}]
       average : (V0, curve) or None
     """
@@ -581,12 +615,14 @@ def draw_sweeps(ax, entries, average, stack_on, substack_on, offset_frac=0.25):
 
 def draw_topo_absolute(ax, sm4, img, scalefactor, **imshow_kw):
     """
-    Draw a processed image at the file's absolute position and rotation
-    (nm after the scale factor).  Returns the AxesImage.  The array is drawn
-    at the resolution it was saved at: interpolation='none', so no smoothing,
-    anti-aliasing, or interpolation is applied; on screen each display pixel
-    shows the nearest data pixel (matplotlib treats 'none' as 'nearest' on
-    screen backends), and vector output (pdf, svg) receives the raw pixels.
+    Draw a processed image at the file's absolute position and rotation in
+    calibrated nm (the recorded metres x 1e9 / scalefactor): the frame
+    extent (Sm4File.frame_extent_m) rotated by the recorded angle about the
+    recorded centre, no drift correction.  Returns the AxesImage.  The
+    array is drawn at the resolution it was saved at, each data pixel a
+    block (pyqtgraph's ImageItem never smooths); interpolation='none' is
+    recorded for the publication export, so matplotlib's vector output
+    (pdf, svg) receives the raw pixels too.
     """
     k = 1e9 / scalefactor
     l, r, b, t = [v * k for v in sm4.frame_extent_m()]
@@ -597,7 +633,11 @@ def draw_topo_absolute(ax, sm4, img, scalefactor, **imshow_kw):
 
 
 def draw_topo_frame(ax, sm4, img, scalefactor, **imshow_kw):
-    """Draw a processed image in its own scan frame (nm after the scale factor), aspect locked."""
+    """
+    Draw a processed image in its own scan frame in calibrated nm (Sm4File.frame_extent_m
+    x 1e9 / scalefactor), the aspect locked (adjustable 'box') and the limits set to the
+    frame.  Returns the AxesImage.
+    """
     k = 1e9 / scalefactor
     l, r, b, t = [v * k for v in sm4.frame_extent_m()]
     im = ax.imshow(img, origin='lower', extent=[l, r, b, t], interpolation='none', **imshow_kw)
@@ -618,9 +658,10 @@ def draw_point_sweeps(ax, xy, corrected, ends=None, lines=None, color=None):
     dot in time order, and every sweep gets its drift line (draw_drift_lines):
     with `lines` (n, P, 2; Drift.sweep_lines) the polyline through the sweep,
     following the drift function, else with `ends` (n, 2) the segment from
-    its start to its end.  Without correction every sweep sits at the
-    recorded position and only the cross is drawn.  `color` is the drift
-    lines' colour (draw_drift_lines).
+    its start to its end; a legend ('first sweep', 'later sweeps') at the
+    upper right.  Without correction every sweep sits at the recorded
+    position and only the cross is drawn.  `color` is the drift lines'
+    colour (draw_drift_lines).
     """
     ax.plot(xy[:1, 0], xy[:1, 1], ls='none', marker='X', ms=13, color=POINT_CURRENT_COLOR,
             mec='black', mew=0.8, zorder=3.0, label='first sweep')
@@ -642,7 +683,8 @@ def draw_drift_lines(ax, lines, markers=True, zorder=3.2, color=None):
     The drift lines of a file's sweeps: `lines` (n, P, 2) in the drawing
     units of ax, each row a sweep's polyline from its start through its
     position at every energy point of the sweep (Drift.sweep_lines; P = 2
-    for plain start-end pairs); drawn as it is per sweep (`color`, default
+    for plain start-end pairs; a flat (2 n, 2) array is read as start-end
+    pairs); drawn as it is per sweep (`color`, default
     DRIFT_LINE_COLOR, MANUAL_DRIFT_COLOR for a manual velocity, over a dark
     edge so it shows on any topo colour), and, with `markers`, a dot at
     every start.  Rows with a NaN value are skipped.  Returns the artists.
@@ -697,13 +739,13 @@ def draw_section_path(ax, points):
 def draw_topo_outline(ax, sm4, scalefactor, zorder=6.0):
     """
     The recorded frame of a topography (Sm4File) on an axes of absolute
-    positions (nm after the scale factor): the closed polygon through its
-    four corners (Sm4File.corners_m: the recorded centre, angle and extent,
-    no drift correction) as a solid thin line in PARTNER_FRAME_COLOR, no
-    text.  The drift window draws it last on each panel, for the other
-    topo of the pair, so the zorder is above the topo image, the spectra
-    positions, the markers (4.2, 4.3) and the arrows (4.15).  Returns the
-    artists.
+    positions in calibrated nm (the recorded metres x 1e9 / scalefactor):
+    the closed polygon through its four corners (Sm4File.corners_m: the
+    recorded centre, angle and extent, no drift correction) as a solid thin
+    line in PARTNER_FRAME_COLOR, no text.  The drift window draws it last
+    on each panel, for the other topo of the pair, so the zorder is above
+    the topo image, the spectra positions, the markers (4.2, 4.3) and the
+    arrows (4.15).  Returns the artists.
     """
     c = np.asarray(sm4.corners_m(), dtype=np.float64) * (1e9 / scalefactor)
     closed = np.vstack([c, c[:1]])
@@ -713,17 +755,18 @@ def draw_topo_outline(ax, sm4, scalefactor, zorder=6.0):
 
 def draw_drift_markers(ax, markers, pairs):
     """
-    The manual-drift markers on the scan area or a drift-window panel:
-    `markers` a list of dicts with 'xy' (drawing units), 'side' (0 on the
-    earlier topo, 1 on the later, None while only one topo carries
-    markers), 'index' (its number within its topo, from 1: the pair number,
-    marker_color), 'seeded' (placed by the auto velocity) and 'moved'
-    (dragged off its seeded spot); drawn in the pair's colour, a circle on
-    the earlier topo (and while the side is unknown), a square on the
-    later, hollow while seeded and unmoved, filled with a black edge
-    otherwise, the number beside it; `pairs` a list of (xy_A, xy_B, index)
-    drawn as arrows from the earlier marker to its partner in the pair's
-    colour (the MATLAB arrow).  Returns the artists.
+    The manual-drift markers on a drift-window panel (widgets.PairMarkers
+    draws both panels with it): `markers` a list of dicts with 'xy'
+    (drawing units), 'side' (0 on the earlier topo, 1 on the later, None
+    while only one topo carries markers), 'index' (its number within its
+    topo, from 1: the pair number, marker_color), 'seeded' (placed by the
+    auto velocity) and 'moved' (dragged off its seeded spot); drawn in the
+    pair's colour, a circle on the earlier topo (and while the side is
+    unknown), a square on the later, hollow while seeded and unmoved,
+    filled with a black edge otherwise, the number beside it; `pairs` a
+    list of (xy_A, xy_B, index) drawn as arrows from the earlier marker to
+    its partner in the pair's colour (the arrow of the MATLAB script's
+    drift controls).  Returns the artists.
     """
     arts = []
     for m in markers:
@@ -802,8 +845,9 @@ def draw_topo_cbar(fig, rect, label='topo'):
     """
     The topo colour bar of a page: a thin vertical axes at `rect` (figure
     fraction) showing the TOPO_CMAP ramp, low at the bottom, no ticks and no
-    numbers, the word `label` above it.  One per page that uses the topo
-    colour map.  Returns the axes.
+    numbers, the word `label` above it.  One per window that uses the topo
+    colour map (the browser's scan area, the Line, Map, Feenstra and
+    line-average windows).  Returns the axes.
     """
     ax = fig.add_axes(rect)
     ax.set_navigate(False)

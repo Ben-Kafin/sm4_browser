@@ -29,6 +29,14 @@ companion opens after the first run with the averaged dI/dV (division
 off), the averaged current, the averaged broadened I/V, and the averaged
 ratio, every one an average of per-location quantities through the same
 maps, under its own 'calibrate' / 'normalize' flags.
+
+Positions are in Å after each member's own scale factor (the scale the
+Line window was opened with, line.line_axis), kept with the member
+('scalefactor') and in the record; on reload the browser rebuilds every
+member at the scale its timeline gives for the file and notes a
+difference on the console (browser._record_scale).  Records are
+lineavg<N>_average.json (or <name>_average.json after a rename) in the
+'averages' subfolder (records.py).
 """
 
 if __package__ in (None, ''):
@@ -49,14 +57,18 @@ from sm4_Browser.line import Line, fast_page_of, line_axis, stripe_rows, common_
 
 def member_from_file(sm4, line, scalefactor, topo_lines=None, markers=None, centers=None):
     """
-    A member entry from a loaded grid file (the record loader), as
-    Line.line_entry builds one: the Selection of the line's columns, the
+    A member entry from a loaded grid file (the record loader,
+    browser.load_lineavg_record), as Line.line_entry builds one: the
+    Selection of the line's columns (line x n_fast to the next line), the
     positions (line.line_axis: every spectrum at its recorded position
-    along the line), the stripe rows ((row, pass) pairs with every pixel at
-    its own recorded location, line.stripe_rows, 'topo_x' their position
-    axis, the pixels of spectra not kept NaN; the line's forward and
-    reverse rows when None), and the Line window's marker positions and
-    group centres when given.
+    along the line, Å after `scalefactor`), the stripe rows ((row, pass)
+    pairs with every pixel at its own recorded location, line.stripe_rows,
+    'topo_x' their common position axis, the pixels of spectra not kept
+    NaN; the line's forward and reverse rows when None, which a file with a
+    single topographic page refuses: give topo_lines then), the Line
+    window's marker positions and group centres when given (Å), and the
+    scale factor.  ValueError for a file that is not a grid with spectra or
+    a line index outside 0..n_lines - 1.
     """
     if sm4.kind != 'grid' or sm4.spectra is None:
         raise ValueError(f"{sm4.name} is not a grid file with spectra.")
@@ -113,23 +125,27 @@ class LineAverages:
         return self.windows
 
     def saved_indices(self):
+        """The 'index' of every line-average record in the directory's 'averages' subfolder."""
         return records.saved_lineavg_indices_of(self.directory)
 
     def next_index(self):
+        """1 + the highest index among the open windows and the saved records (1 when there is none)."""
         return 1 + max([0] + list(self.open()) + self.saved_indices())
 
     def by_name(self, name):
+        """The open window of that name, or None."""
         for w in self.open().values():
             if w.name == name:
                 return w
         return None
 
     def names(self):
+        """The names of the open windows in index order."""
         return [w.name for _, w in sorted(self.open().items())]
 
     def new(self, first, index=None, name=None, divide_iv=None, iv_broadening=None, channel=None,
             iv_zero_sub=None, iv_broadened=None):
-        """Open a line-average window on its first member with the registry's defaults, register it, return it."""
+        """Open a line-average window on its first member (a Line.line_entry dict) with the registry's defaults (each overridable; the index next_index unless given, the name lineavg<index> unless given), register it, return it."""
         index = self.next_index() if index is None else int(index)
         w = LineAverage(index, self.directory, first, self.hampel_defaults, self.sgolay_defaults,
                         fit_settings=self.fit_settings,
@@ -181,8 +197,16 @@ class LineAverage(Line):
     plus 'name', 'run', 'edit alignment', 'crop', 'save', 'remove last',
     'restore', the members line, and 'Send to fit'.  Before the first
     run the panels show the main member's own line (unaligned) and the
-    title says run needed.  The 'line' box, its arrows, and the topo-row
-    controls of the Line window are hidden.
+    title says run needed; after a run the heatmap's rows are the common
+    positions (Å) and its columns the common energies.  Hidden Line
+    window controls: the 'line' box and its arrows, 'line → new avg' /
+    'line → existing avg', the Line window's 'save' (this window's own
+    'save' writes the line-average record), the topo-row controls ('rows'
+    boxes, f/r and 'profile' buttons, '+' / '-'), and the 'E range' / 'x
+    range' boxes.  The 'calibrate' / 'normalize' box starts with both off.
+    The drift toggles and 'drift window' are built but have no Drift (none
+    is handed over): they report "no drift model at hand" and stay off.
+    The E-markers and the energy slice work on the displayed array.
     """
 
     RECORD_FORMAT = records.LINEAVG_RECORD_FORMAT
@@ -195,7 +219,9 @@ class LineAverage(Line):
         self.index = int(index)
         self.directory = os.path.abspath(directory)
         self.avg_dir = records.avg_dir_of(self.directory)
-        self.ifile = os.path.join(self.directory, f"lineavg{self.index}")   # the Line window's file path, unused here
+        self.ifile = os.path.join(self.directory, f"lineavg{self.index}")   # a stand-in for the Line window's file path:
+        #                                                                     the Line methods that read it (titles,
+        #                                                                     the directory, the file) are overridden here
         self.cmap = cmap
         self.scalefactor = float(first.get('scalefactor', 2.75))
         self.scan_mode = 'single'
@@ -225,6 +251,7 @@ class LineAverage(Line):
     # --- identity ---
 
     def is_open(self):
+        """True while the window's figure exists (False before it is built)."""
         fig = getattr(self, '_int_fig', None)
         return fig is not None and widgets.figure_is_open(fig)
 
@@ -234,6 +261,7 @@ class LineAverage(Line):
         return self.members
 
     def _set_name(self, name):
+        """The name set: the console tag, the record stem (records.stem_of), the send label '<averages folder> | <name>', and, when built, the window title, the heatmap title and the name box follow."""
         self.name = str(name)
         self.tag = self.name
         self.stem = records.stem_of(self.name)
@@ -250,7 +278,7 @@ class LineAverage(Line):
             box.set(self.name)
 
     def _on_rename(self, text):
-        """The name box: a new name (its stem non-empty and not another record's; the record renamed when written)."""
+        """The name box: a new name (its stem non-empty and not another saved record's, else the box is put back); when this window's record was written under another stem, the record and its fit histories are renamed (records.rename_record)."""
         new = str(text).strip()
         if new == self.name:
             return
@@ -276,12 +304,15 @@ class LineAverage(Line):
         self._int_fig.canvas.draw_idle()
 
     def _int_tag(self):
+        """The console tag: the window's name."""
         return self.name
 
     def _int_source_label(self):
+        """The source for titles (the companion's): '<name>: line average of N line(s)'."""
         return f"{self.name}: line average of {len(self.members)} line(s)"
 
     def _int_heat_title(self):
+        """The heatmap title: the quantity, the name, the member count, ' aligned (DTW|markers to <reference>)' after a run, ', crop', ' (run needed)'."""
         return (f"{self._int_quantity()}, {self.name}, {len(self.members)} line(s)"
                 + (f" aligned ({'DTW' if self.mode == 'auto' else 'markers'} to {self.reference + 1})"
                    if self.run_state is not None else "")
@@ -289,9 +320,11 @@ class LineAverage(Line):
                 + (" (run needed)" if self.run_needed else ""))
 
     def _int_directory(self):
+        """The experiment directory (the registry's, not a file's folder)."""
         return self.directory
 
     def member_label(self, k):
+        """Member k as '<file name>:<line>'."""
         m = self.members[k]
         return f"{m['name']}:{m['line']}"
 
@@ -310,11 +343,13 @@ class LineAverage(Line):
         return text
 
     def has(self, entry):
+        """Whether a line (by file path and line index) is already a member."""
         return any(m['path'] == entry['path'] and m['line'] == entry['line'] for m in self.members)
 
     # --- members ---
 
     def _add_member(self, entry):
+        """A copy of the entry dict appended to the members with the per-run keys (a run also sets 'dtw_map' and 'cost')."""
         m = dict(entry)
         m['align_markers'] = None          # the editor's markers in the member's own axis (set by a run)
         m['map'] = None                    # main-frame map (a run)
@@ -322,7 +357,7 @@ class LineAverage(Line):
         self.members.append(m)
 
     def add(self, entry):
-        """A line joins the average (its energy axis must overlap the members'; the channel must be held); run needed."""
+        """A line (a Line.line_entry dict) joins the average: refused with ValueError when it lacks the window's channel or shares no energy range with the members (align.common_energy); a line already held is only reported.  Run needed; the members line follows."""
         if self.has(entry):
             print(f"{self.name} already holds {entry['name']}: line {entry['line']}.")
             return
@@ -336,7 +371,7 @@ class LineAverage(Line):
         self._refresh_members_line()
 
     def _on_remove_last(self):
-        """'remove last': the last member leaves (one stays); no rerun (the title says run needed)."""
+        """'remove last': the last member leaves (one stays; it goes to `removed` for 'restore'); the reference moves to the last member when it was removed; no rerun (the title says run needed)."""
         if len(self.members) <= 1:
             print(f"{self.name}: one line stays.")
             return
@@ -362,6 +397,7 @@ class LineAverage(Line):
             self.run()
 
     def _refresh_members_line(self):
+        """The members line and the heatmap title redrawn."""
         txt = getattr(self, 'txt_members', None)
         if txt is not None:
             txt.set_text(self.members_text())
@@ -371,7 +407,7 @@ class LineAverage(Line):
     # --- the Line window's source hooks ---
 
     def _load_member_axes(self, k):
-        """Before any run: the main member's own line (its positions, energy, raw columns) as the display's source."""
+        """Member k's own line (its positions, energy axis, setpoint, units, modulation, the channel's raw columns and the I(V)) as the display's source, the attributes the Line window reads (energy, pos, chunk, iv_chunk, _int_raw, _int_iv, ...); used before any run for the main member."""
         m = self.members[k]
         sel = m['selection']
         self.energy = np.asarray(sel.energy, dtype=np.float64).copy()
@@ -392,6 +428,7 @@ class LineAverage(Line):
             self._load_member_axes(self.reference)
 
     def _int_n_chunks(self):
+        """One line: the window is not sliced (the Line window's line controls are hidden)."""
         return 1
 
     def _int_set_topo_lines(self, topo_lines):
@@ -407,10 +444,11 @@ class LineAverage(Line):
         self._int_fig.canvas.draw_idle()
 
     def _int_rows_stack_top(self):
+        """No topo row stack: the panels' bottom follows the slider stack alone."""
         return 0.0
 
     def _int_acquired(self, j):
-        """Whether the displayed column j (a common position) holds any value."""
+        """Whether row j of the displayed array (a common position after a run; a spectrum of the main member before) holds any finite value."""
         r = int(j)                                             # row j = common position j
         return bool(0 <= r < self._int_curves.shape[0] and np.any(np.isfinite(self._int_curves[r, :])))
 
@@ -438,6 +476,7 @@ class LineAverage(Line):
         return True
 
     def _int_on_filter_change(self):
+        """A filter toggle or edit: the settings kept; before a run the display recomputed, after one run needed."""
         hp, sp = self._int_filters.params()
         self._int_hampel_params, self._int_sgolay_params = hp, sp
         self._int_apply_feenstra("filters")
@@ -460,6 +499,7 @@ class LineAverage(Line):
         self._int_apply_feenstra(f"channel {label}")
 
     def _on_crop(self, flag):
+        """The 'crop' toggle: the next run averages only where every member covers a pixel (align.average_stack, common_positions); run needed."""
         self.crop = bool(flag)
         self.run_needed = True
         print(f"crop {'on' if self.crop else 'off'}: run needed.")
@@ -469,7 +509,7 @@ class LineAverage(Line):
     # --- the pipeline per member ---
 
     def _member_columns(self, m, divide_iv, calibrate, normalize, hampel, sgolay, channel=None):
-        """A member's columns (npts, N) through the pipeline (never-acquired columns NaN)."""
+        """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings, the window's Feenstra settings and the channel; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
         sel = m['selection']
         channel = self.channel if channel is None else channel
         raw = np.asarray(sel.spectra.channel(channel), dtype=np.float64)
@@ -517,10 +557,17 @@ class LineAverage(Line):
 
     def _align(self, hp, sp):
         """
-        The maps of every member (the DTW against the main, or the marker
-        sections in 'markers' mode), the equalized common positions, and
-        the editor's markers (auto mode: the master's markers through the
-        maps).  Sets m['map'], m['common'], m['align_markers'].
+        The maps of every member (the DTW against the main on the dI/dV
+        with the division off and the current with 0Vsub as set, both on
+        the common energy grid, align.align_to_main; in 'markers' mode the
+        marker sections instead, align.marker_map; a member, or a main,
+        without editor markers keeps its DTW map, and a marker mismatch is
+        reported with the DTW map kept), the equalized
+        common positions (align.equalize_stretch), and the editor's
+        markers (auto mode: the master's markers through the maps,
+        _place_align_markers).  Sets m['dtw_map'], m['cost'] (the DTW
+        total; 0 for the main), m['map'], m['common'], m['align_markers'].
+        Returns the common energy grid.
         """
         ref = self.members[self.reference]
         grid_e = align.common_energy([m['selection'].energy for m in self.members])
@@ -581,7 +628,7 @@ class LineAverage(Line):
             m['align_markers'] = [float(v) for v in align.inverse_map_at(common, m['pos'], m['common'])]
 
     def _average_of(self, member_arrays, state):
-        """Member columns (one (npts, N) array per member on its own energy axis, or None) averaged through the run's maps."""
+        """Member columns (one (npts, N) array per member on its own energy axis) resampled onto the run's grids through the maps (align.resample_columns) and averaged (align.average_stack with crop), (n_grid_e, n_grid_pos); None when any member's array is None."""
         stack = []
         for m, c in zip(self.members, member_arrays):
             if c is None:
@@ -590,7 +637,7 @@ class LineAverage(Line):
         return align.average_stack(np.stack(stack), self.crop)
 
     def _stripe_of(self, state):
-        """The members' stripes through the maps (each the Line window's stripe rule), combined by the same rule."""
+        """The members' stripes through the maps (each the Line window's stripe rule, topo.stripe_profile with the window's processor) resampled onto the position grid, range matched (topo.match_ranges), averaged where any covers, minus the minimum."""
         profiles = []
         for m in self.members:
             prof = topo.stripe_profile(m['topo_x'], m['topo_profiles'], self._int_topo_active)
@@ -607,7 +654,19 @@ class LineAverage(Line):
         return profile
 
     def run(self):
-        """'run': the alignment and the average with the current settings (the module docstring)."""
+        """
+        'run': the alignment (_align) and the average with the current
+        settings (the module docstring): the position grid
+        (align.common_positions with crop), the average of every member's
+        pipeline columns (_average_of); then the display replaced by the
+        average (energy = the common energy grid, pos = the position grid,
+        the array transposed so row j = common position j), the markers
+        clipped to the grid, the combined stripe, the heatmap rebuilt, the
+        console line with every member's DTW cost, the curves redrawn, the
+        companion opened at the first run (refreshed after), the editor
+        refreshed.  Returns True; False with the reason printed when a
+        member cannot be processed or aligned (the display unchanged).
+        """
         hp, sp = self._int_filters.params()
         self._int_hampel_params, self._int_sgolay_params = hp, sp
         try:
@@ -670,6 +729,7 @@ class LineAverage(Line):
         self._redraw_curves()
 
     def _int_on_topo_toggle(self, active):
+        """The topo processor box: the stripe (the main member's or the combined one) redrawn with the new flags."""
         self._int_topo_active = list(active)
         self._redraw_topo_stripe()
 
@@ -765,6 +825,7 @@ class LineAverage(Line):
         self._int_fig.canvas.draw_idle()
 
     def _int_on_add_existing(self, g, anchor_ax):
+        """'add existing': the list of the open averages; a row picked adds every member's Selection of the group to it (those it already holds are reported)."""
         picker = self._int_picker()
         if picker.is_open():
             picker.close()
@@ -805,7 +866,13 @@ class LineAverage(Line):
         avgN setpoint rule; the sent curve is the average rebuilt with
         calibration and normalization on through the run's maps (a console
         line says so when the window's boxes are off), its unfiltered
-        counterpart the same with every filter off.  dI/dV only; needs a run.
+        counterpart the same with every filter off.  The record is written
+        first (save), so the fit history and the record share the stem.  A
+        marker on a row without data is left out; an average with a gap
+        (NaN) at the marker is not sent.  The fit label is '<averages
+        folder> | <name> | marker at <p> A' or '... | average of n markers
+        at ...' (' over I/V' with Feenstra on), its fit history
+        records.cache_path_of of that stem.  dI/dV only; needs a run.
         """
         if self.run_state is None:
             raise ValueError("run the average first.")
@@ -870,12 +937,15 @@ class LineAverage(Line):
     def record(self):
         """
         The line-average record (records.LINEAVG_RECORD_FORMAT): the index,
-        name and send label, the members (path, name, line, stripe rows,
-        the Line window's markers and centres, the editor's markers in the
-        member's own axis), the reference, the alignment mode, crop, the
-        channel, the filter boxes and states, the calibrate / normalize /
-        Feenstra states and settings, the gamma, the averaged line's group
-        sizes and marker positions, Average / stack / substack, the time.
+        name, send label and directory, the members (path, name, line,
+        stripe rows, the Line window's markers and centres, the editor's
+        markers in the member's own axis, the scale factor the member was
+        made with, the sweep view), the reference, the alignment mode,
+        crop, the channel, the filter boxes and states, the calibrate /
+        normalize / Feenstra states and settings, the gamma, the topo
+        processor flags, the averaged line's group sizes, marker positions
+        and E-markers, Average / stack / substack, the last run's grid
+        sizes (None before a run), and the time of writing.
         """
         hp, sp = self._int_filters.values()
         h_on, s_on = self._int_filters.states()
@@ -919,19 +989,25 @@ class LineAverage(Line):
                 'saved': datetime.now().isoformat(timespec='seconds')}
 
     def save(self):
+        """The record written to <stem>_average.json in the 'averages' subfolder (records.write_json); returns the path."""
         path = records.write_json(records.record_path(self.directory, self.stem), self.record())
         self._saved_stem = self.stem
         return path
 
     def _int_on_save(self):
+        """'save': the record written and its path printed."""
         print(f"{self.name}: record written: {self.save()}")
 
     def restore(self, rec):
         """
         Put a record's state into the window (the browser's loader, after
         the members are added): the reference, the mode and the editor's
-        markers, crop, the filters, the pipeline, Feenstra and marker
-        states, then run.
+        markers, crop, then the Line window's record keys through
+        Line.restore_markers (the filter boxes and states, the calibrate /
+        normalize / Feenstra states and settings, the gamma, the topo
+        processor, the group sizes and marker positions, the E-markers,
+        Average / stack / substack), then run when no run exists yet (the
+        case at loading).
         """
         self.reference = int(np.clip(int(rec.get('reference', 0)), 0, len(self.members) - 1))
         self.mode = 'markers' if rec.get('mode') == 'markers' else 'auto'
@@ -947,6 +1023,7 @@ class LineAverage(Line):
     # --- the alignment editor ---
 
     def _on_edit_alignment(self):
+        """'edit alignment': the AlignmentEditor opened (refreshed when open); needs a run."""
         if self.run_state is None:
             print(f"{self.name}: run the average first ('edit alignment' needs the maps).")
             return
@@ -982,7 +1059,10 @@ class LineAverage(Line):
         """
         The editor's 'Markers' slider: n markers in every member.  Growing
         adds markers at the free slots of the even layout of each member
-        (the slot farthest from its markers); shrinking removes from the end.
+        (10% to 90% of its line, the slot farthest from its markers;
+        widgets.MarkerGroupControls.grow_groups); shrinking removes from
+        the end.  The mode becomes 'markers' and run is needed; nothing
+        runs until the editor's 'apply'.
         """
         n = int(n)
         for m in self.members:
@@ -1002,7 +1082,7 @@ class LineAverage(Line):
     # --- the figure ---
 
     def _int_build_controls(self):
-        """The Line window's controls, the Line-only ones hidden, plus this window's own."""
+        """The Line window's controls, the Line-only ones hidden (the 'line' box and arrows, the 'line → ...' buttons, 'save', '+' / '-', the 'E range' / 'x range' boxes, the topo row controls and their labels), plus this window's own: the name box, the members line, 'run', 'edit alignment', 'save', 'remove last', 'restore' (widgets.RunControls) and 'crop'; the window title is the name."""
         Line._int_build_controls(self)
         fig = self._int_fig
         for w in (self._int_box_line, self._int_btn_line_new, self._int_btn_line_exist, self._int_btn_save,
@@ -1033,7 +1113,7 @@ class LineAverage(Line):
             pass
 
     def plot_line_with_topo_interactive(self, **kw):
-        """The window (Line.plot_line_with_topo_interactive on the main member's own line)."""
+        """The window (Line.plot_line_with_topo_interactive on the main member's own line, its stripe rows unless given); no Drift is handed over."""
         kw.setdefault('topo_lines', self.members[self.reference]['topo_lines'])
         Line.plot_line_with_topo_interactive(self, **kw)
 
@@ -1042,7 +1122,7 @@ class LineAverage(Line):
         self._int_feenstra = None
 
     def _int_orient_member(self, arr, m):
-        """A member's columns (npts, N) oriented like the Line window's heatmap (rows follow its positions reversed, energy ascending)."""
+        """A member's columns (npts, N) as the editor draws them: rows = the member's locations in reverse order, columns = energy ascending (plots.draw_heatmap's origin 'upper' then puts the last position at the top of the extent)."""
         c = np.asarray(arr, dtype=np.float64)
         e = np.asarray(m['selection'].energy, dtype=np.float64)
         order = np.argsort(e)
@@ -1052,15 +1132,21 @@ class LineAverage(Line):
 class AlignmentEditor:
     """
     The 'edit alignment' window of a line average: one row per member with
-    its stripe at the left, its dI/dV heatmap and its current heatmap (each
-    with its own colour bar and 'γ' box, the window's filters, pipeline
-    flags, and Feenstra settings), and M horizontal draggable marker lines
-    on both heatmaps of the member (marker j in colour j in every member);
-    one 'Markers' slider (1 to 10) for every member, a 'reference' box
-    (the member number that is the main), 'apply' (the marker sections
-    become the alignment and the average runs), 'auto' (back to the DTW
-    maps, the markers re-placed, the average run), 'close'; one topo colour
-    bar per figure.  Six members per figure; more open a second figure.
+    its stripe at the left, its dI/dV heatmap (division off) and its
+    current heatmap (each with its own colour bar and 'γ' box, through the
+    window's filters, pipeline flags, and Feenstra settings; "no Current
+    channel" without one), over the member's own positions (Å), and M
+    horizontal draggable marker lines on both heatmaps of the member
+    (marker j in colour j in every member, clipped to the member's line
+    when dragged); one 'Markers' slider (0 to 10, on the first figure)
+    that sets the marker count of every member
+    (LineAverage.set_align_marker_count), a 'reference' box (the member
+    number, from 1, that is the main; a bad number is put back), 'apply'
+    (the marker sections become the alignment and the average runs),
+    'auto' (back to the DTW maps, the markers re-placed, the average run),
+    'close' (every figure closed); one topo colour bar per figure.
+    PER_FIGURE (6) members per figure; more open further figures, the
+    controls on the first.  Built again when the member count changes.
     """
 
     PER_FIGURE = 6
@@ -1082,9 +1168,11 @@ class AlignmentEditor:
         self.build()
 
     def is_open(self):
+        """True while any of the editor's figures exists."""
         return any(widgets.figure_is_open(f) for f in self.figs)
 
     def close(self):
+        """Every figure of the editor closed."""
         for f in self.figs:
             if widgets.figure_is_open(f):
                 plt.close(f)
@@ -1093,6 +1181,14 @@ class AlignmentEditor:
     DESIGN = (16, 10)      # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
     def build(self):
+        """
+        The figures made from scratch (the old ones closed): PER_FIGURE
+        rows per figure from the top, each row the stripe, the dI/dV and
+        current axes (sharing the stripe's y), their colour bars and γ
+        boxes; the controls on the first figure; then every member drawn
+        (refresh).  Row k is self.rows[k] (a dict of its axes, images and
+        boxes).
+        """
         self.close()
         self.rows = {}
         self._artists = {}
@@ -1146,7 +1242,7 @@ class AlignmentEditor:
         plt.show(block=False)
 
     def refresh(self):
-        """Every member redrawn (rebuilt when the member count changed)."""
+        """Every member redrawn (the editor rebuilt when the member count changed); the 'reference' box and the 'Markers' slider follow the parent without firing."""
         p = self.parent
         if len(self.rows) != len(p.members):
             self.build()
@@ -1165,6 +1261,17 @@ class AlignmentEditor:
             f.canvas.draw_idle()
 
     def draw_member(self, k):
+        """
+        Member k's row: its dI/dV (division off, the parent's calibrate /
+        normalize flags and filters) and its current (0Vsub and the
+        filters as set, unit area with the parent's normalize flag) as
+        heatmaps over [energy, own positions] (_int_orient_member, the
+        parent's colour map, the row's γ boxes), each with its colour bar,
+        or the note "no Current channel"; the title 'Line k: file:line
+        <quantity>' with '[reference]' for the main; the member's stripe
+        (topo.stripe_profile of its rows with the parent's processor) at
+        the pixels' positions; then the marker lines (_draw_markers).
+        """
         p = self.parent
         m = p.members[k]
         d = self.rows[k]
@@ -1199,6 +1306,7 @@ class AlignmentEditor:
         self._draw_markers(k)
 
     def _draw_markers(self, k):
+        """Member k's marker lines redrawn: a dashed, pickable horizontal line per editor marker (colour j) on its dI/dV and current axes."""
         p = self.parent
         m = p.members[k]
         d = self.rows[k]
@@ -1219,12 +1327,14 @@ class AlignmentEditor:
     # --- events ---
 
     def _on_pick(self, event):
+        """A press on a marker line ('marker_<member>_<j>'): it becomes the dragged marker."""
         label = getattr(event.artist, 'get_label', lambda: '')()
         if isinstance(label, str) and label.startswith('marker_'):
             _, k, j = label.split('_')
             self._active = (int(k), int(j))
 
     def _on_motion(self, event):
+        """Drag: the marker follows the cursor's position on its member's heatmaps, clipped to the member's line; the member's lines redrawn (no run)."""
         if self._active is None or event.ydata is None:
             return
         k, j = self._active
@@ -1240,9 +1350,11 @@ class AlignmentEditor:
         self._draw_markers(k)
 
     def _on_release(self, event):
+        """End of a drag."""
         self._active = None
 
     def _on_markers(self, val):
+        """The 'Markers' slider: the count set in every member (the parent) and the lines redrawn; ignored while refresh sets the slider."""
         if self._quiet:
             return
         self.parent.set_align_marker_count(int(val))
@@ -1250,6 +1362,7 @@ class AlignmentEditor:
             self._draw_markers(k)
 
     def _on_reference(self, text):
+        """The 'reference' box: member number (from 1) to the parent (set_reference); a bad one is reported and the box put back."""
         if self._quiet:
             return
         try:
@@ -1259,10 +1372,12 @@ class AlignmentEditor:
             self.box_ref.set(str(self.parent.reference + 1))
 
     def _on_apply(self):
+        """'apply': the parent runs with the marker-section maps; the editor refreshed on success."""
         if self.parent.apply_markers():
             self.refresh()
 
     def _on_auto(self):
+        """'auto': the parent runs with the DTW maps; the editor refreshed on success."""
         if self.parent.auto_markers():
             self.refresh()
 

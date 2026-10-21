@@ -9,20 +9,26 @@ Experiment browser for a directory of RHK .sm4 files.
 Files
 -----
 Every .sm4 in the directory, ordered by the date-and-time stamp at the end
-of the file name (_YYYY_MM_DD_HH_MM_SS_mmm).  The arrows step through every
-file in that order regardless of its type.  A file's type is learned the
-first time it is loaded:
-  'topo'  : image pages only (RHK_PAGE_TOPOGRAPHIC and the like)
+of the file name (_YYYY_MM_DD_HH_MM_SS_mmm; a file without one is skipped
+with a console line, sm4file.list_sm4_files).  The arrows step through
+every file in that order whatever its type, unless the 'step through' box
+narrows them (see "Scan layer").  Every file's type is read from its
+headers at startup (sm4file.header_cache, kind_from_types; the 'headers'
+section of the computed store, so a later startup reads only new or
+changed files), the first matching rule deciding:
   'grid'  : spectroscopy grid (RHK_PAGE_INTERACTIVE_SPECTRA pages; one spectrum
             per grid point, positions in RHK_SpecDrift_Xcoord / Ycoord; a line
             is one run of n_fast consecutive spectra, as chunk_index in the
             Line tool)
-  'point' : single-point spectroscopy (RHK_PAGE_RAMP_SPECTROSCOPY_RP pages;
-            repeated sweeps at one position)
-  'phase' : a lock-in phase rotation (RHK_LINE_PHASE_ROTATE pages; the lock-in
-            output against the phase at one position, see phase.py)
+  'phase' : a lock-in phase rotation (every RHK_PAGE_RAMP_SPECTROSCOPY_RP
+            page of the file has line type RHK_LINE_PHASE_ROTATE; the
+            lock-in output against the phase at one position, see phase.py)
+  'point' : single-point spectroscopy (RHK_PAGE_RAMP_SPECTROSCOPY_RP pages
+            otherwise; repeated sweeps at one position)
   'fft'   : a noise spectrum (RHK_PAGE_NOISE_POWER_SPECTRUM pages; the recorded
             channels against frequency, see fft.py)
+  'topo'  : a topography (RHK_PAGE_TOPOGRAPHIC pages and none of the above)
+  'other' : none of those pages (shown with an empty spectra panel)
 
 Scan layer
 ----------
@@ -30,18 +36,27 @@ Every file of the directory is placed on the scan area once and kept
 (scanlayer.ScanLayer; the MATLAB browser's model): the 'show' radio shows
 the files up to the current one, all of them, or the loaded set ('last 25');
 stepping only shows and hides images.  Files not read yet are read in the
-background (worker processes) and placed as they arrive; their processed
-images are cached on disk (scan_cache_<stamp>/).  Everything else the
-browser keeps between sessions lives in two files beside the .sm4 files
-(caches.py): settings_<stamp>.json holds what was set by hand (the manual
-drift spans and stripe points, the scale timeline, the site flags) and is
-written on every change; computed_<stamp>.json holds what was computed
-from the files (the header scan, the sites' metrics, the tracked drift
-pairs) and can be deleted and rebuilt.  The drift is applied to each image as an exact
-affine transform of its frame (scanlayer.affine_matrix), never baked into
-its pixels.  Other spectra files are drawn grey before the current topo and
-blue after it.  The 'step through' box limits Prev / Next and the sliders to
-chosen kinds and a minimum duration.
+background (worker processes, BG_WORKERS of them; in this thread when they
+cannot start) and placed as they arrive; their processed images are cached
+on disk (scan_cache_<stamp>/, one array file per image, pass and
+processor setting).  Everything else the browser keeps between sessions,
+apart from the records of the 'averages' subfolder (see "Analysis
+windows"), lives in two files beside the .sm4 files (caches.py):
+settings_<stamp>.json holds what was set by hand (the manual drift spans
+and stripe points, the scale timeline, the site flags) and is written on
+every change; computed_<stamp>.json holds what was computed from the files
+(the header scan, the sites' metrics, the tracked drift pairs) and can be
+deleted and rebuilt; the first startup carries the earlier drift_cache_,
+sites_ and headers_ files over into them and renames those with '.old'.
+The drift is applied to each image as an exact affine transform of its
+frame (scanlayer.affine_matrix), never baked into its pixels.  Every other
+point or phase file shown is a diamond at its recorded position, grey when
+taken before the most recent topo or grid at or before the current file,
+blue after it (MATLAB's colours, _point_colours); a grid that is not the
+current file is drawn as its own topo image.  The 'step through' box
+limits Prev / Next and the sliders to chosen kinds and a minimum duration
+(the file-name stamp minus RHK_DateTime of the first page,
+sm4file.file_duration_s; a file of unknown duration passes).
 
 Loaded set
 ----------
@@ -51,9 +66,11 @@ topography is loaded as one more file.  When the current file is a single
 point whose position lies under none of the loaded topographies, the most
 recent preceding topography whose scanned area contains that position is
 loaded as one more file and drawn at its own time depth in the stack.
-Stepping forward or back slides the window; files loaded only to learn
-their type or footprint are released at once (type and footprint are
-remembered).
+Stepping forward or back slides the window.  A topo loaded only to learn
+its footprint (the search above) is not added to the loaded set: it stays
+in the loader's LRU until evicted, and its footprint is remembered (geoms).
+Before the Topo, Line and stripe windows open, Drift.loaded is set to the
+loaded set so that the drift does not load those files again.
 
 Coordinates
 -----------
@@ -63,10 +80,12 @@ pixel along the fast axis, raw file order):
              + R(RHK_Angle) . ((j - (nx - 1) / 2) RHK_Xscale, (i - (ny - 1) / 2) RHK_Yscale)
 This reproduces the recorded spectrum positions of a grid file exactly
 (checked on file.sm4, all 1024 points).
-spym flips image columns when RHK_Xscale < 0 and rows when RHK_Yscale > 0;
-those flips are undone here so that the raw order is used.  Images are read
-from the page data at the resolution they were saved at (spym discards the
-SM4 thumbnail objects) and drawn without interpolation or anti-aliasing.  Every x and y
+spym's reader flips image columns when RHK_Xscale < 0 and rows when
+RHK_Yscale > 0; those flips are undone (Sm4File.topo_raw) so that the raw
+order is used.  Images are read from the page data at the resolution they
+were saved at (sm4file.load reads every page through spym's reader classes;
+the thumbnail objects are not used) and drawn without interpolation or
+anti-aliasing.  Every x and y
 (positions, extents, markers) is divided by the scale factor in force at
 the file's own time and shown in nm: the recorded value is nominal, the
 divided one calibrated.  The scale factors form a timeline (scales.Scales,
@@ -76,20 +95,22 @@ entry set covers the whole experiment; before any entry the constructor's
 base scale, default 2.75, applies); every file on the scan area and every
 window opened for a file use that file's scale, so files from different
 temperature regimes sit at their true sizes side by side.  For every grid file the embedded
-Topography spectra channel is compared with the image page once (self
-check, printed on the console).
+Topography spectra channel is compared with the image page once, when the
+file is first loaded (Sm4File._self_check, printed on the console).
 
 Browser window
 --------------
-Left: the scan area.  Every topography in the loaded set at its absolute
-position and rotation, oldest underneath, most recent on top, with the
-current file's spectrum positions drawn over it (the selected line of a grid
-highlighted, its first spectrum as a white square: the start of the line;
-the grid's own forward and reverse topo stripes drawn under the markers, see
-"Grid stripes" below).  Every loaded single point is marked as a cyan
-diamond; the current single point as a lime cross on top (its sweeps, see
-"Drift correction" below); a loaded phase rotation is marked like a single
-point (its recorded position, no drift correction).  A scroll notch zooms
+Left: the scan area.  Every topography the 'show' mode shows (see "Scan
+layer") at its absolute position and rotation, oldest underneath, most
+recent on top, with the current file's spectrum positions drawn over it
+(the selected line of a grid highlighted, its first spectrum as a white
+square: the start of the line; the grid's own forward and reverse topo
+stripes drawn under the markers, see "Grid stripes" below).  Every other
+point or phase file shown is a diamond at its recorded position (grey
+before the current topo, blue after it, see "Scan layer"); the current
+single point is a lime cross on top (its sweeps, see "Drift correction"
+below); the current phase rotation is marked like a single point (its
+recorded position, no drift correction).  A scroll notch zooms
 the scan area by 1.2 about the cursor (both axes together, the equal
 aspect kept), a left-button drag pans it, a double-click centres the view on
 the clicked point at the same zoom, the toolbar's Home button (or the Home
@@ -103,24 +124,32 @@ view, even in part, the view relocates to it at the same zoom, centred on
 it, widening only when the file does not fit at that zoom.  The topo
 colour bar right of the scan area (no scale: the topo colour map alone) is
 the one of every page that uses it.  Right: every curve of the
-current grid or point through the pipeline below with every filter off
-(the panel has no toggles), overlaid, on the channel the 'channel' radio
-says (dI/dV or IETS; the file's own channel when it lacks that one); for a
+current grid or point through the pipeline below as the boxes under the
+panels say (the Hampel / Savitzky-Golay filter box, every filter off at
+start; the 'calibrate' / 'normalize' box, both off at start; the Feenstra
+settings), overlaid (a grid with several sweeps per pixel: every sweep, the
+reverse ones dashed; a sweep stopped before its end: dashed over the points
+it recorded), on the channel the 'channel' radio says (dI/dV or IETS; the
+file's own channel when it lacks that one; dI/dV spectra fill the four
+Feenstra panels described below, the IETS channel one panel); for a
 phase rotation the panel shows its curves against the phase with the fitted
 maximum and minimum and the set rotation marked, for a noise spectrum the
 recorded channels against frequency.  Under the panel '< spectra' /
 'spectra >' and the 'spectra' slider, which run over the spectra files of
 the directory only (points, grids, phase rotations, and noise spectra, in
-time order; every file's type is read from its headers at startup,
-sm4_kind) and go to the chosen spectra file with the same loading rules as
-the file slider; the two sliders are tied, the spectra slider staying on
-the spectra file last shown while a topo is current; 'prev region' /
-'next region' beside the arrows go to the previous / next stop at an
-experiment region (see "Sites and regions").  Under that the info panel:
-the file's place, name, stamp, type, its site flag and region, and the
-loaded count, then the measurement information of the file (setpoint,
-lock-in and modulation settings, filters, sample time, range and step,
-points acquired, position, notes) as a grid, SI prefixes on the units.
+time order; the types from the header scan, see "Files") and go to the
+chosen spectra file with the same loading rules as the file slider; the
+two sliders are tied, the spectra slider staying on the spectra file last
+shown while a topo is current; 'prev region' / 'next region' beside the
+arrows go to the previous / next stop at an experiment region (see "Sites
+and regions").  Under that the info panel (selectable text): the file's
+place, name, stamp, type, its site flag and region, and the loaded count,
+then the measurement information of the file (Sm4File.measurement_info:
+setpoint, lock-in and modulation settings, filters, sample time, range and
+step, points acquired, position, notes), one 'name : value' line each, SI
+prefixes on the units, then the details cut from the panels' titles
+(qtplot.short_title keeps a title's essential part; the counts and states
+go here).
 Below: a file slider (drag anywhere in the directory; the file loads when
 the mouse is released), '< Prev' / 'Next >', the 'Topo Window' button, the
 'scale factor' box (the current file's scale; editing it sets the scale
@@ -131,11 +160,17 @@ and along the bottom left the drift controls: the 'auto drift' and
 topos' skew and the spectra's correction and drift lines on the scan area,
 see "Drift correction"), the 'stripe match' button (grid files: the
 stripe window, see "Stripe matching") and the 'drift' button, which opens
-the manual drift window of the current file (see "Manual drift").  Right, for the current file: 'Line' / 'Map'
+the manual drift window of the current file (see "Manual drift"); in the
+same row the 'channel' radio, the 'show' radio and the 'step through' box
+with its 'min (min)' duration box, and under them a status line counting
+the files placed on the scan area.  Keyboard: Ctrl+Left / Ctrl+Right step
+files and Ctrl+PgUp / Ctrl+PgDown step spectra files, through the step
+filter (Ctrl so that the arrows still move the cursor in the text boxes).
+Right, for the current file: 'Line' / 'Map'
 (grid; the line is chosen inside the Line window and the scan area
 highlights it), the 'calibrate' / 'normalize' box of the spectra panels
-(widgets.PipelineBox, both off at open, as in every window that uses
-Feenstra; see the pipeline order below), the section path's controls
+(widgets.PipelineBox, both off at open, as in the averaging, Map, and
+line-average windows; see the pipeline order below), the section path's controls
 ('section' with 'clear' under it, and the stack of its three features
 'cross section', 'measure', 'set scale'; see "Section path"),
 'add new' and 'add existing' (point; the second drops a list of the open
@@ -146,9 +181,10 @@ itself when a topo is current, and for a grid's own topo when a grid is
 current (its stripes under the markers; see "Grid stripes"; remembered per
 file and used wherever that topo is drawn),
 and, always, the 'site' radio (pulsing / clean / experiment) of the current
-file.  Every control is built through widgets.py (one specification per
-widget name, so a control shared with another window is the same there);
-every drawing goes through plots.py.
+file.  Every control is a native Qt wrapper (QControl and its kinds, the
+Q... classes below) carrying the widgets.py specification's labels and the
+composite controllers' logic, so a control shared with a figure window is
+named and labelled the same there; every drawing goes through plots.py.
 Text size: the window's design size is Browser.DESIGN (1700 x 950 pixels);
 every text of the window, the controls, the info panel, the panels' ticks,
 labels and legends, is scaled by the window's size relative to it, from
@@ -164,12 +200,14 @@ full labels and names return when the window is wider than tall again.
 
 Analysis windows
 ----------------
-Topo window : the most recent topography in its own scan frame, equal aspect
-              locked (for a grid: the topo it lies on, with the grid's own
-              topo pixels drawn over it and a 'topo pass' radio for them);
-              for a single point (or a phase rotation), the most recent
-              loaded topography containing its position, with the sweep
-              positions marked as on the scan area.
+Topo window : the most recent loaded topography in its own scan frame, equal
+              aspect locked, at the current file's scale (for a grid: the
+              most recent loaded topo, with the grid's own topo pixels drawn
+              over it and a 'topo pass' radio for them); for a single point
+              (or a phase rotation), the most recent loaded topography
+              containing its position (the most recent loaded one when none
+              does, said on the console), with the sweep positions marked as
+              on the scan area.
 Averages    : indexed windows avg1, avg2, ... (the index is unique per
               experiment directory: 1 + the highest index among the open
               windows and the saved records).  'add new' in the browser
@@ -186,14 +224,16 @@ Averages    : indexed windows avg1, avg2, ... (the index is unique per
               emptied by right-clicks takes no part in the checks or the
               average), and shows the average in the panel beside the
               individual curves (the plain mean of every kept sweep).  'save'
-              writes the record avg<N>_average.json
-              in the subfolder 'averages' of the experiment directory (the
-              files in added order, the removed sweeps in removal order, the
-              filter settings, the run range); 'Send to fit' writes it too,
-              and its fit history is avg<N>_fits.pkl in the same subfolder
-              (reused on a later send only while its stored curve equals the
-              current average; otherwise a fresh fit replaces it), as are the
-              fit's saved fits avg<N>_fit<K>.json / .csv.  The
+              writes the record <stem>_average.json (the stem is the window's
+              name, avg<N> unless renamed in its name box, cleaned as a file
+              name, records.stem_of) in the subfolder 'averages' of the
+              experiment directory (the files in added order, the removed
+              sweeps in removal order, the filter settings, the run range);
+              'Send to fit' writes it too, and its fit history is
+              <stem>_fits.pkl in the same subfolder (reused on a later send
+              only while its stored curve equals the current average;
+              otherwise a fresh fit replaces it), as are the fit's saved fits
+              <stem>_fit<K>.json / .csv.  The
               subfolder is created on the first save or send; nothing is
               written among the .sm4 files.
 Line averages : lineavg1, lineavg2, ... (lineavg.LineAverage): whole grid
@@ -222,15 +262,20 @@ Saved averages : every record of the 'averages' subfolder by index,
               others by time of day among the directory's files, and when a
               time matches no file or several, only the fit is opened.
 Line        : Line.plot_line_with_topo_interactive on the current file and
-              line (its 'add' buttons use the browser's averages, its
-              'line → ...' buttons the browser's line averages).
+              line, at the file's scale (its 'add' buttons use the browser's
+              averages, its 'line → ...' buttons the browser's line averages,
+              its 'profile' buttons the browser's profile plots; its own
+              drift toggles start as the browser's).
 Map         : toggle between a tiled grid of every energy and one energy
               beside the file's own embedded topography with energy arrows.
 The browser, the average, Map, Line, and line-average windows, and the
 fit's edit window carry the Savitzky-Golay / Hampel controls
 (widgets.FilterControls; every filter off by default, each switchable on
-its own) and the 'calibrate' / 'normalize' box (both off at open in every
-window that uses Feenstra, each switchable on).  The filters act on the
+its own); the browser, the average, Map, Line, and line-average windows
+and the Feenstra companions carry the 'calibrate' / 'normalize' box
+(widgets.PipelineBox, each step switchable on its own; both off at open,
+except in the Line window, which starts at line_window_kwargs'
+apply_calibration / apply_normalize, both on in main()).  The filters act on the
 recorded current I(V) alone, once, wherever it is used (Hampel, then
 Savitzky-Golay, filters.filter_lia: the pipeline filters the current first
 and hands it to the calibration and to the Feenstra division alike, before
@@ -271,11 +316,12 @@ without the settings loads as it was made: no subtraction).
 
 Sites and regions
 -----------------
-At the first startup every topography and spectra file of the directory is
-loaded once for its height metrics and its position (console progress
-line), kept in the computed store (computed_<stamp>.json, per file with
-its modification time; later startups read it and compute only files not
-in it).  Within every segment (the topos between long-range
+At the first startup every topography, grid and point file of the
+directory is loaded once for its height metrics, its position and its
+ohmic test (console progress line), kept in the 'metrics' section of the
+computed store (computed_<stamp>.json, per file with its modification
+time; later startups read it and compute only files not in it or changed
+since).  Within every segment (the topos between long-range
 moves) the topos are grouped into regions by footprint overlap at their
 recorded absolute positions, before any drift correction (a correction
 never changes a region or a flag): any topo overlapping a member joins
@@ -286,9 +332,10 @@ does not; a topo overlapping nothing and near no region is a region of
 one.  Per region the absolute Z range is max(z98) - min(z2) over its
 topos; the regions are split into pulsing and experiment by Otsu's
 threshold on the logarithm of their ranges (no height number in the code;
-the ranges and the threshold are reported on the console); every topo of a
-pulsing region is pulsing, the rest experiment (no per-image rule: a
-zoomed-in image takes its region's class).  A grid or point takes the flag
+the ranges and the threshold are reported on the console; one region alone
+cannot be split: everything is experiment); every topo of a pulsing region
+is pulsing, the rest experiment (no per-image rule: a zoomed-in image takes
+its region's class).  A grid or point takes the flag
 and region of the most recent preceding topo (anywhere in the directory,
 header geometry) whose footprint contains its position; inside no
 footprint the ohmic test decides pulsing (sites.TIP_PARAMS: R² at or above
@@ -296,12 +343,20 @@ ohmic_r2 for the current's linear fit through its 0 V value and the
 calibrated dI/dV's standard deviation at most ohmic_flat times its mean).
 A run of consecutive pulsing files whose last spectra file is followed by
 experiment files gets that last file flagged clean.  Phase and noise files
-take the preceding file's flag and region.  Every flag is the auto value
-until it is changed in the 'site' radio; a change is written to the sites
-file.  'prev region' / 'next region' go to the previous / next stop at an
-experiment region: the first spectra file ahead (or back) whose region is
-an experiment region other than the current file's, a stop entered from
-its first spectra file (sites.Sites.neighbour_region).
+take the preceding file's flag and region.  Every flag is the automatic
+value until it is changed in the 'site' radio, and a hand-set flag feeds
+the whole chain (sites.Sites._chain): a topo set to pulsing or experiment
+sets its region's class, so every topo of the region and every spectra
+file on them follow; a grid or point set by hand changes that file alone;
+the clean rule runs on the final flags; a flag set to the value the chain
+gives the file without an override of its own drops the override.  The
+hand-set flags are the 'flags' section of the settings store
+(settings_<stamp>.json), written at once on every change.  'prev region' /
+'next region' go to the previous / next stop at an experiment region, by
+the regions' final classes: the first grid or point file ahead (or back)
+whose region is an experiment region other than the current file's, a
+stop going back entered from its first grid or point file
+(sites.Sites.neighbour_region).
 
 Drift correction
 ----------------
@@ -314,7 +369,8 @@ own toggles.
   'auto drift'   : the tracker's velocity (drift.py: every consecutive topo
       pair of a segment tracked at startup by feature-point matching, the
       method of Diao et al., Appl. Phys. Lett. 122, 121601 (2023), with the
-      KAZE detector; results cached).  A spectra file takes the pair (the
+      KAZE detector; the results kept in the 'pairs' section of the computed
+      store, so a later startup tracks only new pairs).  A spectra file takes the pair (the
       last topo of its segment before it, the first topo after it); a topo
       its pair with the next topo (the last topo of a segment the pair with
       the previous one); without a usable after pair, the last tracked
@@ -336,11 +392,13 @@ spectral locations are shown: the scan area, the Topo window, the Map
 window (both panels), and the Line window's stripe, white for an auto
 velocity, red for a manual one, and pale yellow for a span confirmed from
 seeded markers (plots.drift_color).  Topographies: with
-a source on every topo of the loaded set is skewed pixel by pixel by the
-drift during its scan (Drift.corrected_topo: pixel (i, j) at its
-acquisition time, Sm4File.pixel_times, moved by -v (t - t_first pixel) and
-the image resampled onto its own grid), on the scan area, in the Topo
-window, and as the Map window's embedded topo.  The grid's own topo stripes
+a source on every topo shown is skewed by the drift during its scan: on
+the scan area as the layer's affine transform of its frame
+(scanlayer.affine_matrix, which equals the per-pixel resampling, checked),
+in the Topo window and as the Map window's embedded topo pixel by pixel
+(Drift.corrected_topo: pixel (i, j) at its acquisition time,
+Sm4File.pixel_times, moved by -v (t - t_first pixel) and the image
+resampled onto its own grid).  The grid's own topo stripes
 under the markers follow: every pixel at its recorded location minus v
 times its own pixel time.  Line window: the topo stripe is never moved;
 every row keeps its anchor at its own topo pixel and is sheared along the
@@ -365,11 +423,14 @@ window' (see "Manual drift"), the Topo window 'stripe match'.
       once, and the placement reaches the scan area, the Topo window, the
       Line window's heatmap and the Map window alike (Drift.result with
       stripe None).  It never changes v.
-  'anchor to topo' (grid and point files; off by default; the Topo window
-      only): the MATLAB "drift for first point": the file is also shifted
-      rigidly by -v (t_0 - t_topo start), t_topo the start of the topo under
-      it, to where the surface sat when that topo began.  Off, the recorded
-      anchor stands.
+  'anchor to topo' (grid and point files): the MATLAB "drift for first
+      point": the file is also shifted rigidly by -v (t_0 - t_topo start),
+      t_topo the start of the topo under it, to where the surface sat when
+      that topo began (Drift.result's `anchor`).  Off, the recorded anchor
+      stands.  It is always off today: the browser's anchor_on is False and
+      no window builds the toggle (only its specification exists, in
+      widgets.SPECS), so the Topo window, which takes the browser's state
+      at opening, never applies it.
 Segments: a jump of the recorded scan centre above move_min_m (1 um)
 between consecutive topos is a long-range move; the topos between two
 moves are a segment; pairs are tracked and before/after topos looked up
@@ -384,7 +445,9 @@ The MATLAB script's "Drift controls" (plot_sm4_topo_and_spec_21_...) with
 several marker pairs, in the drift window (drift.DriftWindow), opened by the
 browser's 'drift' button for the current file and by the Line and Map
 windows' 'drift window' button for theirs.  The window shows the pair the
-file's auto velocity comes from, side by side at absolute positions: for a
+file's auto velocity comes from, side by side at absolute positions in
+calibrated nm, each topo, each frame and the file's positions at the scale
+in force at its own file's time: for a
 spectra file the last topo of its segment before it and the first after it
 (never the file's own topo); for a topo file itself and the next topo of
 its segment, else the previous topo and itself; each panel is titled with
@@ -394,21 +457,28 @@ view centred on the two frames together, so the pair's overlap is seen at
 once.  A click in a panel places
 a numbered marker on that topo (draggable, the pixel's acquisition time
 re-read at the new place); the k-th marker on the earlier topo pairs with
-the k-th on the later one; 'Markers' (1 to 8) is the number of pairs, pair
+the k-th on the later one; 'Markers' (0 to 8; a click beyond the count
+raises it) is the number of pairs, pair
 k in its own colour (plots.MARKER_COLORS: red, green, blue, yellow,
 magenta, cyan, orange, purple, the eight chromatic basic colour terms that
 read apart on the topo), the earlier marker a circle, the later a square.
-Seeding: with the opener's 'auto drift' on and the pair tracked, a marker
-clicked on either topo seeds its partner on the other where the auto
-velocity puts the same feature (xy + v (t_B - t_A), the partner's own pixel
-time, drift.seed_partner; hollow until moved); dragging the clicked marker
-re-seeds an unmoved partner, dragging the partner adjusts it (more than
-half a pixel off the seeded spot).  The markers are a draft: placing,
-dragging, 'Markers', and 'clear markers' change only the draft.  One
-velocity box, 'v (nm/h)' ("Vx, Vy", the MATLAB boxes), is what gets
-applied.  'set from markers' fills it from the draft and stores nothing:
-every pair seeded and unmoved, the auto pair velocity itself (confirmed);
-otherwise the least-squares fit over the pairs with their own times, each
+Seeding: a marker clicked on either topo seeds its partner on the other
+where the velocity governing the pair puts the same feature (xy + v (t_B -
+t_A), the partner's own pixel time, drift.seed_partner; hollow until moved;
+the velocity is the pair's applied span, else the file's velocity with
+both sources on, else the tracked pair's, DriftWindow._seed_velocity,
+whatever the opener's toggles; without any the partner is placed by hand);
+dragging the clicked marker re-seeds an unmoved partner, dragging the
+partner adjusts it (more than half a pixel off the seeded spot).  The
+markers are a draft: placing, dragging, 'Markers', and 'clear markers'
+change only the draft.  One velocity box, 'v (nm/h, cal)' ("Vx, Vy", the
+MATLAB boxes), is what gets applied; it is in calibrated nm/h, the nominal
+velocity divided by the file's scale factor, and is converted back to the
+recorded frame for storage, so the stored velocities and the tracker stay
+in recorded metres.  'set from markers' fills it from the draft and stores
+nothing: every pair seeded by an auto velocity and unmoved, the auto pair
+velocity itself (confirmed); otherwise the least-squares fit over the
+pairs with their own times, each
 pair a two-point measurement d_k = v (t_B,k - t_A,k), v = sum dt_k d_k /
 sum dt_k^2 (drift.fit_marker_velocity; with one pair exactly the MATLAB
 two-point slope), which models the squash and stretch of the marker
@@ -420,16 +490,24 @@ box still holds the unmoved seeded value (source 'auto (confirmed)'),
 'typed' when it was typed or edited (source 'manual (typed)'); an empty
 box applied removes the pair's span.  Every pair's dx, dy, dL, dt, v_x,
 v_y, v_L, and angle (the MATLAB readout) and its residual go to the
-console and the window; arrows from each earlier marker to its partner
-are drawn in the pair's colour.  The span covers every file from the
+console (nominal) and the window (nominal, the calibrated value in
+brackets; every velocity readout there calibrated with the nominal
+beside, drift.marker_pair_text, DriftWindow._v_text); arrows from each
+earlier marker to its partner are drawn in the pair's colour.  '< before'
+/ 'before >' and '< after' / 'after >' step the earlier and the later topo
+through the file's segment in time order (the earlier always before the
+later): the pair is redrawn, the draft emptied, the new pair's stored span
+restored, and 'apply velocity' then stores the span between the topos
+shown, which covers every file between them.  The span covers every file from the
 earlier topo to the later one, both included; of overlapping spans the
 narrowest containing the file applies; a confirmed span is governed like
 any other; a file no span covers takes the auto velocity (its extrapolation
 rule included), so only the files between a pair applied by hand keep a
 hand velocity.  Applying tells the Drift's subscribers: the scan area and
 every open Line and Map window redraw, whichever drift window applied.
-Spans (with their kind and velocity) are kept in the drift cache's manual
-section, restored at startup, and never touched by the tracking.  The
+Spans (with their markers, kind and velocity) are the 'drift' section of
+the settings store (settings_<stamp>.json, caches.py), written at once on
+every change, restored at startup, and never touched by the tracking.  The
 console names every file's source ('auto (pair)', 'auto (extrapolated)',
 'auto (confirmed)', 'manual (markers)', 'manual (typed)', ...), as does
 the scan-area title.
@@ -489,10 +567,11 @@ pass' radio chooses the pass at the recorded pixels: 'forward' the forward
 row of every line at the kept spectra's pixels (STS.acquired: a spectrum
 whose column is all zeros or ends in zeros is not kept, so an unfinished
 line stops at its last kept spectrum), 'reverse' the reverse row along the
-tip's way back, 'average' the two passes range-matched and averaged
-pixelwise at the forward pixels.  With a velocity covering the grid both
-passes are always drawn at their corrected positions, the reverse band
-under the forward one (drift.Drift.grid_chain: the forward pixels by their
+tip's way back; 'average' counts as forward (a grid's two passes are never
+averaged, topo.grid_stripe_layers).  With a velocity covering the grid both
+passes are always drawn at their corrected positions, the pass the radio
+names on top ('average' as forward) and the other band under it
+(drift.Drift.grid_chain: the forward pixels by their
 points' times within the line, the reverse row rigid at the forward end so
 it starts there and ends at the return point, the next line at the
 recorded displacement from the return point).  Each pass is processed by
@@ -539,17 +618,17 @@ from collections import OrderedDict
 from types import SimpleNamespace
 
 
-# Every loaded single point on the scan area: cyan diamond (the current point and its sweeps use
-# the colours of plots.draw_point_sweeps).
-POINT_LOADED_COLOR = '#00e5ff'      # every loaded single point: cyan diamond (before the time colours)
+# The other point and phase files on the scan area (_draw_points): diamonds in MATLAB's two time
+# colours (the current point and its sweeps use the colours of plots.draw_point_sweeps).
+POINT_LOADED_COLOR = '#00e5ff'      # unused: the scan layer draws every other file in the two colours below
 POINT_BEFORE_COLOR = '#9e9e9e'      # a spectra file taken before the current topo: grey diamond (MATLAB)
 POINT_AFTER_COLOR = '#1f4fff'       # a spectra file taken after it: blue diamond (MATLAB)
 
 
 class _BrowserCore:
     """The experiment logic (files, drift, sites, averages, the analysis windows) and the drawing of the panels; Browser below is its window."""
-    WINDOW = 25
-    TOPO_CBAR = [0.565, 0.40, 0.012, 0.35]        # the page's topo colour bar (plots.draw_topo_cbar)
+    WINDOW = 25                    # the loaded set: the current file and the WINDOW - 1 files before it
+    TOPO_CBAR = [0.565, 0.40, 0.012, 0.35]        # unused: the scan area's colour bar is placed in Browser._build_figure
 
     def __init__(self, directory, scalefactor=2.75, hampel_defaults=None, sgolay_defaults=None,
                  line_window_kwargs=None, cmap_map='jet', drift_params=None,
@@ -563,8 +642,11 @@ class _BrowserCore:
         hampel_defaults, sgolay_defaults : pre-fill of the filter boxes in the
                             browser and the analysis windows (None: the FilterControls defaults);
                             every filter starts off
-        line_window_kwargs: keyword arguments for plot_line_with_topo_interactive (plus 'cmap');
-                            'topo_lines' is set by the browser to the selected line (forward and reverse)
+        line_window_kwargs: keyword arguments for plot_line_with_topo_interactive (plus 'cmap', and
+                            'fit_settings', which the averages and line averages take as well);
+                            the browser sets 'topo_lines' to the selected line's forward row and
+                            replaces the Feenstra, drift and registry keys with its own
+                            (_line_window_kwargs)
         cmap_map          : colormap of the dI/dV maps
         drift_params      : overrides of DRIFT_PARAMS (the tracker, the baseline, the stripe matching)
         iv_broadening_V   : broadening width (V) of I/V for the Feenstra division (divide_by_iv);
@@ -585,7 +667,7 @@ class _BrowserCore:
         self.auto_on = True        # the 'auto drift' toggle starts on; off only redraws nominal positions
         self.manual_on = True      # the 'manual drift' toggle starts on (the manual velocities cover what they cover)
         self.stripe_window = None  # the stripe window opened by 'stripe match' (stripe.StripeWindow)
-        self.anchor_on = False     # 'anchor to topo' is the Topo window's toggle; the browser never applies it (off there)
+        self.anchor_on = False     # 'anchor to topo' (Drift.result's anchor): always off; no window builds the toggle
         self.profile_window = None # the cross-section profile window (topo.ProfileWindow)
         self.measure_window = None # the section path's measure window (section.MeasureWindow)
         self.scale_window = None   # the section path's set-scale window (section.SetScaleWindow)
@@ -620,8 +702,9 @@ class _BrowserCore:
         # through _load at startup (the sites' once-over failed on every file while it came later).
         self._lru = OrderedDict()  # path -> Sm4File: the most recently used full files beyond the window
         self.loaded = {}           # path -> Sm4File (the window, plus the extra topos described in _ensure_window)
-        # The drift correction: the segments of the directory, the pair cache, the per-file
-        # results and the on-disk drift cache (Drift; its results are read with self.drift.result).
+        # The drift correction (Drift; its results are read with self.drift.result): the segments of
+        # the directory, the tracked pairs (the 'pairs' section of the computed store), the manual
+        # spans and stripe states (the 'drift' section of the settings store), the per-file results.
         self.drift = Drift(directory, self.files, self.kinds, self.head_geoms, self.drift_params, self._load,
                            settings=self.settings, computed=self.computed)
         # Every consecutive topo pair of every segment tracked (Drift.build; cached).
@@ -686,6 +769,13 @@ class _BrowserCore:
     LRU_MAX = 40                   # full files kept beyond the loaded set (stepping back re-reads nothing)
 
     def _load(self, path):
+        """
+        The Sm4File of a path (the one loader of the browser, handed to the drift tracker and the
+        sites): the LRU's copy when it holds one, else the file read (qtplot.watchdog names it in
+        the crash log should Qt fail on it) and put into the LRU (LRU_MAX files, the oldest
+        evicted); its kind and, for a topo, its footprint are remembered; a grid's self check is
+        printed on the first load.
+        """
         f = self._lru.get(path)
         if f is not None:
             self._lru.move_to_end(path)
@@ -736,6 +826,12 @@ class _BrowserCore:
         return None
 
     def _ensure_window(self):
+        """
+        The loaded set for the current file (the module docstring, "Loaded set"): the file and the
+        WINDOW - 1 files before it, the nearest preceding topo when none of them is one, and, for a
+        single point or phase rotation under none of the loaded topos, the most recent preceding
+        topo whose footprint contains its position (covering_note says which, or that none does).
+        """
         i = self.index
         wanted = self.files[max(0, i - (self.WINDOW - 1)): i + 1]
         new = {}
@@ -789,6 +885,7 @@ class _BrowserCore:
         return sorted((f for f in self.loaded.values() if f.kind == 'topo'), key=lambda f: f.stamp)
 
     def _most_recent_topo(self):
+        """The most recent topography of the loaded set, or None."""
         t = self._topos()
         return t[-1] if t else None
 
@@ -809,6 +906,12 @@ class _BrowserCore:
     # --- figure ---
 
     def _set_controls_for_kind(self, kind):
+        """
+        The per-file controls shown or hidden for the current file's kind ('Line' / 'Map' and
+        'stripe match' for a grid, 'add new' / 'add existing' for a point, the 'channel' radio for
+        both, the 'topo pass' list for the topo under the file), and their values set: the list to
+        that topo's stored pass, the 'site' radio to the file's flag.
+        """
         grid = kind == 'grid'
         point = kind == 'point'
         self._popup_close()
@@ -855,6 +958,7 @@ class _BrowserCore:
     # --- navigation and redraw ---
 
     def _goto(self, i):
+        """Go to file i (clipped to the directory): the loaded set updated, the line index reset, everything redrawn."""
         i = int(np.clip(i, 0, len(self.files) - 1))
         # The file about to be shown, written to the crash log first: should Qt itself fail on a
         # file, qtplot.CRASH_LOG names it.
@@ -886,6 +990,7 @@ class _BrowserCore:
                   f"at {os.path.basename(self.files[i])}")
 
     def _draw_all(self):
+        """Everything for the current file: the controls, the scale box, the sliders and their texts, the three panels."""
         f = self.current
         self._set_controls_for_kind(f.kind)
         self.box_scale.set(f"{self.scale_of(f.path):g}")       # the current file's scale (the timeline)
@@ -909,10 +1014,15 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _drift_active(self):
+        """True when either drift source is on (the corrected positions and the skewed topos are drawn)."""
         return self.auto_on or self.manual_on
 
     def _topo_image(self, t):
-        """The processed image of a loaded topo (nm): skewed pixel by pixel by the drift with a source on."""
+        """
+        The processed image of a loaded topo (nm): skewed pixel by pixel by the drift with a source
+        on (Drift.corrected_topo).  Not used by the scan area, which places every topo through the
+        layer (scanlayer.affine_matrix); kept as the per-pixel form of the same correction.
+        """
         if self._drift_active():
             try:
                 return self.drift.corrected_topo(t, self._direction_of(t), self.topo_active, self.loaded,
@@ -937,6 +1047,7 @@ class _BrowserCore:
         return self.topo_dir.get(path, 'forward')
 
     def _layer_key(self, path):
+        """The (pass, processor flags) key the layer's record of a file must have been made for."""
         return (self._direction_of_path(path), tuple(bool(a) for a in self.topo_active))
 
     def _needs_record(self, path):
@@ -1064,6 +1175,7 @@ class _BrowserCore:
         self._bg_status()
 
     def _bg_status(self):
+        """The status line under the scan area: the files placed of those shown, and how many are still being placed."""
         n = len(self._bg_queue) + len(self._bg_futures)
         bar = getattr(self, '_status_label', None)
         if bar is not None:
@@ -1250,11 +1362,13 @@ class _BrowserCore:
         print(f"step filter: no {'later' if d > 0 else 'earlier'} spectra file passes the filter.")
 
     def _on_step_kinds(self, label, states):
+        """The 'step through' box: the kinds Prev / Next and the sliders stop at ('other' files always pass)."""
         names = ['topo', 'point', 'grid', 'phase', 'fft']
         self.step_kinds = {n for n, on in zip(names, states) if on} | {'other'}
         print("step filter: " + (", ".join(n for n in names if n in self.step_kinds) or "no kind") + ".")
 
     def _on_min_duration(self, text):
+        """The 'min (min)' box: the shortest duration (minutes, >= 0) a file must have to pass the step filter; a bad entry is put back."""
         try:
             v = float(text)
             if v < 0:
@@ -1267,6 +1381,13 @@ class _BrowserCore:
         print(f"step filter: files shorter than {v:g} min are skipped" if v > 0 else "step filter: no minimum duration.")
 
     def _draw_scan_area(self):
+        """
+        The scan area for the current file: the overlays cleared, the layer updated (the files the
+        'show' mode shows, each at its own scale and drift model), the other spectra files'
+        diamonds, the current file's spectrum positions (corrected with a source on, with their
+        drift lines), a grid's own topo stripes and highlighted line, the view kept or relocated to
+        the file (widgets.ViewNavigator.keep), the title with the drift state, the section path.
+        """
         ax = self.ax_scan
         self._clear_overlays()
         f = self.current
@@ -1394,7 +1515,7 @@ class _BrowserCore:
         else:
             title += f"\ndrift ({srcs}): topos skewed by the drift during their scans where a velocity covers them"
         ax.set_title(title, fontsize=9)
-        # The cross-section line lives on this axes: redrawn after every clear.
+        # The section path (widgets.DragPath) lives on this axes: redrawn after every clear.
         self.section.draw()
 
     # --- the Feenstra settings (the boxes under the spectra panels) ---
@@ -1754,10 +1875,13 @@ class _BrowserCore:
         """
         'drift': the manual drift window of the current file (drift.DriftWindow:
         a spectra file's before and after topos, a topo's pair with the
-        next topo of its segment, else the previous one), seeding from the
-        'auto drift' state; a change applied there reaches the scan area
-        and every open Line and Map window through the Drift's subscribers.
-        One window at a time: a second press while it is open raises it.
+        next topo of its segment, else the previous one; each topo at the
+        scale in force at its time, the readouts calibrated by the file's),
+        the partners seeded by the velocity governing the pair whatever the
+        toggles (DriftWindow._seed_velocity); a change applied there reaches
+        the scan area and every open Line and Map window through the
+        Drift's subscribers.  One window at a time: a second press while it
+        is open raises it.
         """
         w = self.drift_window
         if w is not None and w.is_open():
@@ -1920,6 +2044,7 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _on_direction(self, label):
+        """The 'topo pass' list: the pass of the topo under the current file (remembered per topo), the scan area redrawn."""
         target = self._topo_under(self.current)
         if target is None:
             return
@@ -1928,7 +2053,11 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _on_site(self, label):
-        """The 'site' radio: the current file's flag set by hand (kept in the sites file)."""
+        """
+        The 'site' radio: the current file's flag set by hand (Sites.set_flag: the 'flags' section
+        of the settings store, written at once; the flag feeds the whole chain, so the regions, the
+        spectra on them and the clean rule follow), the info panel redrawn.
+        """
         if label not in FLAGS:
             return
         path = self.files[self.index]
@@ -1954,6 +2083,7 @@ class _BrowserCore:
         return self.averages.holding(f.path)
 
     def _update_avg_text(self):
+        """The text line naming the open averages that hold the current point or grid file."""
         f = self.current
         held = self._avgs_holding(f) if f.kind in ('point', 'grid') else []
         open_avgs = self._open_avgs()
@@ -2318,6 +2448,11 @@ class _BrowserCore:
         self.children.append(w)
 
     def _on_topo_window(self):
+        """
+        'Topo Window': topo.TopoWindow on the topo to show with the current file (_topo_for), at the
+        current file's scale, with the file's spectra drawn on it, the browser's drift states and
+        the stored passes; a new window every press.
+        """
         topo = self._topo_for(self.current)
         if topo is None:
             print("Topo window: no topography in the loaded set.")
@@ -2333,6 +2468,7 @@ class _BrowserCore:
                                         spec_dir=self._direction_of(f) if f.kind == 'grid' else 'forward'))
 
     def _on_line(self):
+        """'Line': a Line window on the current grid and its selected line, at the file's scale, on the browser's channel when the file has it."""
         f = self.current
         if f.kind != 'grid':
             return
@@ -2354,6 +2490,7 @@ class _BrowserCore:
         self.children.append(analyzer)
 
     def _on_map(self):
+        """'Map': a Map window on the current grid, at the file's scale, with the browser's Feenstra settings, channel, averages and drift states."""
         f = self.current
         if f.kind != 'grid':
             return
@@ -2376,7 +2513,8 @@ class _BrowserCore:
 # ====================================================================== #
 #
 # The scan area and the spectra panels are two qtplot figures embedded in one Qt main window
-# (a splitter), each with its toolbar on top (Home, Pan, Zoom, Save as PDF / SVG / EPS / PNG);
+# (a splitter), each with its toolbar on top (qtplot.NavigationToolbar: Home, Pan, Zoom, Save as
+# PDF / EPS / SVG / PNG / TIFF or the curves as CSV);
 # the controls are native Qt widgets in group boxes under them; the info box takes the file's
 # information and the details cut from the panel titles.  A control repaints only itself, and a
 # pan of the scan area never redraws the spectra.
@@ -2392,10 +2530,12 @@ def Figure(figsize=(6.4, 4.8)):
 
 
 def FigureCanvasQTAgg(fig):
+    """The canvas widget of an embedded figure (the name kept from the matplotlib backend)."""
     return fig.canvas
 
 
 def NavigationToolbar2QT(canvas, parent):
+    """The figure's toolbar (qtplot.NavigationToolbar: Home, Pan, Zoom, Save; the name kept from matplotlib)."""
     return NavigationToolbar(canvas.figure, parent)
 
 
@@ -2463,6 +2603,7 @@ class QControl:
 
 
 def _label_of(name):
+    """The label text of a widget name (widgets.LABELS; the name itself without an entry), stripped."""
     lab = widgets.LABELS.get(name, name)
     return name if lab is None else lab.strip()
 
@@ -2740,6 +2881,7 @@ class QTextLabel:
 # ---------------------------------------------------------------------- #
 
 def _row(*items, stretch=True):
+    """A widget holding the items (controls or Qt widgets) in one row, left-aligned with `stretch`."""
     w = QtWidgets.QWidget()
     lay = QtWidgets.QHBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
@@ -2751,6 +2893,8 @@ def _row(*items, stretch=True):
 
 
 class QStepButtons(widgets.StepButtons):
+    """widgets.StepButtons with native buttons: on_change(cb(d)), d = -1 for the left one, +1 for the right."""
+
     def __init__(self, left_name, right_name):
         self.left = QPush(left_name)
         self.right = QPush(right_name)
@@ -2761,6 +2905,8 @@ class QStepButtons(widgets.StepButtons):
 
 
 class QPipelineBox(widgets.PipelineBox):
+    """widgets.PipelineBox (the 'calibrate' / 'normalize' rows, callback(state)) on a native box."""
+
     def __init__(self, calibrate=True, normalize=True):
         self.box = QChecks('pipeline', widgets.SPECS['pipeline']['labels'], [calibrate, normalize])
         self._cb = None
@@ -2769,6 +2915,8 @@ class QPipelineBox(widgets.PipelineBox):
 
 
 class QTopoProcessorBox(widgets.TopoProcessorBox):
+    """widgets.TopoProcessorBox (one processor active at most, callback(active)) on a native box titled 'topo processing'."""
+
     def __init__(self, labels, active):
         self.box = QChecks('topo processors', labels, active, title='topo processing')
         self._cb = None
@@ -2777,6 +2925,8 @@ class QTopoProcessorBox(widgets.TopoProcessorBox):
 
 
 class QFeenstraSettings(widgets.FeenstraSettings):
+    """widgets.FeenstraSettings ('0Vsub', 'broadened', the width box; callback(**change)) as one native row."""
+
     def __init__(self, settings):
         self.chk_zero = QCheck('0Vsub', settings['zero_sub'])
         self.chk_broad = QCheck('broadened', settings['broadened'])
@@ -3052,6 +3202,8 @@ class _OnClose(QtCore.QObject):
 
 
 class _StaleCanvases:
+    """The canvases of the embedded figures as one: draw_idle, draw and mpl_connect reach every one of them."""
+
     def __init__(self, canvases):
         self.canvases = list(canvases)
 
@@ -3084,9 +3236,10 @@ class _Figures:
 
 class Browser(_BrowserCore):
     """
-    browser.Browser in a native Qt main window.  Same constructor arguments;
-    the window is shown at the end of construction; Browser.run(...) also
-    starts the event loop.
+    _BrowserCore (the experiment logic) in a native Qt main window: the same
+    constructor arguments; the window is built by _build_figure, shown at
+    the end of construction and kept referenced by qtplot; Browser.run(...)
+    also starts the event loop and returns when the application exits.
     """
 
     # The design sizes: the window in pixels at qtplot.DPI (the text zoom is the window's size
@@ -3114,6 +3267,11 @@ class Browser(_BrowserCore):
     # --- the window ---
 
     def _build_figure(self):
+        """
+        The main window (the block comment above): the splitter with the scan area and its
+        controls left, the spectra canvas, its settings, the navigation, the info panel and the
+        per-file controls right; every control wired to its callback; the keyboard shortcuts.
+        """
         self.win = QtWidgets.QMainWindow()
         self._closer = _OnClose(self.win, self._bg_shutdown)     # the worker processes end with the window
         self.win.setWindowTitle(f"sm4 browser: {self.directory}")
@@ -3335,6 +3493,7 @@ class Browser(_BrowserCore):
             sc.activated.connect(fn)
 
     def _popup_open(self):
+        """The 'add existing' list opened under its button for the current file."""
         self._picker.open(self.btn_add_existing.qt, self.current, self._add_to_avg)
 
     def _draw_spectra(self):
@@ -3362,6 +3521,7 @@ class Browser(_BrowserCore):
 
 
 def main(argv=None):
+    """The command line: `python -m sm4_Browser.browser <directory> [--scalefactor 2.75]` with the settings below."""
     import argparse
     p = argparse.ArgumentParser(description="sm4 experiment browser (Qt)")
     p.add_argument('directory', help="folder of .sm4 files of one experiment")

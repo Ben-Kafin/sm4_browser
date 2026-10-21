@@ -29,6 +29,8 @@ LATTICE_M = 1.2e-9          # period of the synthetic lattice
 
 
 class FakeReaderPage:
+    """What sm4file.Page reads of spym's page object: attrs (the RHK_ attributes), data (the stored values) and _path (None here)."""
+
     def __init__(self, attrs, data):
         self.attrs = attrs
         self.data = data
@@ -49,15 +51,25 @@ def default_surface(xy):
 
 
 def _stamp_name(prefix, t_end):
+    """A file name '<prefix>_YYYY_MM_DD_HH_MM_SS_mmm.sm4' stamped with the file's end time (s since the epoch, local time)."""
     d = datetime.fromtimestamp(t_end)
     return f"{prefix}_{d:%Y_%m_%d_%H_%M_%S}_{d.microsecond // 1000:03d}.sm4"
 
 
 def _dt_text(t):
+    """A time (s since the epoch) as RHK_DateTime text 'YYYY-MM-DDTHH:MM:SS' (local time)."""
     return datetime.fromtimestamp(t).strftime('%Y-%m-%dT%H:%M:%S')
 
 
 class Experiment:
+    """
+    A synthetic experiment: a directory of placeholder .sm4 files and, per file, the list of
+    (attrs, stored data) pairs that stand for its pages.  `v` is the drift velocity (m/s), `surface`
+    the height function of the absolute frame, `prefix` the file names' stem.  topo, grid and point
+    add files; install serves them.  A grid built with stripe_b records the true line starts in
+    true_starts (checks/check_stripe.py).
+    """
+
     def __init__(self, directory, v=(0.0, 0.0), surface=default_surface, prefix='Synth_CT'):
         self.directory = directory
         self.v = np.asarray(v, dtype=np.float64)
@@ -69,11 +81,13 @@ class Experiment:
     # --- helpers ---
 
     def z_at(self, p, t):
+        """The height recorded at absolute positions p (..., 2; metres) at times t (...; s): the surface drifted by v (t - T_REF)."""
         p = np.asarray(p, dtype=np.float64)
         t = np.asarray(t, dtype=np.float64)
         return self.surface(p - self.v * (t - T_REF)[..., None])
 
     def _add(self, t_end, pages):
+        """Register a file ending at t_end: an empty placeholder written under its stamped name, its pages kept; returns the path."""
         path = os.path.join(self.directory, _stamp_name(self.prefix, t_end))
         open(path, 'wb').close()
         self.files[path] = pages
@@ -81,6 +95,12 @@ class Experiment:
 
     @staticmethod
     def _image_page(label, z, center, angle, xs, ys, t0, period, completed=None, zoffset=0.0):
+        """
+        A topographic image page (attrs, stored) from heights z (ny, nx; metres, NaN never written):
+        stored = (z - zoffset) / zscale rounded, a 0 bumped to 1 so that only a never-written pixel
+        is 0 (the instrument's convention), with the frame (center, angle, xs, ys), RHK_DateTime t0,
+        RHK_Period `period` (the dwell per pixel) and RHK_CompletedLineCount when given.
+        """
         ny, nx = z.shape
         zscale = 1e-13
         stored = np.round((np.nan_to_num(z, nan=zoffset) - zoffset) / zscale)
@@ -99,6 +119,7 @@ class Experiment:
 
     @staticmethod
     def pixel_xy(center, angle, xs, ys, nx, ny):
+        """The absolute position (ny, nx, 2; metres) of every pixel, the convention of Sm4File.pixel_xy_m."""
         jj, ii = np.meshgrid(np.arange(nx, dtype=np.float64), np.arange(ny, dtype=np.float64))
         u = (jj - (nx - 1) / 2.0) * xs
         v = (ii - (ny - 1) / 2.0) * ys
@@ -109,7 +130,13 @@ class Experiment:
     # --- file kinds ---
 
     def topo(self, start, center=(0.0, 0.0), size_m=20e-9, n=64, angle=0.0, period=2e-3, reverse=True):
-        """A topography file starting at `start` (s since the epoch); returns its path."""
+        """
+        A topography file starting at `start` (s since the epoch): n x n pixels over size_m (metres)
+        at `center`, rotated by `angle` (deg), RHK_Period `period` (s per pixel), the forward page
+        scanned row by row and, with `reverse`, a reverse page scanned back along each row after
+        the forward pass (the timing of Sm4File.pixel_times); every pixel holds the surface drifted
+        to its own time (z_at).  The file ends after n lines of n x period x passes.  Returns its path.
+        """
         xs, ys = size_m / n, -size_m / n
         p_xy = self.pixel_xy(center, angle, xs, ys, n, n)
         passes = 2 if reverse else 1
@@ -243,7 +270,11 @@ class Experiment:
         return self._add(t_end, pages + spec_pages)
 
     def point(self, start, xy=(0.0, 0.0), n_sweeps=3, npts=41, v_range=(-1.0, 1.0), ramp_s=0.5):
-        """A single-point file with n_sweeps sweeps at xy."""
+        """
+        A single-point file with n_sweeps identical sweeps at xy (metres), starting at `start` and
+        ending n_sweeps x ramp_s later: a dI/dV with one Gaussian at 0 V and I(V) its integral
+        (both pages in A), no recorded sweep times (RHK_SpecDrift_Time 0).  Returns its path.
+        """
         V = np.linspace(v_range[0], v_range[1], npts)
         didv = np.tile(((1.0 + np.exp(-(V ** 2) / 0.05)) * 1e-11)[:, None], (1, n_sweeps))
         cur = np.cumsum(didv, axis=0) * (V[1] - V[0]) * 10.0

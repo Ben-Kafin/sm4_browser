@@ -10,8 +10,9 @@ widgets.DragPath on the scan area):
   measure       : MeasureWindow, every point of the path with its
                   coordinates, every segment with its length and the total
                   length, each both nominal and calibrated.
-  set scale     : SetScaleWindow, the path's nominal length, the scale
-                  factor and the calibrated length; editing the scale factor
+  set scale     : SetScaleWindow, the path's nominal length (text), the
+                  'scale factor' box and the 'calibrated length (nm)' box
+                  (widgets' 'cal length'); editing the scale factor
                   recomputes the calibrated length, editing the calibrated
                   length recomputes the scale factor; 'apply' sets the
                   browser's scale timeline from the current file's time on
@@ -25,8 +26,10 @@ distance of a known feature therefore gives the scale factor directly:
 scale = nominal length / true length, which is what the set-scale window
 does when its calibrated length is edited.
 
-Both windows follow the path while they are open (update): a point added,
-moved or removed changes their numbers at once.  Using a feature ends the
+Both windows follow the path while they are open (update, called by the
+browser's _on_path_changed with the current file's scale): a point added,
+moved or removed, and a change of the scale, change their numbers at once.
+Using a feature ends the
 path's editing (the browser's rule): the clicks no longer add or remove
 points until 'section' is pressed again.
 """
@@ -47,8 +50,11 @@ def path_lengths(points):
 
 def measure_lines(points, scale, name=''):
     """
-    The measure window's text, one line per point and per segment, nominal and calibrated:
-    `points` (n, 2) in calibrated nm (the drawing units), `scale` the file's scale factor.
+    The measure window's text as a list of lines: a heading with `name` (the file's name) and the
+    scale factor, the rule, one line per point (x, y nominal | x, y calibrated), one per segment
+    (its length) and the total, nominal and calibrated.  `points` (n, 2) in calibrated nm (the
+    drawing units), `scale` the file's scale factor; nominal = calibrated x scale.  With one
+    point a note stands in for the segment table.
     """
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
     s = float(scale)
@@ -69,7 +75,12 @@ def measure_lines(points, scale, name=''):
 
 
 class MeasureWindow:
-    """The measure window: the path's points and lengths as text (measure_lines); update(points, scale, name) follows the path."""
+    """
+    The measure window: the path's points and lengths as monospaced text (measure_lines);
+    update(points, scale, name) follows the path and the scale (points None or empty: a hint to
+    place a path).  `lines` holds the text's lines (the browser prints them on the console when
+    the window opens or is raised).
+    """
 
     DESIGN = (7.5, 4.2)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
@@ -84,14 +95,17 @@ class MeasureWindow:
         plt.show()
 
     def is_open(self):
+        """True while the window is open (the figure itself is tested, not its reusable number)."""
         return plt.fignum_exists(self.fig)
 
     def update(self, points, scale, name=''):
+        """The text rebuilt for the path (points (n, 2), calibrated nm) at `scale`, headed by `name`."""
         self.lines = measure_lines(points, scale, name) if points is not None and len(points) else ["no path: 'section' and a click on the scan area place one"]
         self.txt.set_text("\n".join(self.lines))
         self.fig.canvas.draw_idle()
 
     def raise_(self):
+        """The window brought to the front."""
         try:
             self.fig.canvas.manager.show()
         except Exception:
@@ -104,8 +118,12 @@ class SetScaleWindow:
     length, calibrated length x the scale in force), the 'scale factor' box
     and the 'calibrated length (nm)' box, each recomputing the other from
     the nominal length; 'apply' hands the scale factor to on_apply (the
-    browser's set_scale_from_current).  update(cal_length, scale) follows
-    the path and the timeline.
+    browser's set_scale_from_current).  SetScaleWindow(cal_length_nm, scale,
+    on_apply): the path's calibrated length (nm, the drawing units), the
+    current file's scale factor, the callable 'apply' hands the scale factor
+    to.  update(cal_length_nm, scale) follows the path and the timeline.  A
+    box value that is not a number > 0 is refused with a console line and
+    the box restored.
     """
 
     DESIGN = (6.5, 2.8)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
@@ -131,15 +149,18 @@ class SetScaleWindow:
         plt.show()
 
     def is_open(self):
+        """True while the window is open (the figure itself is tested, not its reusable number)."""
         return plt.fignum_exists(self.fig)
 
     def raise_(self):
+        """The window brought to the front."""
         try:
             self.fig.canvas.manager.show()
         except Exception:
             pass
 
     def _write(self):
+        """The text above the boxes: the nominal length and the rules."""
         self.txt.set_text(f"nominal length of the path: {self.nominal:.4f} nm (recorded)\n"
                           f"calibrated length = nominal / scale factor\n"
                           f"editing either box recomputes the other;\n"
@@ -155,6 +176,7 @@ class SetScaleWindow:
         self._write()
 
     def _on_scale(self, text):
+        """The 'scale factor' box submitted: the calibrated length recomputed from the fixed nominal length (nothing stored until 'apply')."""
         try:
             v = float(text)
             if v <= 0:
@@ -168,6 +190,7 @@ class SetScaleWindow:
         print(f"set scale: scale factor {v:g} -> calibrated length {self.nominal / v:.4f} nm (nominal {self.nominal:.4f} nm); 'apply' to use it.")
 
     def _on_cal(self, text):
+        """The 'calibrated length (nm)' box submitted: the scale factor recomputed as nominal / calibrated (nothing stored until 'apply')."""
         try:
             c = float(text)
             if c <= 0:
@@ -181,5 +204,6 @@ class SetScaleWindow:
         print(f"set scale: calibrated length {c:.4f} nm -> scale factor {self.scale:g} (nominal {self.nominal:.4f} nm); 'apply' to use it.")
 
     def _on_apply(self):
+        """'apply': the window's scale factor handed to on_apply (the browser sets the timeline from the current file's time on)."""
         if self.on_apply is not None:
             self.on_apply(self.scale)

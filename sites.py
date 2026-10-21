@@ -62,12 +62,13 @@ Classification (Sites.classify; TIP_PARAMS holds the ohmic settings):
     flag set to the value the chain gives the file without an override of
     its own is no override and is dropped.  A change is written to the
     settings store at once.
-Navigation (Sites.neighbour_region): 'next region' from a file is the
-first spectra file ahead whose region is an experiment region other than
-the file's own (a pulsing file has no region, so from it the first
-experiment spectra file ahead); 'prev region' the same backwards, landing
-on the first spectra file of that visit of the region (the walk is in
-time order, so a region visited twice at separate times is two stops).
+Navigation (Sites.neighbour_region; the stops are grid and point files):
+'next region' from a file is the first grid or point file ahead whose
+region is an experiment region other than the file's own (a spectra file
+inside no footprint has no region, so from it the first grid or point file
+ahead in any experiment region); 'prev region' the same backwards, landing
+on the first grid or point file of that visit of the region (the walk is
+in time order, so a region visited twice at separate times is two stops).
 """
 
 if __package__ in (None, ''):
@@ -87,7 +88,7 @@ TIP_PARAMS = {
 }
 
 FLAGS = ('pulsing', 'clean', 'experiment')
-SITES_FORMAT = 1
+SITES_FORMAT = 1           # the format of the 'metrics' section of the computed store (a change recomputes every file)
 
 
 def otsu_threshold(values):
@@ -211,8 +212,12 @@ class Sites:
     directory, files, kinds, head_geoms : as the browser has them (files in
         time order; kinds from the headers; the topos' header geometries)
     seg_first : topo path -> the first topo of its segment (Drift.seg_first)
-    loader    : loader(path) -> Sm4File (the browser's; files loaded here for
-        their metrics are released at once)
+    loader    : loader(path) -> Sm4File (the browser's _load: a file loaded here
+        for its metrics stays in that loader's LRU only, never in the browser's
+        loaded set)
+    params    : overrides of TIP_PARAMS (the ohmic test)
+    settings, computed : the experiment's stores (caches.Settings, caches.Computed);
+        opened here (caches.open_stores) when the caller gives none
     """
 
     def __init__(self, directory, files, kinds, head_geoms, seg_first, loader, params=None, settings=None, computed=None):
@@ -273,7 +278,11 @@ class Sites:
         self.settings.put('flags', dict(self.overrides))
 
     def _once_over(self):
-        """Compute the metrics of every file not in the cache (or changed since), loading each once."""
+        """
+        The metrics of every topo, grid and point file not in the 'metrics' section (or changed
+        since, by modification time), each loaded once through the browser's loader (console
+        progress every 10 files); the section written once at the end.
+        """
         todo = []
         for p in self.files:
             name = os.path.basename(p)
@@ -316,12 +325,14 @@ class Sites:
     # --- the regions ---
 
     def _own_range(self, p):
+        """A topo's own height range z98 - z2 (metres) from its metrics, or None without them."""
         rec = self.topos.get(os.path.basename(p), {})
         if rec.get('z98') is None or rec.get('z2') is None:
             return None
         return float(rec['z98'] - rec['z2'])
 
     def _span(self, members):
+        """The absolute Z range of a set of topos, max(z98) - min(z2) (metres) over those with metrics; None without any."""
         z2 = [self.topos[os.path.basename(p)]['z2'] for p in members
               if os.path.basename(p) in self.topos and self.topos[os.path.basename(p)].get('z2') is not None]
         z98 = [self.topos[os.path.basename(p)]['z98'] for p in members
@@ -512,10 +523,15 @@ class Sites:
     # --- queries and edits ---
 
     def flag(self, path):
+        """The final flag of a file (the chain with the hand-set flags feeding it); 'experiment' for a path the chain did not see."""
         return self.flags.get(path, 'experiment')
 
     def region_of(self, path):
-        """The region index (1-based) of a file, or None (a pulsing-by-ohmic spectra file, or no topos)."""
+        """
+        The region index (1-based) of a file, or None: a grid or point inside no topo footprint
+        (whatever the ohmic test said), a topo without header geometry, a phase or noise file after
+        such a file, or no topos at all.
+        """
         return self.region_index.get(path)
 
     def region(self, k):
@@ -534,7 +550,12 @@ class Sites:
         return f"region {k} ({len(r['topos'])} topos, {r['flag']})"
 
     def set_flag(self, path, flag):
-        """A flag set by hand (the browser's radio): kept in the sites file; the flags derived again."""
+        """
+        A flag set by hand (the browser's 'site' radio): the override kept when it differs from
+        what the chain gives the file without one (dropped otherwise), the flags derived again with
+        it feeding the chain (classify), and the 'flags' section of the settings store written at
+        once.
+        """
         if flag not in FLAGS:
             raise ValueError(f"flag must be one of {FLAGS}")
         name = os.path.basename(path)
@@ -550,6 +571,7 @@ class Sites:
         self._save_flags()
 
     def _is_experiment_region(self, k):
+        """True when region k exists and its final class is experiment."""
         r = self.region(k) if k is not None else None
         return r is not None and r['flag'] == 'experiment'
 

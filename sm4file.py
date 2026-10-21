@@ -98,11 +98,13 @@ def filename_stamp(path):
 
 
 def stamp_text(stamp):
+    """A stamp tuple (filename_stamp) as 'YYYY-MM-DD HH:MM:SS.mmm'; its [11:] is the time of day the windows label entries with."""
     y, mo, d, h, mi, s, ms = stamp
     return f"{y:04d}-{mo:02d}-{d:02d} {h:02d}:{mi:02d}:{s:02d}.{ms:03d}"
 
 
 def stamp_datetime(stamp):
+    """A stamp tuple (filename_stamp) as a naive local datetime (the millisecond as microseconds)."""
     y, mo, d, h, mi, s, ms = stamp
     return datetime(y, mo, d, h, mi, s, ms * 1000)
 
@@ -350,7 +352,7 @@ HEADER_CACHE_FORMAT = 1
 
 
 def _file_sig(path):
-    """(size, mtime) of a file, the key of its header-cache entry; None when it cannot be read."""
+    """[size, mtime] of a file (a list, as JSON stores it), the signature of its header-cache entry; None when it cannot be stat'ed."""
     try:
         st = os.stat(path)
     except OSError:
@@ -370,8 +372,12 @@ def header_cache(directory, files, progress=True, computed=None):
     reads only new or changed files.  start_time is RHK_DateTime of the first
     page (seconds since the epoch, None when unreadable), end_time the
     file-name stamp; their difference is the file's duration (the browser's
-    step filter).  The store is written once when anything was read.  A
-    section of another format or loader is ignored (rebuilt).
+    step filter).  A file whose headers cannot be read is reported and
+    entered with no page types (kind 'other').  The section is replaced and
+    the store written once when any file was read from disk or the set of
+    file names changed; a section of another format or loader is ignored
+    (every file read, the section rebuilt).  With `progress` a line is
+    printed every 50 files read and a summary at the end.
     """
     if computed is None:
         from sm4_Browser.caches import open_stores
@@ -439,6 +445,7 @@ def _period_of(attrs):
 
 
 def _int_or_none(value):
+    """An attribute as int, None when absent or not a number."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -531,6 +538,7 @@ def measurement_info(attrs):
     rows = []
 
     def put(name, key, unit='', digits=4, convert=None):
+        """One row (name, text) for attribute `key` when the page holds it and it is not empty: converted, then si_text with the unit (text as it is)."""
         v = a.get(key)
         if v is None or (isinstance(v, str) and v == ''):
             return
@@ -569,10 +577,16 @@ def measurement_info(attrs):
 
 class Sm4File:
     """
-    One .sm4 file: type, image geometry, raw topography, spectra (STS) and
-    their absolute positions, or a phase rotation (PhaseRotate) or a noise
-    spectrum (NoiseSpectrum).  Lengths in metres; the browser scales to nm.
-    Every data array is float64.
+    One .sm4 file: type (kind: 'grid', 'point', 'phase', 'fft', 'topo',
+    'other', kind_from_types), image geometry, raw topography, spectra
+    (STS) and their absolute positions, or a phase rotation (PhaseRotate)
+    or a noise spectrum (NoiseSpectrum).  Lengths in metres as recorded,
+    the nominal values: the piezo scale factor of the timeline (scales.py)
+    is applied by the browser and the windows when they draw or measure
+    (recorded metres x 1e9 / scale factor = calibrated nm), never here.
+    Every data array is float64.  A grid file with several sweeps per pixel
+    (sweeps.py) keeps the all-sweeps spectroscopy in spectra_all and works
+    on a view (spectra, one column per pixel) chosen by sweep_mode.
     """
 
     def __init__(self, path):
@@ -735,26 +749,32 @@ class Sm4File:
 
     @property
     def energy(self):
+        """The energy axis of the spectra (V, the channel page's x axis, as stored), or None."""
         return None if self.spectra is None else self.spectra.energy
 
     @property
     def V_bias(self):
+        """The setpoint bias RHK_Bias (V), or None."""
         return None if self.spectra is None else self.spectra.V_bias
 
     @property
     def I_setpoint(self):
+        """The setpoint current RHK_Current (A), or None."""
         return None if self.spectra is None else self.spectra.I_setpoint
 
     @property
     def n_spectra(self):
+        """The number of spectrum columns (of the view, for several sweeps per pixel); 0 without spectra."""
         return 0 if self.spectra is None else self.spectra.n_spectra
 
     @property
     def n_acquired(self):
+        """The number of kept spectra (STS.acquired); 0 without spectra."""
         return 0 if self.spectra is None else self.spectra.n_acquired
 
     @property
     def acquired(self):
+        """(N,) bool, the kept spectra (STS.kept_mask); empty without spectra."""
         return np.zeros(0, dtype=bool) if self.spectra is None else self.spectra.acquired
 
     @property
@@ -887,6 +907,7 @@ class Sm4File:
 
     @property
     def mid_time(self):
+        """The middle of the file's span (s since the epoch)."""
         return 0.5 * (self.start_time + self.end_time)
 
     # --- the sweep timing ---
@@ -981,6 +1002,8 @@ class Sm4File:
                          sweep (or return pass) ends
           'rev_start', 'rev_end'   : (n_lines,) the return pass of every line (NaN for a line
                          without one)
+          'arrive'     : (N,) for a view of several sweeps per pixel only (_view_timing): the
+                         tip's arrival at every pixel, the start of its first sweep
         With recorded times the ramp of spectrum k starts at RHK_DateTime + its recorded
         time; the return pass of a completed line starts at its last kept spectrum's ramp
         end.  Without them the points run from RHK_DateTime in file order, sweep after
@@ -1391,6 +1414,7 @@ class Sm4File:
             return None
 
     def rotation(self):
+        """The 2 x 2 rotation of the image's scan frame into the absolute frame (RHK_Angle, counter-clockwise), applied as R @ uv."""
         th = np.deg2rad(self.angle_deg)
         return np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
 
@@ -1445,6 +1469,7 @@ class Sm4File:
 
     @staticmethod
     def _rotation_of(angle_deg):
+        """The rotation matrix of rotation() for any angle (a page's own RHK_Angle)."""
         th = np.deg2rad(angle_deg)
         return np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
 
@@ -1513,6 +1538,7 @@ class Sm4File:
                 + (f"; {int((~paired).sum())} spectra have no pixel at their location" if not paired.all() else ""))
 
     def _z_page(self):
+        """The grid's embedded Topography spectra page (the Z recorded at every spectrum), or None.  Not called anywhere at present (topo_spectra_z, spectra_z and _self_check find the page themselves)."""
         pages = self.f.pages
         return next((p for p in pages if p.page_type == 'RHK_PAGE_INTERACTIVE_SPECTRA' and p.label == 'Topography'), None)
 
@@ -1589,7 +1615,17 @@ class Sm4File:
     # --- self check ---
 
     def _self_check(self, pages, types):
-        """Embedded Topography spectra channel reshaped to the grid against the first image page."""
+        """
+        One console line (self_check_text) on the orientation of a grid: the
+        embedded Topography spectra channel reshaped to (n_lines, n_fast)
+        against the forward image page (topo_raw), each with a fitted plane
+        removed, correlated as is and mirrored (fliplr, flipud, rot180) over
+        the pixels finite in both.  'consistent with the raw pixel order'
+        when as-is is the best match or within 0.01 of it (noting when a
+        mirrored order fits equally well), else the best match named;
+        'skipped' without the channel, an image page or a grid size, or
+        when the shapes differ; 'failed' with the exception's text.
+        """
         tz = next((i for i, t in enumerate(types) if t == 'RHK_PAGE_INTERACTIVE_SPECTRA'
                    and pages[i].label == 'Topography'), None)
         if tz is None or not self.topo_pages or not self.n_fast or not self.n_lines:
@@ -1604,6 +1640,7 @@ class Sm4File:
                         f"{zg.shape} differ in shape).")
 
             def deplane(a):
+                """The image minus the least-squares plane through its finite pixels."""
                 ny, nx = a.shape
                 J, I = np.meshgrid(np.arange(nx), np.arange(ny))
                 ok = np.isfinite(a).ravel()
@@ -1647,6 +1684,8 @@ def geom_contains(geom, xy_m):
 
 
 if __name__ == '__main__':
+    # One file: its kind from the headers alone, its page types, its image frame, then the file
+    # loaded whole with its measurement information and the grid's self check (nothing is drawn).
     path = r'experiment_dir/file.sm4'
     types, geom, line_types = sm4_header_info(path)
     print(f"{os.path.basename(path)}: kind {kind_from_types(types, line_types)} (from the headers)")

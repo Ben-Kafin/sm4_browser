@@ -22,11 +22,13 @@ RESULTS = []
 
 
 def ok(name, cond, detail=''):
+    """Record and print one result: PASS or FAIL, the name, the detail in parentheses."""
     RESULTS.append(bool(cond))
     print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
 
 
 def settle(b, timeout=120):
+    """Run the event loop until the browser's background placing (its queue, workers and futures) is idle, at most `timeout` s."""
     t0 = time.perf_counter()
     while (b._bg_running or b._bg_queue or b._bg_futures) and time.perf_counter() - t0 < timeout:
         plt._app().processEvents()
@@ -34,6 +36,13 @@ def settle(b, timeout=120):
 
 
 def run():
+    """
+    A 40-topo synthetic directory (perf_layer.build): 1. a browser with two worker processes places
+    every topo and 2. writes the records to the scan cache, 3. the pool ends with the window; 4. a
+    second browser without workers places every topo from the cache without reading a file; 5.
+    stepping back and forth over files just visited reads nothing.  Prints each result; returns
+    True when all passed.
+    """
     tmp = tempfile.mkdtemp(prefix='sm4bg_')
     exp = perf_layer.build(tmp, 40)
     synth.install(exp)

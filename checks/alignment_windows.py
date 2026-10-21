@@ -176,6 +176,7 @@ class FilePanel:
     # --- the line's columns ---
 
     def _cols(self):
+        """The global column indices of the chosen line (clipped to the spectra the file holds)."""
         return np.arange(self.line * self.n_fast, min((self.line + 1) * self.n_fast, self.sm4.n_spectra))
 
     def _curves(self, cols, acquired):
@@ -197,6 +198,7 @@ class FilePanel:
     # --- the current placement ---
 
     def _draw_current(self):
+        """Window 1 (the module docstring): the kept rows at their recorded positions (plots.RowHeatmap), the forward stripe cells at theirs."""
         sm4, i, sf = self.sm4, self.line, float(self.s['scalefactor'])
         cols = self._cols()
         kept = np.asarray(sm4.acquired, dtype=bool)[cols]
@@ -251,6 +253,7 @@ class FilePanel:
         return acq, taken
 
     def _draw_old(self):
+        """Window 2 (the module docstring): the zip's placement, spectrum k and pixel k in the k-th cell from pos[0], with the unfinished-line change."""
         sm4, i, sf = self.sm4, self.line, float(self.s['scalefactor'])
         pages = sm4.f.pages
         cols = self._cols()
@@ -353,14 +356,17 @@ class FilePanel:
     # --- the panel ---
 
     def _short(self):
+        """The file's stem for the panel title, the middle elided when longer than 34 characters."""
         stem = os.path.splitext(self.name)[0]
         return stem if len(stem) <= 34 else stem[:16] + "…" + stem[-16:]
 
     def _toggle_text(self):
+        """The three toggles' states for the panel title."""
         return (f"Feenstra {'on' if self.feenstra else 'off'}, calibrate {'on' if self.calibrate else 'off'}, "
                 f"normalize {'on' if self.normalize else 'off'}")
 
     def draw(self):
+        """Draw the panel under its window's placement; an exception becomes the panel's title and a console line."""
         try:
             if self.mode == 'current':
                 self._draw_current()
@@ -393,6 +399,7 @@ class FilePanel:
         self.fig = fig
 
     def _step(self, d):
+        """'< line' / 'line >': the previous / next line of the file (the ends are not passed; a console line)."""
         new = self.line + int(d)
         if new < 0 or new >= self.n_lines:
             print(f"{self.name}: line {new} is out of range 0..{self.n_lines - 1}.")
@@ -402,6 +409,7 @@ class FilePanel:
         self.fig.canvas.draw_idle()
 
     def _toggle(self, label):
+        """One of the panel's three toggles clicked: its state flipped, the panel redrawn."""
         if label == 'Feenstra':
             self.feenstra = not self.feenstra
         elif label == 'calibrate':
@@ -417,6 +425,8 @@ class FilePanel:
 # ---------------------------------------------------------------------- #
 
 class AlignmentWindow:
+    """One window of placement `mode` ('current' or 'old'): a FilePanel per loaded file side by side, 6.2 in wide each."""
+
     def __init__(self, files, mode, settings):
         title = {'current': "current alignment (the package as it is)",
                  'old': "old alignment (the zip's line.py; unfinished line: last spectrum out, same indexing, untaken pixels blank)"}[mode]
@@ -438,6 +448,7 @@ class AlignmentWindow:
 
 
 def load_files(paths):
+    """The grid files with spectra among `paths` as Sm4File (the others reported and skipped), each with a console line and its self check."""
     out = []
     for p in paths:
         try:

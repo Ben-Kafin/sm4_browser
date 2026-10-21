@@ -30,6 +30,14 @@ pixel: 'forward sweeps' (the mean of the pixel's +1 sweeps), 'reverse sweeps' (o
 are averaged over the chosen kept sweeps (calibration, the Feenstra division and normalization
 then run per pixel as for a single sweep); a pixel without a chosen kept sweep is a
 never-acquired column.
+
+This module holds the grouping of columns into pixels by location (group_locations), the
+correlation of the reversed-storage test (_corr), and the view helpers (sweep_modes,
+default_mode, chosen_columns); the grouping itself, the direction tests and the reordering of
+the columns live in sts.STS._group_sweeps and STS._from_sweep_pages, which read a file's
+sweep_info dict: 'k' (sweeps per pixel), 'n_pix', 'pixel' and 'sweep' (per column), 'dir' (per
+column, +1 / -1), 'acq_desc' (per column: acquired down the axis), 'cols_of' (per pixel, the
+column indices), 'locs' (n_pix, 2) and 'notes'.
 """
 
 import numpy as np
@@ -55,12 +63,19 @@ def sweep_modes(info):
 
 
 def default_mode(info):
+    """The view a file opens with: the first of sweep_modes (FORWARD when any sweep is forward), None for one sweep per pixel."""
     m = sweep_modes(info)
     return m[0] if m else None
 
 
 def chosen_columns(info, mode):
-    """For every pixel (grid order) the column indices the view `mode` takes, a list of arrays."""
+    """
+    For every pixel (grid order) the column indices the view `mode` takes
+    (FORWARD: the pixel's +1 sweeps; REVERSE: its -1 sweeps; ALL: every
+    sweep; 'sweep n': its n-th sweep, 1-based, in acquisition order), a
+    list of int arrays, one per pixel, possibly empty.  `info` is
+    STS.sweep_info; ValueError for an unknown mode.
+    """
     pix, sw, d = info['pixel'], info['sweep'], info['dir']
     out = []
     for p in range(info['n_pix']):
@@ -114,6 +129,11 @@ def group_locations(xy, tol):
 
 
 def _corr(a, b):
+    """
+    Pearson correlation of two columns over the samples finite in both
+    (the reversed-storage test of STS._group_sweeps); NaN with fewer than
+    three such samples or when either column is constant.
+    """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
     ok = np.isfinite(a) & np.isfinite(b)

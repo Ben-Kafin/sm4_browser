@@ -3,8 +3,12 @@ Noise spectrum files (pages of type RHK_PAGE_NOISE_POWER_SPECTRUM): the
 spectrum the instrument computed from a channel recorded for a period of time
 (one page per channel, 'LIA Current', 'LIA-X (2w) IETS', 'Current',
 'Topography'), against frequency, in physical units (the loader's data, in
-each page's RHK_Zunits); the browser shows
-every channel and the recording's resolution and bounds.
+each page's RHK_Zunits).  NoiseSpectrum holds one file's channels; the
+browser opens such a file as kind 'fft' (sm4file.Sm4File.fft), draws every
+channel into its spectra panel (draw) and lists the recording's frequency
+range, resolution and length on its info panel (info, through
+Sm4File.measurement_info); show opens the same drawing in a figure of its
+own when the module is run stand-alone.
 """
 
 if __package__ in (None, ''):
@@ -32,6 +36,13 @@ class NoiseSpectrum:
 
     @classmethod
     def from_pages(cls, pages, name=''):
+        """
+        The noise spectra of a loaded file's pages (sm4file.load, in
+        physical units): every page of type FFT_PAGE_TYPE in file order, each
+        a channel.  ValueError without such a page, for a page without a
+        usable RHK_Zscale, or when a page's x axis and data differ in length.
+        `name` is the file's base name (messages and the figure title).
+        """
         pages = list(pages)
         spec = [p for p in pages if p.page_type == FFT_PAGE_TYPE]
         if not spec:
@@ -53,14 +64,19 @@ class NoiseSpectrum:
 
     @classmethod
     def from_file(cls, path):
+        """The noise spectra of a .sm4 file opened here (sm4file.load); from_pages on its pages."""
         return cls.from_pages(sm4file.load(path).pages, name=os.path.basename(path))
 
     def info(self):
         """
-        The measurement information as [(name, text)]: the frequency range
-        and resolution, the length of the recording the spectrum came from
-        (one-sided bins n give 2 (n - 1) samples at the stored sample time),
-        each channel's largest line, and the page's settings.
+        The measurement information as [(name, text)] for the info panel:
+        the frequency range and resolution (the first channel's axis: first
+        to last bin, the number of bins, the median bin spacing), the
+        recording the spectrum came from when the page records RHK_Period
+        (taken as the sample time: n one-sided bins come from 2 (n - 1)
+        samples, so the length is 2 (n - 1) x RHK_Period), each channel's
+        largest line (the frequency of its maximum, 'peak_hz'), and the
+        first page's settings (sm4file.measurement_info).
         """
         rows = []
         c0 = self.channels[0]
@@ -90,7 +106,12 @@ class NoiseSpectrum:
     DESIGN = (10, 5)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
     def show(self, title=None):
-        """The spectra in their own figure (draw), with the measurement information printed."""
+        """
+        The spectra in a figure of their own, of size DESIGN (draw), titled
+        with `title` or the file name, the measurement information (info)
+        printed on the console; stand-alone use (the __main__ block), the
+        browser draws into its own panel.  Returns the figure.
+        """
         fig, ax = plt.subplots(figsize=self.DESIGN)
         self.draw(ax)
         ax.set_title(title or self.name, fontsize=9)

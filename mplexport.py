@@ -10,10 +10,18 @@ figure-fraction position with its current limits, labels, title, ticks, aspect, 
 curve with its style; images with their colour map and norm (and the rotation of a placed
 topography); quad meshes (the Line window's sheared rows, the Map window's shifted pixels, the
 grid stripes) as filled polygons; reference lines, spans, line collections, texts, annotations,
-colour bars, and the figure's texts.  The controls (buttons, boxes) are not part of the figure.
+colour bars, and the figure's texts.  The controls (buttons, boxes) are not part of the figure,
+nor are the readout texts in the control strip below the panels, hidden axes, or hidden artists.
+
+The matplotlib figure has the window's design size (the window's DESIGN constant, at qtplot.DPI),
+whatever the window's size on screen, and every text its point size as set (the window's text
+zoom, qtplot.window_zoom, is not applied); the panels keep the figure fractions they have on
+screen.  The file is cropped to what is drawn (savefig with bbox_inches='tight').
 
     export(fig, path, dpi=300)       the figure into `path` (format from the extension)
     to_matplotlib(fig)               the matplotlib Figure itself (to adjust before saving)
+    available()                      whether matplotlib can be imported (qtplot.Figure.savefig
+                                     falls back to Qt's own writers when it cannot)
 """
 
 import numpy as np
@@ -22,6 +30,7 @@ from sm4_Browser import qtplot as q
 
 
 def available():
+    """True when matplotlib can be imported (the publication formats need it)."""
     try:
         import matplotlib            # noqa: F401
         return True
@@ -34,12 +43,14 @@ def available():
 # ---------------------------------------------------------------------- #
 
 def _mpl_cmap(cm):
+    """A qtplot colour map (anything to_cmap accepts) as a matplotlib ListedColormap of the same table."""
     from matplotlib.colors import ListedColormap
     cm = q.to_cmap(cm)
     return ListedColormap(cm._table, name=cm.name)
 
 
 def _mpl_norm(norm):
+    """A qtplot norm as the matching matplotlib norm (PowerNorm, TwoSlopeNorm, else Normalize); None stays None."""
     import matplotlib.colors as mc
     if norm is None:
         return None
@@ -51,14 +62,17 @@ def _mpl_norm(norm):
 
 
 def _ls(ls):
+    """A matplotlib line style with every spelling of 'no line' (None, 'none', 'None', '', ' ') as 'none'."""
     return 'none' if ls in (None, 'none', 'None', '', ' ') else ls
 
 
 def _px_to_pt(px):
+    """Logical pixels (at qtplot.DPI) to points."""
     return float(px) / q.pt2px(1.0)
 
 
 def _axis_hidden_ticks(axis):
+    """Whether a qtplot tick axis was given no ticks at all (set_xticks([]): pyqtgraph's _tickLevels holds only empty levels)."""
     lev = getattr(axis, '_tickLevels', None)
     return lev is not None and all(len(level) == 0 for level in lev)
 
@@ -68,7 +82,11 @@ def _axis_hidden_ticks(axis):
 # ---------------------------------------------------------------------- #
 
 def to_matplotlib(fig):
-    """The qtplot figure as a matplotlib Figure (no GUI backend: Figure + savefig)."""
+    """
+    The qtplot figure as a matplotlib Figure (no GUI backend: Figure + savefig), at the window's
+    design size, white, holding every visible axes at its on-screen figure fraction (_axes), the
+    colour bars (_colorbar), and the figure texts of the plot area.
+    """
     from matplotlib.figure import Figure
     W0, H0 = fig._design_px
     mfig = Figure(figsize=(W0 / q.DPI, H0 / q.DPI), dpi=q.DPI)
@@ -86,7 +104,8 @@ def to_matplotlib(fig):
     for ax in axes:                      # shared y: the second axes shows no y values (as on screen)
         if ax._shared_y is not None and id(ax) in made:
             made[id(ax)].tick_params(axis='y', labelleft=False)
-    # Figure texts of the plot area only (a text below every panel is a control's caption).
+    # Figure texts of the plot area only: a figure text below the lowest panel (by more than 2 % of the
+    # height) sits in the control strip, a window's readout line beside its controls, and is left out.
     bottom = min((_pos(ax)[1] for ax in axes), default=0.0)
     for t in fig._texts:
         if t.get_visible() and t.get_text() and t._y >= bottom - 0.02:
@@ -102,6 +121,13 @@ def _pos(ax):
 
 
 def _axes(mfig, ax):
+    """
+    One qtplot axes as a matplotlib axes in `mfig`: its artists (_artist), the quad meshes drawn
+    straight into its view, the limits as shown (inverted axes included), the aspect, the labels
+    (short_label, as on screen), tick sizes and hidden ticks, the grid, frame and axis state, the
+    title, a secondary y axis, and the legend as on screen.  Text sizes are the points set on the
+    qtplot axes.
+    """
     m = mfig.add_axes(_pos(ax))
     m.set_facecolor('white')
     handle_map = {}
@@ -177,6 +203,10 @@ def _axes(mfig, ax):
 
 
 def _line_kw(st, label, zorder):
+    """
+    matplotlib's plot keywords for a qtplot Line2D style dict (colour, width, style, alpha,
+    markers); a label starting with '_' is dropped, as matplotlib's legend drops it.
+    """
     kw = dict(color=st['color'], lw=st['lw'], ls=_ls(st['ls']), alpha=st['alpha'], zorder=zorder,
               label=label if (label and not str(label).startswith('_')) else None)
     if st.get('marker'):
@@ -189,6 +219,16 @@ def _line_kw(st, label, zorder):
 
 
 def _artist(m, a):
+    """
+    One qtplot artist `a` drawn into the matplotlib axes `m`, returning the matplotlib artist (the
+    legend's handle) or None when nothing is drawn: Line2D -> plot; _RefLine -> axhline / axvline;
+    _Span -> axvspan / axhspan; AxesImage -> imshow with its extent, origin, colour map and norm,
+    interpolation 'none' (the raw pixels), and its Affine2D (a rotated and translated topography)
+    composed with the data transform; QuadMesh -> pcolormesh (NaN cells masked); ContourSet ->
+    contourf from the arguments it was made with; LineCollection and PolyCollection -> the
+    matching collections; Annotation -> annotate; Text -> text (empty texts skipped).  Anything
+    else is not exported.
+    """
     from matplotlib.collections import LineCollection, PolyCollection
     from matplotlib.transforms import Affine2D
     if isinstance(a, q.Line2D):
@@ -243,6 +283,12 @@ def _artist(m, a):
 
 
 def _quads(m, item, zorder=None):
+    """
+    A qtplot QuadItem (the item of a RowHeatmap, PixelMap or PolyCollection) as a matplotlib
+    PolyCollection of its kept quads with their RGBA colours (uint8 -> 0..1); each cell edged by a
+    hairline of its own colour so that a vector viewer shows no seams between cells.  None when the
+    item holds no quad.  `zorder` overrides the item's z value.
+    """
     from matplotlib.collections import PolyCollection
     quads = getattr(item, '_quads', None)
     cols = getattr(item, '_colors', None)
@@ -255,6 +301,12 @@ def _quads(m, item, zorder=None):
 
 
 def _text(target_owner, t, transform=None, target=None):
+    """
+    A qtplot Text as matplotlib text on `target` (a matplotlib Axes or Figure): size in points,
+    alignment, colour, rotation, weight, a monospace family, the bbox keys matplotlib takes,
+    `transform` (axes or figure coordinates; None for data), and the qtplot pixel offset as an
+    offset in points.  `target_owner` is not read; the callers pass the same object as `target`.
+    """
     kw = dict(fontsize=t._size, ha=t._ha, va=t._va, color=t._color, rotation=t._rotation)
     if t._weight:
         kw['fontweight'] = t._weight
@@ -275,6 +327,11 @@ def _text(target_owner, t, transform=None, target=None):
 
 
 def _colorbar(mfig, cax):
+    """
+    The colour bar held by the qtplot axes `cax` (cax._colorbar) as a matplotlib colour bar in an
+    axes at the same position: the mappable's colour map and norm (so a gamma spaces the ticks as
+    on screen), the label (short_label) and the tick size in points.
+    """
     from matplotlib.cm import ScalarMappable
     cb = cax._colorbar
     m = mfig.add_axes(_pos(cax))
@@ -293,8 +350,9 @@ def _colorbar(mfig, cax):
 def export(fig, path, dpi=300):
     """
     Save `fig` through matplotlib: the format from the extension (pdf, eps, ps, svg, png, tif,
-    jpg); text stays text in the vector formats (TrueType fonts embedded, editable in
-    Illustrator); raster formats at `dpi`.
+    jpg); text stays text in the vector formats (TrueType fonts embedded in PDF and PS / EPS, text
+    elements in SVG; editable in Illustrator); raster formats at `dpi`.  The file is cropped to
+    what is drawn, with a 0.05 inch margin.  Returns `path`.
     """
     import matplotlib
     mfig = to_matplotlib(fig)

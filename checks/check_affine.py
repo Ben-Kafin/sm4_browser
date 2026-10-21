@@ -19,6 +19,13 @@ from sm4_Browser.drift import PairDrift
 
 
 def run():
+    """
+    One synthetic topo (rotated 17 deg) under a known velocity: for each pass the image placed by
+    affine_matrix with the known drift model is sampled at every pixel and compared with the
+    per-pixel resampling; passes when the largest difference is below 2 % of the height range and
+    the uncorrected placement differs by more than five times as much.  Prints the numbers and
+    PASS / FAIL; returns the verdict.
+    """
     tmp = tempfile.mkdtemp(prefix='sm4affine_')
     v = np.array([40e-12, -25e-12])                       # m/s: ~ 0.6 nm over a 16 s image (several px)
     exp = synth.Experiment(tmp, v=v)

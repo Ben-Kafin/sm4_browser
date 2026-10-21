@@ -21,11 +21,13 @@ RESULTS = []
 
 
 def ok(name, cond, detail=''):
+    """Record and print one result: PASS or FAIL, the name, the detail in parentheses."""
     RESULTS.append(bool(cond))
     print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
 
 
 def make(sweeps, layout, stop_after=None):
+    """A 6 x 5 synthetic grid without drift with the given sweeps and layout (synth.Experiment.grid), loaded as Sm4File; returns (file, the console text of the load)."""
     tmp = tempfile.mkdtemp(prefix='sm4sw_')
     exp = synth.Experiment(tmp, v=(0, 0))
     g = exp.grid(synth.T_REF, n_fast=6, n_lines=5, size_m=4e-9, npts=21, sweeps=sweeps, layout=layout,
@@ -38,6 +40,7 @@ def make(sweeps, layout, stop_after=None):
 
 
 def run():
+    """The checks of the module docstring, each printed; returns True when all passed."""
     for layout in ('per_pixel', 'pages'):
         f, log = make(('forward', 'reverse'), layout)
         info = f.sweep_info

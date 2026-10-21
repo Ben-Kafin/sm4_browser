@@ -19,10 +19,11 @@ the .sm4 files:
       its own format number and the loader format it was computed with
       (sm4file.LOADER_FORMAT): a section of another format or loader is
       ignored and rebuilt by its owner, the other sections stay.  Every
-      entry is keyed by the file's name (and, where the owner keeps it, the
-      file's size and modification time), so a new or changed file is
-      recomputed alone.  Written once at the end of each computation stage
-      (Computed.write), never while stepping.  Deleting the file loses
+      entry is keyed by the file's name, with the file's size and
+      modification time in the header scan and its modification time in
+      the metrics, so a new or changed file is recomputed alone (a tracked
+      pair is keyed by its two topos' names only).  Written once at the end
+      of each computation stage (Computed.write), never while stepping.  Deleting the file loses
       nothing: it is rebuilt at the next startup.
   scan_cache_<stamp>/   : the processed images, one array file each
       (scanlayer.py), keyed by the file's name, size and time, the pass, the
@@ -30,7 +31,9 @@ the .sm4 files:
       not belong in a JSON file.
 
 <stamp> is the date and time of the directory's first file
-(YYYY_MM_DD_HH_MM_SS), as the earlier caches used it.
+(YYYY_MM_DD_HH_MM_SS, stamp_of), as the earlier caches used it; the scan
+cache's folder (scanlayer.cache_dir) also carries the millisecond field of
+that file's name stamp.
 
 The rules the stores enforce (PLAN.md, item 2):
   1. Storage: the computed file holds only what is computed from the files
@@ -125,10 +128,15 @@ class _Store:
 
     @property
     def name(self):
+        """The file's base name (the console lines)."""
         return os.path.basename(self.path)
 
     def read(self):
-        """The file read into self.data; True when it existed and was readable and of this store's format."""
+        """
+        The file read into self.data (its 'format' and 'written' keys left out); True when it
+        existed, was readable and was of this store's format, or when the store takes another
+        format (_accept_other_format: Settings carries it over, Computed does not).
+        """
         data = _read_json(self.path)
         if data is None:
             return False
@@ -140,13 +148,15 @@ class _Store:
         return True
 
     def _on_format_mismatch(self):
+        """The console's wording of what read() does with a file of another format."""
         return "ignored."
 
     def _accept_other_format(self, data):
+        """What read() does with a file of another format: nothing here (False, not loaded); Settings takes it over."""
         return False
 
     def write(self):
-        """The store written whole (temporary file, then replace); True when written."""
+        """The store written whole: its sections under 'format' (this store's) and 'written' (the time of writing); a temporary file, then os.replace.  True when written."""
         out = {'format': self.FORMAT, 'written': datetime.now().isoformat(timespec='seconds')}
         out.update(self.data)
         return _write_json(self.path, out)
@@ -172,6 +182,7 @@ class Settings(_Store):
         return True
 
     def get(self, section, default=None):
+        """A section's stored value, `default` (None) when absent."""
         return self.data.get(section, default)
 
     def put(self, section, value):
@@ -192,6 +203,7 @@ class Computed(_Store):
     FORMAT = COMPUTED_FORMAT
 
     def section(self, name, fmt):
+        """The content of a section when its format is `fmt` and its loader format is sm4file.LOADER_FORMAT, else {} (a console line says which section is computed again)."""
         sec = self.data.get(name)
         if not isinstance(sec, dict):
             return {}
@@ -203,6 +215,7 @@ class Computed(_Store):
         return content if isinstance(content, dict) else {}
 
     def put(self, name, fmt, content):
+        """A section replaced in memory by `content` under format `fmt` and the loader format in force; write() puts it on disk."""
         self.data[name] = {'format': int(fmt), 'loader_format': sm4file.LOADER_FORMAT, 'content': content}
 
 
@@ -210,7 +223,7 @@ class Computed(_Store):
 #  The carry-over of the earlier caches                                    #
 # ---------------------------------------------------------------------- #
 
-OLD_DRIFT_FORMAT = 5      # the drift cache's last format: pairs, topos, manual
+OLD_DRIFT_FORMAT = 5      # the drift cache's last format: pairs, topos, manual (for reference; carry_over keeps the old file's own number)
 OLD_SITES_FORMAT = 1
 OLD_HEADER_FORMAT = 1
 
@@ -226,8 +239,13 @@ def _newest_readable(base):
 
 def carry_over(directory, stamp, settings=None, computed=None):
     """
-    The earlier caches read once into the stores given (the absent ones), which are then written,
-    and every old file of the families renamed with '.old'.  Returns the list of files renamed.
+    The earlier caches read once into the stores given (the absent ones; None for a store that was
+    read from its own file), which are then written, and every old file of the three families
+    renamed with '.old', read or not.  `settings` takes the drift cache's 'manual' section (the
+    spans and the stripe sets, as the 'drift' section) and the sites cache's flags ('flags');
+    `computed` takes the drift cache's pairs and topos ('pairs'), the sites cache's topos and
+    spectra ('metrics') and the header cache's files ('headers'), each under the old file's own
+    format and loader numbers.  Returns the list of files renamed.
     """
     old = []
     drift_base = os.path.join(directory, f"drift_cache_{stamp}.json")
@@ -278,9 +296,14 @@ def carry_over(directory, stamp, settings=None, computed=None):
 
 def open_stores(directory, files):
     """
-    The experiment's (Settings, Computed): each read from its file; the absent ones made by the
-    carry-over of the earlier caches when those exist, else empty.  The browser opens them once and
-    hands them to the header scan, the drift tracker and the sites.
+    The experiment's (Settings, Computed): each read from its file; the absent ones (or unreadable,
+    or for Computed of another format) made by the carry-over of the earlier caches when those
+    exist, else empty.  The settings file is written at once when it does not exist yet, so it is
+    there from the first startup on; the console names the sections each store loaded.  `files`
+    is the directory's stamp-sorted .sm4 list (its first file gives the stamp).  The browser opens
+    the stores once and hands them to the header scan (sm4file.header_cache), the drift tracker
+    (drift.Drift) and the sites (sites.Sites); header_cache and Drift open their own when called
+    without.
     """
     stamp = stamp_of(files)
     settings, computed = Settings(directory, stamp), Computed(directory, stamp)

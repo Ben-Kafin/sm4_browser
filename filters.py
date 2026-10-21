@@ -19,7 +19,19 @@ from scipy.signal import savgol_filter
 
 
 def hampel(curves, window=3, n_sigma=2.5):
-    """Apply a Hampel filter to each column (spectrum) in curves."""
+    """
+    The Hampel filter (a median-based outlier rule) on each column
+    (spectrum) of `curves` (npts, N): sample i is compared with the median
+    of the samples i - window .. i + window (the window clipped at the
+    column's ends); when it lies farther from that median than n_sigma x
+    1.4826 x MAD (the median absolute deviation of the same samples from
+    their median, scaled to the standard deviation of a Gaussian), it is
+    replaced by the median, otherwise kept.  Where the MAD is 0 (every
+    neighbour equal) the threshold is 0 and any sample that differs from
+    the median is replaced.  `window` is the number of neighbours on each
+    side and must be a whole number (ValueError otherwise).  Returns a new
+    array of the input's shape and dtype; the input is not changed.
+    """
     if window != int(window):
         raise ValueError(
             f"Hampel filter 'window' must be a whole number (got {window}). "
@@ -45,7 +57,14 @@ def hampel(curves, window=3, n_sigma=2.5):
 
 
 def sgolay(curves, window_length=5, polyorder=3):
-    """Apply a Savitzky-Golay filter to each column (spectrum) in curves (an even window is made odd)."""
+    """
+    The Savitzky-Golay filter (scipy.signal.savgol_filter, a least-squares
+    polynomial of degree `polyorder` fitted over `window_length` samples
+    around each sample, evaluated at the sample) on each column (spectrum)
+    of `curves` (npts, N), along axis 0.  An even window_length is made odd
+    by adding 1; polyorder must be smaller than the window (scipy raises
+    otherwise).  Returns a new float array of the input's shape.
+    """
     if window_length % 2 == 0:
         window_length += 1
     return savgol_filter(curves, window_length, polyorder, axis=0)
@@ -53,8 +72,14 @@ def sgolay(curves, window_length=5, polyorder=3):
 
 def filter_lia(lia, hampel_filter_params, sgolay_filter_params):
     """
-    The filters (each when given) on the channel's columns, in the order
-    Hampel (spikes first), Savitzky-Golay.  Returns a float64 copy.
+    The filters (each when its parameter dict is given, None = off) on the
+    columns of an array (npts, N), in the order Hampel (spikes first),
+    Savitzky-Golay: hampel(**hampel_filter_params), then
+    sgolay(**sgolay_filter_params).  The name is historical: the pipeline
+    (sts.STS.process_arrays, fit.Fit._raw_set_columns, feenstra.iv_corrected)
+    calls it on the recorded current I(V), never on the lock-in channel.
+    Returns a float64 copy (a plain copy when both are off); the input is
+    not changed.
     """
     c = np.asarray(lia, dtype=np.float64).copy()
     if hampel_filter_params is not None:
@@ -65,8 +90,9 @@ def filter_lia(lia, hampel_filter_params, sgolay_filter_params):
 
 
 if __name__ == '__main__':
-    # The filters on the dI/dV columns of one file: the spike and smoothing
-    # changes printed per column (nothing is drawn).
+    # The filters run on the dI/dV columns of one file as a demonstration of what they do
+    # (the pipeline itself filters the current only): the largest change per acquired
+    # column printed (nothing is drawn).
     from sm4_Browser import sm4file
     path = r'experiment_dir/file.sm4'
     f = sm4file.Sm4File(path)

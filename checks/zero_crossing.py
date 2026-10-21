@@ -3,7 +3,10 @@ Zero crossing of the raw current I(V) for every sweep of every file in the
 saved averages (avg*_average.json) of the package's sm4s folder: per sweep,
 per file, per saved average, and over all of them (feenstra.iv_zero_crossings
 does the per-sweep work).  Run as a script from anywhere; the paths below
-are relative to this file (checks/ inside the package).
+are relative to this file (checks/ inside the package): the folder 'sm4s'
+beside checks/ and its 'averages' subfolder, which the repository does not
+carry.  The console lines name each file by the part of its name after
+'_CT_' (the files of that folder are named that way).  Nothing is written.
 """
 import os, sys, json, glob, warnings
 warnings.filterwarnings('ignore')
@@ -22,6 +25,7 @@ def crossings(f):
 
 
 def stats(v):
+    """(n, mean, standard deviation (ddof 1), standard error of the mean) of the finite values; NaN where undefined."""
     v = np.asarray(v, float); v = v[np.isfinite(v)]
     n = len(v)
     m = v.mean() if n else np.nan

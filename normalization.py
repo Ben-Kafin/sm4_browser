@@ -1,10 +1,14 @@
 """
-Unit-area normalization of spectra: normalize (the signed trapezoidal area
-of every column set to 1, the pipeline's last step) and normalize_abs (the
-area between the curve and zero, for the current and I/V panels of the
-Feenstra windows), both over the whole energy axis or over an energy range
-(the Line window's 'E range' box; range_mask).  Plain arrays in, columns =
-spectra.
+Unit-area normalization of spectra: normalize (every column divided by the
+magnitude of its signed trapezoidal area, so that |area| becomes 1; the
+pipeline's last step, sts.STS.process_arrays) and normalize_abs (every
+column divided by the area between the curve and zero, the integral of
+|curve|; for the current and I/V panels of the Feenstra windows), both
+over the whole energy axis or over an energy range (the Line window's
+'E range' box; range_mask).  Plain arrays in, columns = spectra; the
+energy axis may be in any order (the trapezoids use the values as given,
+so an axis running down gives a negative signed area, which the absolute
+value removes).
 """
 
 if __package__ in (None, ''):
@@ -30,9 +34,11 @@ def range_mask(energy, energy_range):
 
 def normalize(energy, curves, energy_range=None):
     """
-    Normalize each spectrum (column) so its integrated area (via the
-    trapezoidal rule) is 1.  Returns (normalized curves, areas), the
-    per-column areas in the units of the columns times volts.  A column
+    Normalize each spectrum (column) so that the magnitude of its
+    integrated area (the trapezoidal rule, numpy.trapezoid) is 1: the
+    column divided by |area|, so a column with a negative signed area comes
+    back with area -1.  Returns (normalized curves, areas), the per-column
+    |area| in the units of the columns times volts, as float64.  A column
     whose area is 0 or NaN (an all-zero column) is returned as it is.  No
     absolute tolerance: the columns are in physical units (a calibrated
     dI/dV in A/V has areas of order 1e-10 A, the lock-in output in A of

@@ -4,7 +4,12 @@ lock-in output recorded while its reference phase was rotated through -180 to
 180 deg, one curve per lock-in (the fundamental, 'Phase Rotate', and the second
 harmonic, '2w Phase Rotate', when both were recorded), the phase the procedure
 set, and a single-phase sinusoid fitted to every curve whose maximum and
-minimum are what the browser marks.
+minimum are what the browser marks.  PhaseRotate holds one file's curves;
+the browser opens such a file as kind 'phase' (sm4file.Sm4File.phase),
+draws the curves into its spectra panel (draw) and lists the fit and the
+set phase on its info panel (info, through Sm4File.measurement_info); show
+opens the same drawing in a figure of its own when the module is run
+stand-alone.
 """
 
 if __package__ in (None, ''):
@@ -22,12 +27,15 @@ PHASE_LINE_TYPE = 'RHK_LINE_PHASE_ROTATE'
 
 def fit_sinusoid(deg, values):
     """
-    Least-squares fit of a single-phase sinusoid, values = A cos(theta) +
-    B sin(theta) + C, to the points (deg, values).  Returns a dict with the
-    amplitude R = hypot(A, B) and offset C (in the units of the values), the
-    phase of the fitted maximum and minimum (deg, in -180 to 180), the fitted
-    maximum and minimum values, and the rms residual; None with fewer than
-    three points.
+    Least-squares fit (numpy.linalg.lstsq) of a single-phase sinusoid,
+    values = A cos(theta) + B sin(theta) + C, to the points (deg, values),
+    theta the phase in radians.  Returns a dict: 'amplitude' R = hypot(A, B)
+    and 'offset' C (in the units of the values), 'max_deg' = atan2(B, A) and
+    'min_deg' = max_deg + 180, the phases of the fitted maximum and minimum
+    (deg, wrapped into -180 to 180), 'max_value' = C + R, 'min_value' =
+    C - R, and 'rms_residual', the standard deviation of the residual
+    (equal to its rms, since the fitted offset makes the residual's mean
+    zero); None with fewer than three points.
     """
     deg = np.asarray(deg, dtype=np.float64)
     values = np.asarray(values, dtype=np.float64)
@@ -62,6 +70,14 @@ class PhaseRotate:
 
     @classmethod
     def from_pages(cls, pages, name=''):
+        """
+        The phase rotation curves of a loaded file's pages (sm4file.load, in
+        physical units): every page of line type PHASE_LINE_TYPE in file
+        order, each a curve ('2w' in the label marks the second harmonic).
+        ValueError without such a page, for a page without a usable
+        RHK_Zscale, or when a page's x axis and data differ in length.
+        `name` is the file's base name (messages and the figure title).
+        """
         pages = list(pages)
         rot = [p for p in pages if p.line_type == PHASE_LINE_TYPE]
         if not rot:
@@ -93,10 +109,19 @@ class PhaseRotate:
 
     @classmethod
     def from_file(cls, path):
+        """The phase rotation curves of a .sm4 file opened here (sm4file.load); from_pages on its pages."""
         return cls.from_pages(sm4file.load(path).pages, name=os.path.basename(path))
 
     def info(self):
-        """The measurement information as [(name, text)]: the rotation, each curve's set phase and fit, the page's settings."""
+        """
+        The measurement information as [(name, text)] for the info panel:
+        the phase range (the first curve's axis: first to last point, the
+        number of points, the median step), per curve ('fundamental' or
+        'second harmonic') the points acquired, the set rotation when
+        recorded, and the fit's maximum, minimum, amplitude and rms residual
+        when there is one; the recorded position when there is one; the
+        first page's settings (sm4file.measurement_info).
+        """
         rows = []
         c0 = self.curves[0]
         step = float(np.median(np.abs(np.diff(c0['deg'])))) if len(c0['deg']) > 1 else float('nan')
@@ -156,7 +181,12 @@ class PhaseRotate:
     DESIGN = (9, 5)        # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
     def show(self, title=None):
-        """The curves in their own figure (draw), with the measurement information printed."""
+        """
+        The curves in a figure of their own, of size DESIGN (draw), titled
+        with `title` or the file name, the measurement information (info)
+        printed on the console; stand-alone use (the __main__ block), the
+        browser draws into its own panel.  Returns the figure.
+        """
         fig, ax = plt.subplots(figsize=self.DESIGN)
         self.draw(ax)
         ax.set_title(title or self.name, fontsize=9)

@@ -4,6 +4,16 @@ or one energy beside the file's embedded topography with energy arrows and a
 curve panel), its marker groups (the Line window's method in 2D), its own
 'Feenstra' toggle and Feenstra companion, the 'calibrate' / 'normalize' box,
 the 'cmap norm' colour-scale toggle, and one 'γ' box per energy slice.
+Also in the window: the 'channel' radio (dI/dV or IETS), the 'topo pass'
+radio of the embedded topo, the 'sweeps' radio of a file with several
+sweeps per pixel, the filter box, the window's own 'auto drift' / 'manual
+drift' toggles and 'drift window' (the pixels and the topo at their
+drift-corrected positions), 'map → new avg' / 'map → existing avg' (the
+whole map into an averaging window), the figure composer buttons ('add to
+plot' under each panel, 'new plot'; composer.py), and 'Send to fit'.  The
+frame is the grid's scan frame in nm after the file's scale factor (the
+`scalefactor` argument: the scale in force at the file's time, which the
+browser takes from its timeline, scales.Scales).
 """
 
 if __package__ in (None, ''):
@@ -26,13 +36,22 @@ from sm4_Browser.topo import processed_topo, process_topo, TOPO_CMAP
 
 class Map:
     """
-    Grid file: a toggle between (a) a tiled grid of the embedded topography
-    (first cell) and every energy, and (b) one energy beside the file's own
-    embedded topography with energy arrows ('< E', 'E >') and a curve panel.  Maps are the channel (dI/dV, or IETS by the
-    'channel' radio) through the pipeline, every location calibrated against
-    its own I(V) and unit-area normalized as the 'calibrate' / 'normalize' box
-    says (both off at open), reshaped to (n_lines, n_fast) in the scan frame.
-    Filter controls at the bottom.
+    Grid file: a toggle ('Grid view' / 'Single view') between (a) a tiled
+    grid of the embedded topography (first cell) and every energy, and (b)
+    one energy beside the file's own embedded topography with energy arrows
+    ('< E', 'E >') and a curve panel.  Maps are the channel (dI/dV, or IETS
+    by the 'channel' radio) through the pipeline (Sm4File.curves,
+    STS.process_arrays: the filter box's Hampel and Savitzky-Golay filters
+    on the current, the division by the broadened I/V with 'Feenstra' on),
+    every location calibrated against its own I(V) and unit-area normalized
+    as the 'calibrate' / 'normalize' box says (both off at open), energy
+    ascending, reshaped to (n_lines, n_fast) in the scan frame (self.extent:
+    the recorded frame in nm after the scale factor; a never-acquired pixel
+    is NaN and drawn transparent).  Filter controls at the bottom.  The
+    'topo pass' radio picks the pass of the embedded topo ('average' counts
+    as forward: a grid's passes are never averaged); the 'sweeps' radio of a
+    file with several sweeps per pixel picks the sweep view the maps are
+    made of (Sm4File.with_sweeps).
 
     Colour scale: with 'cmap norm' off (the default) every energy slice is
     coloured on one scale, the minimum and maximum over the whole cube, in
@@ -44,19 +63,21 @@ class Map:
     Markers (the single view): the Line window's marker method in 2D.  A
     marker is a grid pixel (line, fast); it is drawn as a small square at the
     pixel's centre on the map and on the embedded topo.  The 'avgs' slider
-    (1 to MAX_GROUPS) is the number of groups; every group has its own
-    'Markers' slider (1 to 10 markers) with 'add new' and 'add existing'
-    beside it, the sliders stacked bottom to top in the order of the groups'
-    centres (highest y at the top), each filled with its group's colour; the
-    panels move up when the stack would otherwise run into them.  Group
-    membership is by index.  A group's m markers are the m pixels nearest its
-    centre (ties by angle); new groups start at the free slot of an even
-    layout along the grid's diagonal with the last group's size; fewer groups
-    drops the last groups.  The window has its own 'Feenstra' toggle (on at
-    open, independent of the browser's; the browser hands over the Feenstra
-    settings) and a Feenstra companion window (feenstra.FeenstraWindow) that
-    opens with it and follows it: the map at the current energy in four
-    versions with the marker curves under each.  Dragging: a press on a
+    (0 to MAX_GROUPS) is the number of groups; every group has its own
+    'Markers' slider (0 to 10 markers; a group at 0 keeps its centre) with
+    'add new' and 'add existing' beside it, the sliders stacked bottom to
+    top in the order of the groups' centres (highest y at the top), each
+    filled with its group's colour; the panels move up when the stack would
+    otherwise run into them.  Group membership is by index.  A group's m
+    markers are the m pixels nearest its centre (ties by angle); new groups
+    start at the free slot of an even layout along the grid's diagonal with
+    the last group's size; fewer groups drops the last groups.  The window
+    has its own 'Feenstra' toggle (starting at the caller's state,
+    `divide_iv`: the browser opens it on; independent of the browser's
+    after; the browser hands over the Feenstra settings) and a Feenstra
+    companion window (feenstra.FeenstraWindow) that opens with it and
+    follows it: the map at the current energy in four versions with the
+    marker curves under each.  Dragging: a press on a
     marker (either panel) moves it to the pixel under the cursor; with
     Average on, a press on a group's centre (a black X on the map) moves the
     whole group by the same pixel offset, clipped so no member leaves the
@@ -71,7 +92,13 @@ class Map:
     (widgets.AveragePicker).  'Send to fit' sends the marker spectra
     (Average off) or the group averages (Average on) to the single-point
     fit, as the Line window does (calibrated and normalized, the
-    fit's pipeline).  One topo colour bar sits right of the embedded topo.
+    fit's pipeline).  'map → new avg' / 'map → existing avg' put the whole
+    map (every acquired pixel's spectrum as one sweep of one entry) into a
+    new or an open averaging window.  'add to plot' under the topo, the
+    map and the curve panel sends that panel as shown to the figure
+    composer (composer.FigureComposer, one per window); 'new plot' empties
+    it.  One topo colour bar sits right of the embedded topo.  The drift
+    toggles and the drift window are described at __init__.
     """
 
     MAX_GROUPS = 10
@@ -98,6 +125,29 @@ class Map:
     def __init__(self, grid, active_procs, scalefactor, hampel_defaults, sgolay_defaults, cmap='jet',
                  divide_iv=False, iv_broadening=0.0, channel='didv', averages=None, fit_settings=None,
                  iv_zero_sub=True, iv_broadened=False, drift=None, auto_on=False, manual_on=False):
+        """
+        The Map window of a grid file, opened at once (plt.show at the end).
+          grid            : the grid's sm4file.Sm4File (a sweep view of it for a file with
+                            several sweeps per pixel)
+          active_procs    : the topo processor flags, one per topo.TOPO_PROCESSORS entry
+                            (the browser's: 'Slope Sub', 'Δz sub')
+          scalefactor     : the file's x/y scale factor: recorded metres / scalefactor are the
+                            frame's nm (the browser hands the scale in force at the file's time)
+          hampel_defaults, sgolay_defaults : the filter box's starting values (every filter off)
+          cmap            : the maps' colour map
+          divide_iv, iv_broadening, iv_zero_sub, iv_broadened : the window's own 'Feenstra'
+                            toggle's starting state and the Feenstra settings (the companion's
+                            boxes; feenstra_width gives the width the division uses)
+          channel         : 'didv' or 'iets'; a channel the file lacks falls back to the first
+                            it holds
+          averages        : the averaging.Averages registry of the 'add' buttons (the
+                            browser's); None makes one at the first add
+          fit_settings    : the keyword arguments of Fit.select_model for 'Send to fit', plus
+                            'use_cache'
+          drift, auto_on, manual_on : the directory's drift.Drift and the starting states of
+                            the window's own 'auto drift' / 'manual drift' toggles (off without
+                            a Drift)
+        """
         self.grid = grid
         self.scalefactor = scalefactor
         self.cmap = cmap
@@ -106,12 +156,16 @@ class Map:
         # its spectrum's chained position (where the sweep started, by the time from the grid's first
         # spectrum: Drift.result 'xy_corr', the same chain that places the topo) plus the drift within
         # the sweep up to that energy (the sweep's dwell per point times the energy index: 'shift'), both
-        # from the file's velocity (the before/after topo pair's, auto or manual; the stripe matching never
-        # enters here); the embedded topo is drawn as quads with every pixel at its chained position
-        # (_draw_topo, plots.PixelMap: nothing is clipped), the frame widens to hold every shifted pixel
-        # (_drift_bounds), and the spectra's drift lines are drawn on both panels in the auto or the
-        # manual colour.  'drift window' opens the file's before and after topos for marker pairs
-        # (drift.DriftWindow), whose span refreshes the maps at once.
+        # from the file's velocity (the before/after topo pair's, auto or manual).  Drift.result is asked
+        # with the grid's stored fast-axis state (stripe None), so when the stripe matching is set for the
+        # grid its placement of the lines along the fast axis and their measured forward compression
+        # enter the chained positions and the within-sweep shifts as well, and the result is made even
+        # with both toggles off (then with no slow-axis drift).  The embedded topo is drawn as quads with
+        # every pixel at its chained position (_draw_topo, plots.PixelMap: nothing is clipped), the frame
+        # widens to hold every shifted pixel (_drift_bounds; with a toggle on), and the spectra's drift
+        # lines are drawn on both panels in the auto or the manual colour (with a toggle on).  'drift
+        # window' opens the file's before and after topos for marker pairs (drift.DriftWindow), whose
+        # span refreshes the maps at once (Drift.subscribe, below).
         self.drift = drift
         self.auto_on = bool(auto_on and drift is not None)
         self.manual_on = bool(manual_on and drift is not None)
@@ -283,10 +337,12 @@ class Map:
         plt.show()
 
     def is_open(self):
+        """True while the window's figure exists (tested on the Figure itself, not its number)."""
         return widgets.figure_is_open(self.fig)
 
     @property
     def avg_on(self):
+        """The 'Average' state (widgets.StackControls); stack_on and substack_on are the 'stack' and 'substack' states."""
         return self.stacks.average
 
     @property
@@ -298,13 +354,13 @@ class Map:
         return self.stacks.substack
 
     def set_divide_iv(self, flag, broadening=0.0):
-        """The window's 'Feenstra' state (or its broadening) changed: recompute the maps."""
+        """The window's 'Feenstra' state (or its broadening) set and the maps recomputed (the toggle's handler and callers outside the window)."""
         self.divide_iv = bool(flag)
         self.iv_broadening = float(broadening)
         self.recompute()
 
     def _on_feenstra_toggle(self, flag):
-        """The window's own 'Feenstra' toggle; a file without the Current channel puts it back."""
+        """The window's own 'Feenstra' toggle: the maps recomputed with the division on or off; a file that cannot be divided (no Current channel: recompute printed why) puts the toggle back."""
         flag = bool(flag)
         if flag == self.divide_iv:
             return
@@ -342,15 +398,21 @@ class Map:
     # --- the drift (the window's own 'auto drift' / 'manual drift' toggles, the drift window) ---
 
     def _drift_active(self):
+        """True with a Drift at hand and a toggle on (the frame widening and the drift lines need this)."""
         return self.drift is not None and (self.auto_on or self.manual_on)
 
     def _drift_result(self):
         """
-        Drift.result of the grid for the window's toggles (the chained
-        placement: 'xy_corr' the corrected start of every spectrum, 'pix'
-        the corrected topo pixels, 'shift' the drift within every sweep),
-        computed once per toggle state; None with both toggles off or when
-        no correction can be made (the console says why).
+        Drift.result of the grid for the window's toggles and the grid's
+        stored fast-axis state (the chained placement: 'xy_corr' the
+        corrected start of every spectrum, 'pix' the corrected topo pixels
+        per pass, 'shift' the drift within every sweep, 'source' the
+        velocity's rule), computed once per toggle state (_drift_res; False
+        stands for "none"); None with both toggles off and the stripe
+        matching off, or when no correction can be made (the console says
+        why).  With both toggles off but the stripe matching set, the
+        result still places the lines along the fast axis with no slow-axis
+        drift (Drift.result's 'none (stripe match only)' model).
         """
         stripe = self.drift is not None and self.drift.fast_state(self.grid, None, self.auto_on, self.manual_on) != 'off'
         if not (self._drift_active() or stripe):
@@ -387,8 +449,8 @@ class Map:
         chained shift (where its spectrum started, by the time from the
         grid's first spectrum: Drift.result 'xy_corr') plus the drift within
         its sweep up to that energy point (the sweep's dwell per point times
-        the energy index: 'shift'), rotated into the scan frame; None with
-        the toggles off or without a drift model.
+        the energy index: 'shift'), rotated into the scan frame; None
+        without a result (_drift_result) or without energy points.
         """
         res = self._drift_result()
         chain = self._chain_shift()
@@ -423,8 +485,9 @@ class Map:
         """
         The limits [l, r, b, t] of the frame with a drift source on: the
         recorded frame widened to hold every map pixel at every energy and
-        every topo pixel at their shifts (nothing drawn leaves the view).
-        Memoized with the result.
+        every topo pixel at their shifts (nothing drawn leaves the view);
+        the recorded frame itself without a result.  Memoized with the
+        result (_bounds).
         """
         if self._bounds is not None:
             return self._bounds
@@ -512,9 +575,11 @@ class Map:
     def _frame_lines(self):
         """
         The spectra's drift lines in the frame (nm), (n, npts, 2): every
-        sweep's polyline through its sweep (Drift.sweep_lines: the line's
-        forward compression along the line where measured, the model
-        otherwise), with the toggle on; None otherwise.
+        sweep's polyline from its corrected start through its position at
+        every energy point (Drift.sweep_lines: the line's forward
+        compression along the line where measured, the model otherwise),
+        with a drift toggle on; None otherwise.  Memoized per toggle state
+        (_lines_memo).
         """
         if not self._drift_active():
             return None
@@ -526,6 +591,7 @@ class Map:
         return self._lines_memo[1]
 
     def _frame_lines_compute(self):
+        """The drift lines of _frame_lines computed: Drift.sweep_lines (absolute metres) into the frame's nm."""
         try:
             L = self.drift.sweep_lines(self.grid, None, None, self.auto_on, self.manual_on)
         except Exception as exc:
@@ -570,7 +636,7 @@ class Map:
         self._drift_windows.append(w)
 
     def _refresh_drift(self):
-        """The drift state applied anew: the result dropped, the topo and the maps redrawn."""
+        """The drift state applied anew (a toggle, a sweep view, a change in any drift window): the memoized result, bounds and lines dropped, the pixel maps removed, the topo and the maps redrawn."""
         self._drift_res = None
         self._bounds = None
         self._lines_memo = None
@@ -583,6 +649,7 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def _clear_pixel_maps(self):
+        """Every PixelMap of the maps removed and the grid view's images forgotten (made again at the next draw)."""
         for pm in self._pixel_maps.values():
             try:
                 pm.remove()
@@ -653,6 +720,7 @@ class Map:
         return True
 
     def _feenstra_refresh(self):
+        """The companion redrawn when it is open (after every marker or map change)."""
         w = getattr(self, 'feenstra', None)
         if w is not None and w.is_open():
             w.refresh()
@@ -682,7 +750,13 @@ class Map:
         return c.reshape(self.n_e, g.n_lines, g.n_fast)
 
     def _curve_items(self, cube):
-        """The plots.draw_marker_curves items of the current marker state for a cube (n_e, n_lines, n_fast)."""
+        """
+        The plots.draw_marker_curves items of the current marker state for a
+        cube (n_e, n_lines, n_fast): per marker its pixel's curve (NaN for a
+        never-acquired pixel), colour, label '(x, y) nm', key = its y (the
+        ordering axis); per group its members, the plain mean of its
+        acquired members' curves (NaN when none), colour, label, centre y.
+        """
         markers = []
         for i, px in enumerate(self.marker_px):
             x, y = self.pixel_xy(px)
@@ -698,6 +772,7 @@ class Map:
         return markers, groups
 
     def _curve_texts(self, quantity=None):
+        """The texts of plots.draw_marker_curves for the window's quantity (or another: the companion's)."""
         q = self._quantity() if quantity is None else quantity
         return {'ylabel': f"{q} (arb. units)", 'ylabel_offset': f"{q} (arb. units, offset)",
                 'title_markers': f"{q} at markers", 'stack_where': ", blocks by centre (highest y at the top)"}
@@ -766,6 +841,7 @@ class Map:
         return cubes
 
     def _feenstra_view_dict(self, g, at, versions, q):
+        """The feenstra_view dict of kind 'map' (the keys feenstra.FeenstraWindow lists) around the versions."""
         return {'kind': 'map',
                 'title': f"{g.name}: map {at} ({self.e_index + 1} of {self.n_e})",
                 'energy': self.V,
@@ -781,6 +857,17 @@ class Map:
                 'cmap': self.cmap}
 
     def recompute(self):
+        """
+        The maps: every spectrum of the grid through the pipeline
+        (Sm4File.curves with the filter box's settings, the division when
+        'Feenstra' is on with the Feenstra settings, the channel, and the
+        calibrate / normalize flags), energy ascending, reshaped to (n_e,
+        n_lines, n_fast) with never-acquired pixels NaN; then the single
+        view (and the grid view when shown) redrawn.  A grid that cannot be
+        processed (no Current channel for the division, no such channel)
+        leaves self.maps as it was with the reason printed: the callers
+        test `self.maps is before` to put their control back.
+        """
         hp, sp = self.filters.params()
         g = self.grid
         try:
@@ -800,6 +887,7 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def _quantity(self):
+        """Name of the displayed quantity: dI/dV, (dI/dV)/(I/V), or d2I/dV2 (IETS), with the flags that are off."""
         q = ("(dI/dV)/(I/V)" if self.divide_iv else "dI/dV") if self.channel == 'didv' else "d2I/dV2 (IETS)"
         return q + ("" if self.calibrate else ", uncalibrated") + ("" if self.normalize else ", not normalized")
 
@@ -810,6 +898,16 @@ class Map:
         return plots.finite_range(self.maps)
 
     def draw_single(self):
+        """
+        The single view's map at the current energy (e_index): a
+        plots.PixelMap with the pixel shifts when a drift result places
+        them (_frame_shift), else plots.draw_heatmap; the colour scale of
+        _limits and the slice's γ; the colour bar labelled with the
+        quantity and its units; the frame limits; the title ("... drift
+        corrected (<source>)" with shifts); the γ box set to the slice; then
+        the markers and the curve panel (_redraw_markers).  The topo panel
+        is _draw_topo's.
+        """
         ax = self.ax_map
         ax.clear()
         self.cax_map.clear()
@@ -843,6 +941,14 @@ class Map:
         self._redraw_markers()
 
     def draw_grid(self):
+        """
+        The grid view: the topo cell when stale (_draw_topo, small), then
+        every energy's map on the colour scale of _limits with its own γ:
+        with pixel shifts a new plots.PixelMap each time (the old one
+        removed), else an image made once (plots.draw_heatmap) and updated
+        after (plots.update_heatmap); the energy written inside the map at
+        the first draw; each map's colour bar redrawn.
+        """
         if self._grid_topo_stale:
             self._draw_topo(self.grid_topo_ax, small=True)
             self._grid_topo_stale = False
@@ -917,6 +1023,7 @@ class Map:
         self._redraw_markers()
 
     def _on_direction(self, label):
+        """The 'topo pass' radio: the embedded topo redrawn from the chosen pass (both views); nothing without a topo page."""
         if label == self.direction or not self.grid.topo_pages:
             return
         self.direction = label
@@ -934,6 +1041,7 @@ class Map:
         ax.set_ylim(min(b, t), max(b, t))
 
     def _apply_view(self):
+        """Show the axes and γ boxes of the current view (single or grid), hide the other's; the toggle button names the other view."""
         single = self.view == 'single'
         for ax in (self.ax_topo, self.ax_map, self.cax_map, self.ax_curve, self.ax_topo_cbar):
             ax.set_visible(single)
@@ -946,12 +1054,14 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def toggle_view(self):
+        """'Grid view' / 'Single view': the other view (the grid drawn when switched to)."""
         self.view = 'grid' if self.view == 'single' else 'single'
         if self.view == 'grid':
             self.draw_grid()
         self._apply_view()
 
     def step(self, d):
+        """'< E' / 'E >': the single view's energy index moved by d (-1 or +1), clipped to the axis."""
         self.e_index = int(np.clip(self.e_index + d, 0, self.n_e - 1))
         self.draw_single()
         self.fig.canvas.draw_idle()
@@ -978,6 +1088,7 @@ class Map:
         return int(px[0]) * self.n_fast + int(px[1])
 
     def pixel_acquired(self, px):
+        """Whether the spectrum of grid pixel (line, fast) is kept (STS.acquired; False past the recorded spectra)."""
         col = self.pixel_col(px)
         return bool(col < len(self.grid.acquired) and self.grid.acquired[col])
 
@@ -1000,9 +1111,11 @@ class Map:
         return [(int(lines.ravel()[i]), int(fasts.ravel()[i])) for i in order[:m]]
 
     def groups(self):
+        """Marker indices per group (membership by index, widgets.MarkerGroupControls.groups)."""
         return widgets.MarkerGroupControls.groups(self.group_sizes)
 
     def group_of(self, i):
+        """The group index of marker i."""
         return widgets.MarkerGroupControls.group_of(self.group_sizes, i)
 
     DEFAULT_GROUP_SIZE = 2     # markers of a group added while there is no group to copy the size from
@@ -1027,6 +1140,7 @@ class Map:
         return ctr
 
     def group_center_xy(self, members, g=None):
+        """A group's centre in the frame (nm): pixel_xy of group_center (a fractional pixel is allowed)."""
         return self.pixel_xy(self.group_center(members, g))
 
     def group_order(self):
@@ -1035,17 +1149,29 @@ class Map:
         return sorted(range(len(groups)), key=lambda g: (-self.group_center_xy(groups[g], g)[1], g))
 
     def marker_color(self, i):
+        """Average off: one colour per marker; Average on: the group's colour."""
         k = self.group_of(i) if self.avg_on else i
         return self.M_COLORS[k % len(self.M_COLORS)]
 
     def group_label(self, g, members):
+        """The group's legend label: 'avg <g+1>: (x, y) nm' of its centre, or 'no markers'."""
         if not members:
             return f"avg {g + 1}: no markers"
         cx, cy = self.group_center_xy(members, g)
         return f"avg {g + 1}: ({cx:.2f}, {cy:.2f}) nm"
 
     def _redraw_markers(self):
-        """Redraw the markers on the map and the topo and the curve panel."""
+        """
+        Redraw the marker artists on the map and the topo panel, then the
+        curve panel, the slider stack and the companion: with a drift
+        toggle on the spectra's drift lines (plots.draw_drift_lines, in the
+        source's colour), every marker as a hollow square in its colour,
+        and with Average on every non-empty group's centre as a black X.
+        Picking: on the map with Average on the centres are picked (the
+        markers are not, so a group moves as one); elsewhere the markers
+        are picked and the centres never (a Line2D without a picker is
+        unpickable).  Nothing is drawn before the first recompute.
+        """
         for art in self._marker_artists:
             try:
                 art.remove()
@@ -1093,6 +1219,7 @@ class Map:
     # --- dragging ---
 
     def _on_pick(self, event):
+        """A press on a marker ('marker_<i>') or a group centre ('_avg_<g>'): it becomes the dragged object."""
         artist = event.artist
         label = getattr(artist, 'get_label', lambda: '')()
         if not isinstance(label, str):
@@ -1107,7 +1234,7 @@ class Map:
                 self._active_obj = ('avg', g)
 
     def _on_motion(self, event):
-        """Drag: a marker to the pixel under the cursor; a group's centre by the same pixel offset for every member."""
+        """Drag (on the map or the topo): a marker to the pixel under the cursor; a group's centre by the same whole-pixel offset for every member, clipped so no member leaves the grid."""
         if self._active_obj is None or event.xdata is None or event.ydata is None:
             return
         if event.inaxes not in (self.ax_map, self.ax_topo):
@@ -1136,6 +1263,7 @@ class Map:
         self._redraw_markers()
 
     def _on_release(self, event):
+        """End of a drag."""
         self._active_obj = None
 
     # --- sliders and toggles ---
@@ -1160,7 +1288,7 @@ class Map:
         self._redraw_markers()
 
     def _on_avgs_change(self, n):
-        """'avgs': number of groups (grow at the free diagonal slot farthest from the others; shrink drops the last)."""
+        """'avgs': the number of groups.  Growing adds each new group with the last group's size (DEFAULT_GROUP_SIZE when there is none or it is empty) at the free slot of the diagonal layout farthest from the others (widgets.MarkerGroupControls.grow_groups); shrinking drops the last groups with their markers."""
         groups = self.groups()
         if n == len(groups):
             return
@@ -1182,7 +1310,7 @@ class Map:
         self._redraw_markers()
 
     def _refresh_group_sliders(self):
-        """One 'Markers' slider and its buttons per group, ordered as the groups' centres (highest y at the top)."""
+        """One 'Markers' slider and its buttons per group, ordered as the groups' centres (highest y at the top); the single view's panels raised above the stack (PANEL_CLEARANCE) when it would run into them, the γ box re-attached."""
         self.groups_ctl.refresh(self.group_order(), self.group_sizes)
         top = self.groups_ctl.stack_top()
         bottom = max(self.PANEL_BOTTOM_MIN, top + self.PANEL_CLEARANCE)
@@ -1198,7 +1326,7 @@ class Map:
     # --- add to averages ---
 
     def _averages(self):
-        """The registry the 'add' buttons use: the caller's, else one made here on the file's folder."""
+        """The averaging.Averages registry the 'add' buttons use: the caller's, else one made here at the first use on the file's folder (its new windows' Feenstra toggle on, with this window's broadening, settings, channel and fit_settings)."""
         if self.averages is None:
             self.averages = Averages(os.path.dirname(os.path.abspath(self.grid.path)),
                                      self.hampel_defaults, self.sgolay_defaults,
@@ -1238,6 +1366,7 @@ class Map:
         return selection
 
     def _picker(self):
+        """The pop-up list of the open averages (widgets.AveragePicker), made at the first use."""
         if self._avg_picker is None:
             self._avg_picker = widgets.AveragePicker(self.fig, self._averages())
         return self._avg_picker
@@ -1350,6 +1479,7 @@ class Map:
     # --- the figure composer ('add to plot' x 3, 'new plot') ---
 
     def _composer(self):
+        """The window's figure composer (composer.FigureComposer, titled '<file>: figure'), made at the first use."""
         if self.composer is None:
             self.composer = FigureComposer(f"{self.grid.name}: figure")
         return self.composer
@@ -1363,7 +1493,9 @@ class Map:
         shifts with a drift source on); 'spectra': every marker's spectrum
         (Average off) or every group's average (Average on), each with the
         marker's pixel centre or the group's centre, and the curve panel's
-        limits (the curve's own with stack on).
+        limits (the curve's own finite range with Average and stack on,
+        since the panel then shows offset curves).  A refusal (no maps yet,
+        no topo page) is printed as 'add to plot: ...'.
         """
         c = self._composer()
         try:
@@ -1424,7 +1556,13 @@ class Map:
         and normalization on (a console line says so when the window's boxes
         are off), divided by I/V when Feenstra is on (quantity 'ratio'); the
         unfiltered counterpart goes along for the noise estimate, the raw
-        columns for refits.  dI/dV only; needs the Current channel.
+        columns for refits.  dI/dV only; needs the Current channel.  Each
+        send is labelled '<file path> | marker at (x, y) nm' or '... |
+        average of n markers at ...' (' over I/V' with Feenstra on, so the
+        ratio's fit histories are separate); with fit_settings 'use_cache'
+        on an up-to-date fit history of that label opens instead of a fresh
+        model selection (Fit.has_cache / from_cache).  A refusal is printed
+        as 'Send to fit: ...'.
         """
         try:
             self._send()
@@ -1432,6 +1570,7 @@ class Map:
             print(f"Send to fit: {exc}")
 
     def _send(self):
+        """The send of _send_to_fit; raises on a refusal (IETS shown, no Current channel)."""
         g = self.grid
         if self.channel != 'didv':
             raise ValueError("the fit models dI/dV; the window shows IETS.")
@@ -1452,6 +1591,8 @@ class Map:
         i_bias = int(np.argmin(np.abs(V - g.V_bias)))
 
         def processed(cols, hampel, sgolay):
+            # The pipeline on the raw columns with calibrate and normalize at their defaults (both on: the
+            # fit's pipeline), energy ascending; areas: the normalization areas per column (amps).
             lia = g.lia[:, cols]
             iv = g.iv[:, cols]
             c, areas = STS.process_arrays(energy, lia, iv, hampel, sgolay, div, self.iv_width(),

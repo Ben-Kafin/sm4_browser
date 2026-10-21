@@ -2,16 +2,18 @@
 Calibration of the lock-in channels against the co-acquired I(V) current:
 the per-curve gain-plus-offset regression referenced at the sample nearest
 0 V (the method in use before 2026-10-16), and its double-derivative
-counterpart for the IETS (second-harmonic) channel.  One of the three
-interchangeable calibration files (calibration_zeroref, the free-intercept
-calibration_gainoffset, the scale-only calibration_stretch): the one
-renamed to calibration.py is the package's calibration, all three share
-the function names and the return contract (calibrate and calibrate_iets
-return (calibrated, fits), every fit entry carrying at least a, c, rms,
-with X / Z, model, residual, and b where the method has one).  Plain
-arrays in, columns = spectra; the pipeline (sts.STS.process_arrays) calls
-these after the current has been through the filters and before the
-Feenstra division.  Run as a file, the __main__ block draws one file's
+counterpart for the IETS (second-harmonic) channel.  This file was written
+as one of three interchangeable calibration files (calibration_zeroref,
+this one; the free-intercept calibration_gainoffset; the scale-only
+calibration_stretch), of which the one renamed to calibration.py is the
+package's calibration; the repository carries only this one, and the
+other two methods appear in the __main__ block for comparison.  The
+contract they share: calibrate and calibrate_iets return (calibrated,
+fits), every fit entry carrying at least a, c, rms, with X / Z, model,
+residual, and b where the method has one.  Plain arrays in, columns =
+spectra; the pipeline (sts.STS.process_arrays) calls these on the acquired
+columns only, after the current has been through the filters and before
+the Feenstra division.  Run as a file, the __main__ block draws one file's
 calibration (its inputs, the fit in the I(V) frame, the calibrated curve
 in the dI/dV frame with the other two methods for comparison, and the cost
 surface), one sweep at a time.
@@ -106,18 +108,29 @@ def calibrate(energy, curves, iv, vmod=None):
     Parameters
     ----------
     energy : ndarray, shape (npts,)
-        The energy axis of the columns, any order.
+        The energy axis of the columns (V), any order.
     curves : ndarray, shape (npts, N)
-        The (optionally filtered) LIA data (the loader's, in its page's units) in the file's column ordering,
-        i.e. *before* the spatial-reversal / transpose done for plotting.
+        The LIA data as the loader gives it (physical units, the page's
+        RHK_Zunits; never filtered) in the file's column ordering, i.e.
+        *before* the spatial-reversal / transpose done for plotting.
     iv : ndarray or None
-        Matching I(V) data with the same shape and column ordering.
+        Matching I(V) data with the same shape and column ordering, in the
+        Current page's units (A): the recorded current, through the
+        pipeline's filters when they are on.  None raises ValueError.
+    vmod : float or None
+        The modulation amplitude (V), accepted for the pipeline's call and
+        not used by this method (see the comment above).
 
     Returns
     -------
-    calibrated : ndarray, same shape as *curves*
+    calibrated : ndarray, same shape as *curves*, float64: a_j * LIA_j + b_j
+        per column, in I units per V (A/V for pages in A)
     fits : list of ColumnFit, one per column (a, b, c = I(V_ref), X, model,
         residual, rms; the arrays in the original energy ordering)
+
+    A column whose X and V are linearly dependent (for instance an all-zero
+    LIA column, X = 0 everywhere) makes M singular and numpy.linalg.solve
+    raises LinAlgError; the pipeline passes the acquired columns only.
     """
     if iv is None:
         raise ValueError(
@@ -210,11 +223,17 @@ def calibrate_iets(energy, curves, iv, vmod=None):
     solved with numpy.linalg.solve as calibrate solves its 2 by 2 system.
     The calibrated curve is a_j · S_j(V) + b_j (in the Current page's units
     per V²), in the original energy ordering.  (The method in use before
-    2026-10-16, unchanged.)
+    2026-10-16, unchanged.)  As in calibrate, V is the energy axis itself,
+    not V − V_ref, so a window without 0 V biases the fit.
+
+    Parameters: as calibrate (energy in V, any order; curves the
+    second-harmonic page's data as the loader gives it, never filtered; iv
+    the recorded current through the pipeline's filters, None raises
+    ValueError; vmod accepted and not used).
 
     Returns
     -------
-    calibrated : ndarray, same shape as *curves*
+    calibrated : ndarray, same shape as *curves*, float64
     fits : list of IetsColumnFit, one per column (a, b, c, d = I(V_ref), Z,
         model, residual, rms; the arrays in the original energy ordering)
     """

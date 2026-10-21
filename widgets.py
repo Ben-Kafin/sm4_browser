@@ -6,10 +6,11 @@ sits), one wrapper per kind with one interface (value, set, on_change,
 show, enable, place), and the composite controllers that several windows
 share so that same-named controls are the same code: FilterControls,
 PipelineBox, FeenstraSettings, StackControls, MarkerGroupControls,
-TopoProcessorBox, ResampleControls, RunControls, GammaBox, NameBox,
-StepButtons, AveragePicker, ViewNavigator, DragPath (the browser's
-section path), PairMarkers (the marker pairs of the drift window's
-two topos, seeded by the auto velocity).  The drawing of data lives in
+TopoProcessorBox, ResampleControls, RunControls, GammaBox, RangeBox,
+NameBox, StepButtons, AveragePicker, ViewNavigator (the scan area's zoom
+and pan), DragPath (the browser's section path), PairMarkers (the marker
+pairs of the drift window's two topos, each topo at its own scale, the
+partners seeded by the velocity the window gives).  The drawing of data lives in
 plots.py and never touches a widget; a window owns its data and state,
 draws through plots, and receives events from here.
 
@@ -80,7 +81,7 @@ SPECS = {
     'auto drift': _spec('check', 1.1, 0.38),                      # the tracker's drift (KAZE pairs)
     'manual drift': _spec('check', 1.25, 0.38),                   # the marker / typed drift (the MATLAB method)
     'stripe match': _spec('button', 1.2, 0.36),                   # grids: opens the stripe window (stripe.StripeWindow)
-    'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift)
+    'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift); no window builds it today
     'cmap norm': _spec('check', 1.4, 0.38),
     'crop': _spec('check', 0.8, 0.38),
     'WKB background': _spec('check', 1.7, 0.32),
@@ -1881,7 +1882,11 @@ class ViewNavigator:
     the axes, R saves the current view and space returns to the saved view
     (a region of the absolute frame, so it holds across file changes; a
     console line says when nothing is saved yet).  Nothing happens while
-    the toolbar's pan or zoom mode is active.
+    the toolbar's pan or zoom mode is active, nor while the navigator is
+    frozen (freeze(True): the browser freezes it while the section path is
+    edited; a drag in progress is dropped); hold(predicate) registers
+    another controller's claim on a press (DragPath while editing), so no
+    pan starts from it.
     The axes box never changes size or shape: the aspect is kept equal by
     adjusting the axis ranges (adjustable 'datalim'), and every view set
     here is first widened on its shorter side to the box's own aspect
@@ -2251,19 +2256,30 @@ class PairMarkers:
     pair k in its own colour (plots.marker_color).  resolve_on(path, x, y)
     -> dict with 'xy_m' (absolute metres), 't' (the pixel's acquisition
     time), and 'px_m' (the pixel size) gives a marker its data at placement
-    and after a drag.  `seed(path, xy_m, t)` -> (other path, xy_m, t, px_m)
-    or None (optionally a fifth element, the velocity's source) gives the
-    partner the current velocity places (drift.py, "Seeded markers"): a
-    placed marker places its partner in the other panel at once when that
-    panel is level with it (a click that completes a pair by hand seeds
-    nothing); dragging the placed
+    and after a drag (x, y in the panel's drawing units).  `seed(path,
+    xy_m, t)` -> (other path, xy_m, t, px_m) or None (optionally a fifth
+    element, the velocity's source) gives the partner the current velocity
+    places (drift.py, "Seeded markers"): a placed marker places its partner
+    in the other panel at once when that panel is level with it (a click
+    that completes a pair by hand seeds nothing); dragging the placed
     marker re-seeds an unmoved partner; dragging the partner adjusts it
-    (moved = more than half a pixel off the seeded spot).  The markers are a
-    draft: the window applies them.  span() gives (earlier path, later path,
-    markers (n, 6): x_A, y_A, t_A, x_B, y_B, t_B) or (None, None, None)
-    while a topo has no marker; confirmable() is True when every pair is
-    seeded and unmoved; pair_lines() the readout lines per pair; draw()
-    redraws the markers (the pairs' arrows on every panel, from the earlier
+    (moved = more than half a pixel off the seeded spot).  `to_display(xy_m,
+    path)` -> drawing units of an absolute position on the panel of `path`
+    (the drift window: each topo at its own scale); without it a seeded
+    partner is placed with the clicked marker's own ratio of drawing units
+    to metres (one scale for both panels).  `on_count(n)` is told when a
+    click raised the pair count (the window's 'Markers' slider follows).
+    The markers are a draft: the window applies them.  span() gives (earlier
+    path, later path, markers (n, 6): x_A, y_A, t_A, x_B, y_B, t_B) or
+    (None, None, None) while a topo has no marker; confirmable() is True
+    when every pair is seeded and unmoved; seed_sources() the velocity
+    sources that seeded the unmoved markers; pair_lines() the readout lines
+    per pair; status() the marker counts per panel; set_pairs(n) and
+    clear() change the draft (and fire); retarget(panels) takes new panels
+    with an empty draft (the drift window stepping to another pair);
+    restore(markers, to_display, kind) puts a stored span's markers back (a
+    confirmed span's later markers as seeded and unmoved); draw() redraws
+    the markers (the pairs' arrows on every panel, from the earlier
     marker's position to its partner's, plots.draw_drift_markers);
     on_change(callback) runs callback() after every placement, drag, or
     removal.
@@ -2503,7 +2519,7 @@ class PairMarkers:
         self.markers[other][k] = rec
 
     def _scale(self, m):
-        """Drawing units per metre of a marker (its 'xy' over its 'xy_m'; the panels share one absolute scale)."""
+        """Drawing units per metre of a marker (its 'xy' over its 'xy_m'); used for a seed only without to_display, when the panels share one scale."""
         xy, xy_m = np.asarray(m['xy'], dtype=np.float64), np.asarray(m['xy_m'], dtype=np.float64)
         j = int(np.argmax(np.abs(xy_m)))
         return float(xy[j] / xy_m[j]) if xy_m[j] != 0 else 1.0

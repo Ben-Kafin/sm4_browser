@@ -1,11 +1,52 @@
 """
-Smoke test of the browser on a synthetic experiment (checks/synth.py), offscreen.
+The feature checks of the package on a synthetic experiment (checks/synth.py), offscreen.
 
-    QT_QPA_PLATFORM=offscreen python -m sm4_Browser.checks.smoke_browser
+    PYTHONDONTWRITEBYTECODE=1 python -m sm4_Browser.checks.smoke_browser [names]
 
-Builds the standard experiment in a temporary directory, opens the Browser (the event loop is not
-entered), steps through every file, and exercises the controls added by the upgrade plan.  Prints
-one line per check and exits non-zero on the first failure.
+run from the parent directory of a folder named sm4_Browser (the package is imported under that
+name; the repository's folder is sm4_browser, so link or copy it to that name first).  The runner
+configures Qt's offscreen platform itself with a 4200 x 2600 screen (_offscreen_platform) when
+QT_QPA_PLATFORM is unset or plain 'offscreen'; any other setting is left alone.  Every argument
+given is a substring: only the checks whose name contains one of them run (e.g. 'K1', 'drift').
+
+Builds the standard experiment (synth.standard: topo, topo, grid, point, topo) in a temporary
+directory, opens the Browser once at scale factor 1 (the event loop is not entered: plt.show
+returns at once), then runs every @check in order, one line 'PASS  <name>' or 'FAIL  <name>' with
+the traceback, and exits non-zero when any failed.  One @check per feature, named by family:
+
+  (first)  step through every file.
+  D   the scan area's view: D1 double-click centring at the same zoom, D2 the R key saves the view
+      and space returns to it, D3 Home (toolbar and key) returns to the full extent and the scroll
+      zooms.
+  E   marker groups down to zero and back in the Line window, the Map window and align.marker_map.
+  A   the scan layer: A2 images persist across steps and under the show modes, the occlusion rule;
+      A3 the drift transform equals the per-pixel resampling, a drift change only moves the images;
+      A4 the show modes.
+  B   B1 the step filter: kinds and minimum duration.
+  C   C1 point colours: grey before the current topo, blue after.
+  G   the windows: G1-G5 the drift window (marker pairs, partners seeded both ways, a typed
+      velocity, arrows), G5 the stripe window (handles, a drag along the line, the sets per setting,
+      the cache), G6 the pass order and the Line window's rows under the placement, G1 the Line
+      window's 'E range' / 'x range' boxes, G2 the Map window under the drift, G3 the whole map into
+      an average and the figure composer, G4 the drift window's pair stepping, G7 the drift window's
+      frames, titles and one centred view.
+  H   stripe matching states in the browser and the Topo window.
+  F   F1-F3 the E-markers and the energy slice (Line window, line average).
+  T   T1 the title rule (a file name shown exactly as named).
+  I   item 1: I1 one text-size rule for every window kind at its design size, 2x and 0.5x; I2 short
+      labels and stamp titles in portrait and back; I3 the browser window's rule and native controls.
+  J   item 2: J1 the settings and computed stores by origin (a setting never changes the computed
+      file; deleted, it is rebuilt the same), J2 the carry-over of the earlier caches, J3 the
+      hand-set flags feeding the region, clean rule and navigation.
+  K   K1 the scale timeline: the first entry covers everything, later ones from their file's time;
+      every file and window at its own scale; drift readouts calibrated with the nominal; records
+      made with another scale are noted; a marker record stores its scale.
+  L   L1 the section path: editing with frozen navigation, add / drag / remove, off keeps the
+      points; measure, set scale (two-way, apply), the cross section along the path, clear.
+
+The checks share one browser and tidy up after themselves (windows closed, settings removed), so
+a failed check can leave state behind for the ones after it.  smoke_sweeps.py reuses make_browser,
+goto_kind, open_line and open_map.
 """
 import os
 import sys
@@ -45,6 +86,7 @@ CHECKS = []
 
 
 def check(name):
+    """Decorator: register fn(browser, experiment) as the check `name`, run in registration order."""
     def deco(fn):
         CHECKS.append((name, fn))
         return fn
@@ -52,6 +94,7 @@ def check(name):
 
 
 def make_browser(directory, **kw):
+    """A Browser on `directory` at scale factor 1 with plt.show returning at once (no event loop), its startup events processed."""
     from sm4_Browser.browser import Browser
     plt._RUNNING[0] = True              # plt.show() returns at once (no event loop in a test)
     b = Browser(directory, scalefactor=1.0, **kw)
@@ -60,6 +103,11 @@ def make_browser(directory, **kw):
 
 
 def run(selected=None):
+    """
+    Build the standard experiment in a temporary directory, open the browser on it and run every
+    registered check (those whose name contains one of `selected` when given), printing PASS or
+    FAIL with the traceback per check.  Returns True when every check run passed.
+    """
     tmp = tempfile.mkdtemp(prefix='sm4synth_')
     exp = synth.standard(tmp)
     synth.install(exp)
@@ -89,6 +137,7 @@ def _step_all(b, exp):
 
 
 def _axes_centre_global(canvas, ax):
+    """The centre of an axes as a global screen point (for the cursor) and in the canvas's pixels."""
     from sm4_Browser.qtplot import QtCore
     x0, y0, w, h = ax._px_rect()
     return canvas.viewport().mapToGlobal(QtCore.QPoint(int(x0 + w / 2), int(y0 + h / 2))), (x0 + w / 2, y0 + h / 2)
@@ -148,12 +197,14 @@ def _home(b, exp):
 
 
 def goto_kind(b, kind):
+    """Step the browser to the first file of `kind` ('topo', 'grid', 'point', ...) and return it (b.current)."""
     i = next(i for i, p in enumerate(b.files) if b.kinds[p] == kind)
     b._goto(i)
     return b.current
 
 
 def open_line(b):
+    """Open a Line window on the first grid (the browser's 'Line' button) and return it."""
     goto_kind(b, 'grid')
     n = len(b.children)
     b._on_line()
@@ -162,6 +213,7 @@ def open_line(b):
 
 
 def open_map(b):
+    """Open a Map window on the first grid (the browser's 'Map' button) and return it."""
     goto_kind(b, 'grid')
     n = len(b.children)
     b._on_map()
@@ -1150,6 +1202,7 @@ def _browser_text(b, exp):
 # ---------------------------------------------------------------------- #
 
 def _store_files(directory):
+    """(settings path, computed path, stamp) of the directory's two stores (caches.py)."""
     from sm4_Browser.caches import stamp_of
     from sm4_Browser.sm4file import list_sm4_files
     stamp = stamp_of(list_sm4_files(directory))
@@ -1157,6 +1210,7 @@ def _store_files(directory):
 
 
 def _json(path):
+    """A JSON file read whole."""
     import json
     with open(path, encoding='utf-8') as fh:
         return json.load(fh)
@@ -1389,6 +1443,7 @@ def _mouse(b, name, x, y, button=1, key=None):
 
 
 def _path_click(b, x, y, button=1):
+    """A press and release on the scan area at data (x, y): a path point while editing (button 3 removes one)."""
     _mouse(b, 'button_press_event', x, y, button)
     _mouse(b, 'button_release_event', x, y, button)
 
@@ -1480,6 +1535,7 @@ def _section_path(b, exp):
 
 
 def widgets_text(lo, hi):
+    """The text a range box shows for (lo, hi) (widgets.RangeBox.text_of)."""
     from sm4_Browser.widgets import RangeBox
     return RangeBox.text_of((lo, hi))
 

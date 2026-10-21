@@ -18,6 +18,7 @@ from sm4_Browser.checks import synth
 
 
 def build(directory, n_topos, n_px=96):
+    """A synthetic experiment of n_topos topos (n_px pixels, 30 nm, centres on a random walk) with a point file after every fourth; returns the Experiment."""
     exp = synth.Experiment(directory, v=(2e-12, -1e-12))
     t = synth.T_REF
     rng = np.random.default_rng(3)
@@ -33,6 +34,7 @@ def build(directory, n_topos, n_px=96):
 
 
 def run(n_topos=300):
+    """Build the directory, open the browser and print the timings of the module docstring (nothing is asserted)."""
     tmp = tempfile.mkdtemp(prefix='sm4perf_')
     t0 = time.perf_counter()
     exp = build(tmp, n_topos)

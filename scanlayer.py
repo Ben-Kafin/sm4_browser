@@ -5,11 +5,13 @@ moved, never re-imaged, when the drift changes.
 
 Display records (display_record): what the scan area needs of a file, kept for every file of the
 directory after it was read once, so a file released from memory is still drawn:
-  topo (and a grid's own topo): the processed image (nm, float32) for one (pass, topo processors)
-      key, the frame (extent, centre, angle, pixel scales, sizes) and the pixel clock as two
-      coefficients per pass (tcoef: t(i, j) - t(0, 0) = a_i i + a_j j, fitted to
-      Sm4File.pixel_times, exact for a topo image);
-  point / phase: the recorded position.
+  topo (and a grid's own topo): the processed image ('img', nm, float32) for one (pass, topo
+      processors) key ('key'), whether every pixel of it is finite ('complete': only a complete
+      image hides the images under it), the frame (geometry_record: extent, centre, angle, pixel
+      scales, sizes, start time) and the pixel clock as two coefficients per pass (tcoef: t(i, j)
+      - t(0, 0) = a_i i + a_j j, fitted to Sm4File.pixel_times, exact for a topo image);
+  point / phase: the recorded position ('xy_m');
+  every record: 'path', 'kind', 'name'.
 
 Drift as a transform (affine_matrix): with one constant velocity v per file (drift.PairDrift), the
 corrected position of pixel (i, j) is its recorded position - v (t(i, j) - t(0, 0)), and t is linear
@@ -24,9 +26,12 @@ below the overlays); show modes:
   'up to current' : every file up to the current one (MATLAB's hide^),
   'all'           : every file of the directory,
   'last 25'       : the browser's loaded set (the current file and the 24 before it, plus the
-                    covering topo), the behaviour before the layer existed.
-Files not yet read are read by the browser's loader (the records arrive while the window stays
-usable) and placed as they arrive.
+                    extra topos loaded with them: the nearest earlier topo when those 25 hold
+                    none, the topo covering a single point; browser._ensure_window), the
+                    behaviour before the layer existed.
+Files not yet read are read by the browser's worker processes (read_record; in the browser's
+thread when they cannot start), their records written to the disk cache below and placed as they
+arrive, the window staying usable meanwhile.
 """
 
 import hashlib
@@ -103,14 +108,19 @@ def display_record(f, direction, active):
 # --- the disk cache of display records (processed images, no drift: the drift is the transform) ---
 
 def cache_dir(directory, files):
-    """scan_cache_<date_time of the first file>/ beside the drift, sites, and header caches."""
+    """
+    scan_cache_<stamp>/ in the directory, beside the settings and computed stores (caches.py):
+    the stamp is every field of the first file's name stamp (sm4file.filename_stamp: year to
+    millisecond, each at least two digits), so it also carries the milliseconds the stores'
+    stamp leaves out; 'empty' without files.
+    """
     from sm4_Browser import sm4file
     stamp = '_'.join(f"{v:02d}" for v in sm4file.filename_stamp(files[0])) if files else 'empty'
     return os.path.join(directory, f"scan_cache_{stamp}")
 
 
 def _cache_name(path, direction, active):
-    """The cache file of one file's record: its name, size, time, the pass, the processors, the loader format."""
+    """The cache file of one file's record, <stem>_<12 hex>.npz: the hash over its name, size and modification time, the pass, the processors (0/1 flags), the loader format and CACHE_FORMAT; None when the file cannot be stat'ed."""
     from sm4_Browser import sm4file
     try:
         st = os.stat(path)
@@ -196,7 +206,11 @@ def affine_matrix(rec, k, direction, model):
     """
     The 3 x 3 matrix that takes the image's frame coordinates (drawing units, the extent times k)
     to absolute drawing units: rotation and translation to the recorded place, plus the drift
-    correction -v (t(i, j) - t(0, 0)) of the file's velocity (model.v, m/s; None: no correction).
+    correction -v (t(i, j) - t(0, 0)) of the file's velocity (model.v, m/s; None: no correction),
+    so pixel (0, 0) stays at its recorded place and the rest of the image is sheared by the clock
+    (tcoef) of `direction` ('average': the mean of the two passes' coefficients, none without
+    both; a pass without a clock takes the forward one; no clock: no correction).  `k` is the
+    file's drawing factor (calibrated nm per recorded metre).
     """
     th = np.deg2rad(rec['angle_deg'])
     R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
@@ -222,7 +236,7 @@ def affine_matrix(rec, k, direction, model):
 
 
 def record_corners(rec, k, direction, model):
-    """The four corners (drawing units) of a placed image under its drift correction, (4, 2)."""
+    """The four corners (drawing units at `k`) of a placed image under its drift correction, (4, 2), in the order (l, b), (r, b), (r, t), (l, t) of the frame."""
     l, r, b, t = [v * k for v in rec['extent_m']]
     uv = np.array([[l, b], [r, b], [r, t], [l, t]])
     m = affine_matrix(rec, k, direction, model)
@@ -240,7 +254,11 @@ def _covers(quads, order, complete):
     """
     For every image, the later complete images whose quadrilateral contains it entirely:
     {path: [paths in time order]} (occlusion: an image so covered is not painted).  quads
-    {path: (4, 2)} in metres (the drawn quad up to the uniform scale), order {path: rank}.
+    {path: (4, 2)} the corners in recorded metres under the drift correction (_occlusion passes
+    k = 1: the drawn quad when every file has the same scale factor; with per-file scale factors
+    a frame and its cover may be scaled differently on the scan area), order {path: rank},
+    complete {path: bool}.  A bounding-box test first, then every corner of the candidate inside
+    every edge of the cover, within a small tolerance.
     """
     paths = sorted(quads, key=lambda p: order.get(p, 0))
     if len(paths) < 2:
@@ -270,9 +288,9 @@ def _covers(quads, order, complete):
 class ScanLayer:
     """
     The persistent images of the scan area (the module docstring).  The browser hands it the
-    records (add), tells it the current state (update: visible paths, the current file, the scale,
-    each file's pass and drift model), and asks it which artists are its own (artists) so that its
-    redraw of the overlays leaves them.
+    records (add), tells it the current state (update: visible paths, the current file, the
+    drawing factor, one number or per file, each file's pass and drift model), and asks it which
+    artists are its own (artists) so that its redraw of the overlays leaves them.
     """
 
     Z_BOTTOM, Z_TOP = -1.0, -0.01        # every image between these (later files on top), overlays above
@@ -304,13 +322,16 @@ class ScanLayer:
             self._occ_dirty = True
 
     def has(self, path, key=None):
+        """True when the file has a record; with `key`, when that record is a point record or an image record made for that (pass, processors) key."""
         r = self.records.get(path)
         return r is not None and (key is None or 'img' not in r or r.get('key') == key)
 
     def artists(self):
+        """The image items of the layer (the browser's overlay redraw leaves them)."""
         return [it['im'] for it in self.items.values()]
 
     def _drop_item(self, path):
+        """The file's image item removed from the axes (the record kept)."""
         it = self.items.pop(path, None)
         if it is not None:
             try:
@@ -326,7 +347,7 @@ class ScanLayer:
     # --- the state ---
 
     def _occlusion(self, state, direction_of, model_of, wanted):
-        """The covers map for the drift state `state` (recomputed when it or the records changed)."""
+        """The covers map (_covers) for the drift state `state`, recomputed when it or the image records changed, over the records whose key is the wanted one; the corners in recorded metres (k = 1), whatever each file's drawing scale."""
         if not self._occ_dirty and state == self._occ_state:
             return
         quads, complete = {}, {}
@@ -348,8 +369,12 @@ class ScanLayer:
         every file, or k(path), each file at the scale in force at its own time (the browser's
         scale timeline, scales.Scales), so files of different temperature regimes sit at their
         true sizes side by side.  With `wanted(path)` given, a record made for another (pass,
-        processors) key is not shown (it waits for its new record).  Returns the corners (drawing
-        units) of the shown images, for the view's extent.
+        processors) key is not shown (it waits for its new record).  `direction_of(path)` gives a
+        file's pass, `model_of(path, record)` its drift.PairDrift (None: no correction); `state`
+        is a token of everything the placed positions depend on (the browser's _drift_state):
+        with one, the occlusion is recomputed when it changed and an image wholly under a later
+        complete visible image is hidden; with None (files still arriving) no image is hidden.
+        Returns the corners (drawing units) of the shown images, for the view's extent.
         """
         k_of = k if callable(k) else (lambda p, kk=float(k): kk)
         n = max(len(self.files), 1)

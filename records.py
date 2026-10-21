@@ -1,14 +1,32 @@
 """
 The saved records of an experiment directory, all in its 'averages'
-subfolder: the averaging windows' records <stem>_average.json (format 5:
-the files, the removed sweeps, the filters, the channel, the resampling,
-the Feenstra state and settings, the calibrate / normalize flags, the run),
-the Line window's marker records <file stem>_line<k>_markers.json, and the
-line-average records lineavg<N>_average.json; their paths, the name-to-stem
-rule, the atomic JSON writer, the fit-history reader, the rename of a
-record with its fit history, and the saved-records window
-(SavedAveragesWindow) that lists all three kinds and hands the chosen one
-to the browser's loaders.
+subfolder (AVG_SUBDIR), which also holds the fit histories
+(<stem>_fits.pkl and its numbered family) and the saved fits:
+  - the averaging windows' records <stem>_average.json (RECORD_FORMAT 5:
+    the index, name and send label, the files or selections in added
+    order, the removed sweeps, the channel, the filters, the resampling,
+    the Feenstra state and settings, the calibrate / normalize flags, the
+    last run's range and grid, the time of saving; averaging.
+    MultiAverageWindow.record);
+  - the Line window's marker records <file stem>_line<k>_markers.json
+    (LINE_RECORD_FORMAT 1: the file and line, the channel and sweep view,
+    the filters with their on / off states, the calibrate / normalize
+    flags, the Feenstra state and settings, the gamma, the energy and
+    position ranges, the topo rows, the marker groups, markers and
+    E-markers, the Average / stack / substack states, the scale factor the
+    window was made with ('scalefactor'), the time of saving;
+    line.Line.marker_record);
+  - the line-average records lineavg<N>_average.json (LINEAVG_RECORD_FORMAT
+    1: the members, each with its line, markers and the scale factor it
+    was made with, and the alignment; lineavg.py); a record is a line
+    average by its 'members' key, not by its name (is_lineavg_record).
+A record that carries a scale factor keeps the one it was made with; on
+reload the browser applies the scale timeline's and reports a difference
+(browser._record_scale).  Here live the paths, the name-to-stem rule
+(stem_of), the atomic JSON writer (write_json), the fit-history reader
+(read_cache), the rename of a record with its fit history (rename_record),
+and the saved-records window (SavedAveragesWindow) that lists all three
+kinds and hands the chosen entry to the browser (Browser.load_saved_average).
 """
 
 if __package__ in (None, ''):
@@ -93,15 +111,19 @@ def write_json(path, obj):
 
 
 def read_json(path):
+    """A JSON record read whole (the exceptions of open / json.load propagate)."""
     with open(path) as fh:
         return json.load(fh)
 
 
 def read_cache(path, up_to_date=True):
     """
-    The plain state dict of a fit history, or None: an up-to-date one only
-    (Fit.cache_up_to_date), or with up_to_date False any of a readable format
-    (format 2 or 3; for its label, not its data).
+    The plain state dict of a fit history (the pickle Fit._write_cache
+    writes), or None when the file cannot be unpickled or is not a dict of
+    a readable format (Fit._CACHE_FORMATS_READ: 2 or 3).  With up_to_date
+    (the default) only a history written from this loader is returned
+    (Fit.cache_up_to_date: its 'loader_format' is sm4file.LOADER_FORMAT);
+    with up_to_date False any readable one, for its label, not its data.
     """
     from sm4_Browser import fit
     try:
@@ -200,27 +222,33 @@ def rename_record(directory, old_stem, new_stem, name, label, tag=''):
 
 class SavedAveragesWindow:
     """
-    The saved records of the experiment directory, one row each, in three
+    The saved records of the experiment directory, one row each, in four
     sections: the averaging records <stem>_average.json of its 'averages'
     subfolder by the index stored in the record, descending (name, entries
     and sweeps, removed sweeps, the files' times, the filter settings, the
     number of fits in the newest up-to-date file of <stem>_fits.pkl's family
-    when there is one, 'fit history out of date' when only files written
-    from another loader exist, the time of saving),
-    then every fit history of the earlier label-named form
-    (<stamp>_average_of_..._fits.pkl in the directory itself) by
-    modification time; the Line window's marker records
-    <file stem>_line<k>_markers.json (file, line, groups and markers, the
-    time of saving); and the line-average records lineavg<N>_average.json
-    (name, members, the time of saving).  A click on a row selects it
-    (highlighted); 'load' hands the selected entry to the browser
-    (on_load(entry)); 'rescan' re-reads the directory.
+    when there is one, 'fit history out of date' when files of the family
+    exist but none was written from this loader, 'no fit history' without
+    any, the time of saving); then every fit history of the earlier
+    label-named form (<stamp>_average_of_..._fits.pkl in the directory
+    itself) by modification time, newest first; the Line window's marker
+    records <file stem>_line<k>_markers.json (file, line, groups and
+    markers, channel, Feenstra, the time of saving) by modification time;
+    and the line-average records lineavg<N>_average.json (name, the first
+    four members, channel, Feenstra, the time of saving) by index,
+    descending.  A record that cannot be read is reported on the console
+    and left out.  A click on a row selects it (highlighted); 'load' hands
+    the selected entry to the browser (on_load(entry),
+    Browser.load_saved_average); 'rescan' re-reads the directory.  The
+    window is a figure of size DESIGN with the rows drawn as text in one
+    axes (ROW_H of the figure per row, at most 0.78 in all).
 
     Entry dicts: kind ('record', 'old', 'line', 'lineavg'), text, and for a
-    record 'record' (the JSON dict), 'index', 'name', 'stem', 'cache' (path
-    or None), 'n_fits'; an old entry carries 'label' and its parsed form
-    'parsed' (see parse_label); a line entry 'record' and 'path'; a
-    lineavg entry 'record', 'index', 'name', 'stem'.
+    record 'record' (the JSON dict), 'index', 'name', 'stem', 'cache' (the
+    path of the up-to-date fit history, or None), 'n_fits'; an old entry
+    carries 'label' and its parsed form 'parsed' (see parse_label),
+    'cache', 'n_fits', 'hampel', 'sgolay', 'mtime'; a line entry 'record',
+    'path' and 'mtime'; a lineavg entry 'record', 'index', 'name', 'stem'.
     """
 
     LABEL_RE = re.compile(r'^(?P<path>.*?) \| average of (?P<n>\d+) sweeps from (?P<k>\d+) files '
@@ -253,6 +281,7 @@ class SavedAveragesWindow:
         plt.show()
 
     def is_open(self):
+        """True while the window's figure is open (widgets.figure_is_open: the Figure object itself, not its number)."""
         return widgets.figure_is_open(self.fig)
 
     # --- reading ---
@@ -286,6 +315,7 @@ class SavedAveragesWindow:
 
     @staticmethod
     def _filters_text(hp, sp, resample=None, channel='didv'):
+        """'IETS, ' when the channel is IETS, then 'Hampel window/n_sigma' or 'Hampel off', 'SG window/order' or 'SG off', and the resampling when set."""
         h = f"Hampel {hp['window']}/{hp['n_sigma']}" if hp else "Hampel off"
         s = f"SG {sp['window_length']}/{sp['polyorder']}" if sp else "SG off"
         c = "IETS, " if channel == 'iets' else ""
@@ -293,11 +323,19 @@ class SavedAveragesWindow:
 
     @classmethod
     def _times_text(cls, times):
+        """The files' times of day 'HH:MM:SS.mmm', the first MAX_TIMES then '+k more'."""
         shown = [f"{h:02d}:{mi:02d}:{s:02d}.{ms:03d}" for (h, mi, s, ms) in times[:cls.MAX_TIMES]]
         more = len(times) - len(shown)
         return ", ".join(shown) + (f" +{more} more" if more > 0 else "")
 
     def _record_entry(self, name, stem):
+        """
+        The entry of an averaging record (file `name`, its stem): the record
+        read, the files' times from their name stamps ((0, 0, 0, 0) for a
+        name without one), the sweeps and marker-group selections counted,
+        the up-to-date fit history looked up (cache_path_of, read_cache);
+        None (a console line) when the record cannot be read or has no index.
+        """
         path = os.path.join(self.avg_dir, name)
         try:
             rec = read_json(path)
@@ -331,6 +369,13 @@ class SavedAveragesWindow:
                 'cache': cache if state is not None else None, 'n_fits': n_fits, 'text': text}
 
     def _old_entry(self, name):
+        """
+        The entry of a fit history of the earlier label-named form in the
+        directory itself (OLD_CACHE_RE): read whatever its loader format
+        (listed by its label, which parse_label must accept, else None); the
+        text carries the files, sweeps and removed sweeps of the label, its
+        filter settings and fit count, and the file's modification time.
+        """
         cache = os.path.join(self.directory, name)
         state = read_cache(cache, up_to_date=False)      # listed by its label; every such history predates the loader format
         if state is None:
@@ -349,6 +394,7 @@ class SavedAveragesWindow:
                 'n_fits': n_fits, 'hampel': hp, 'sgolay': sp, 'text': text, 'mtime': os.path.getmtime(cache)}
 
     def _line_entry(self, name):
+        """The entry of a Line window's marker record (file, line, groups and markers, channel, Feenstra, time of saving); None when unreadable."""
         path = os.path.join(self.avg_dir, name)
         try:
             rec = read_json(path)
@@ -364,6 +410,7 @@ class SavedAveragesWindow:
                 'mtime': os.path.getmtime(path)}
 
     def _lineavg_entry(self, name, stem):
+        """The entry of a line-average record (name, the first four members as name:line, channel, Feenstra, time of saving); None when unreadable or without an index."""
         path = os.path.join(self.avg_dir, name)
         try:
             rec = read_json(path)
@@ -381,7 +428,14 @@ class SavedAveragesWindow:
                 'stem': stem, 'text': text}
 
     def scan(self):
-        """Re-read the directory and redraw the list."""
+        """
+        Re-read the directory and redraw the list: the 'averages' subfolder
+        for the three record kinds (a *_average.json is a line average when
+        its content has 'members', else by its name when unreadable), the
+        directory itself for the old label-named fit histories; the sections
+        sorted as the class docstring says; the selection back to the first
+        row.
+        """
         records, old, lines, lineavgs = [], [], [], []
         if os.path.isdir(self.avg_dir):
             for name in sorted(os.listdir(self.avg_dir)):
@@ -415,6 +469,7 @@ class SavedAveragesWindow:
     # --- figure ---
 
     def _draw_list(self):
+        """Rebuild the list axes: the header text, one text row per entry (row 0 at the top), the separators, the highlight."""
         if self.ax_list is not None:
             self.ax_list.remove()
             self.ax_list = None
@@ -445,6 +500,7 @@ class SavedAveragesWindow:
         self.fig.canvas.draw_idle()
 
     def _draw_highlight(self):
+        """The light blue band behind the selected row (the previous band removed)."""
         if self._highlight is not None:
             try:
                 self._highlight.remove()
@@ -457,7 +513,7 @@ class SavedAveragesWindow:
                                                    color='#cfe2f3', zorder=0)
 
     def _on_press(self, event):
-        """A click on a row selects it."""
+        """A left click on a row of the list selects it (the row under the click's y, clipped to the list)."""
         if (event.inaxes is not self.ax_list or not self.entries or event.button != 1
                 or event.ydata is None):
             return
@@ -467,6 +523,7 @@ class SavedAveragesWindow:
         self.fig.canvas.draw_idle()
 
     def _on_load(self):
+        """'load': the selected entry dict to the browser's on_load (a console line when the list is empty)."""
         if not self.entries:
             print("saved averages: nothing to load.")
             return

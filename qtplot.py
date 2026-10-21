@@ -9,8 +9,8 @@ pick_event) and colour maps by name.  This module provides that interface
 math, and its interaction while all drawing, events, and widgets are
 PySide6 / pyqtgraph:
 
-  figure, subplots, show, close, fignum_exists, gcf, pause, rcParams,
-  get_cmap                                   the pyplot functions
+  figure, subplots, show, close, fignum_exists, get_fignums, gcf, pause,
+  rcParams, get_cmap                         the pyplot functions
   Figure, FigureCanvas, Axes                 a figure is a Qt window with one
                                              pyqtgraph scene; every axes is a
                                              bare ViewBox placed exactly at its
@@ -37,8 +37,31 @@ cmap / cmap_map, line_window_kwargs['cmap'], ...), a matplotlib name
 ('jet', 'viridis', 'RdBu_r', ...), a matplotlib Colormap object, or a
 pyqtgraph ColorMap may be given; to_cmap converts it once (cached) into the
 lookup tables pyqtgraph draws with.  matplotlib, when installed, is used
-only to read the colour values of a map given by name or object; it never
-draws.
+only to read the colour values of a map given by name or object and, in
+mplexport, to write the publication files; it never draws on screen.
+
+Text size: every window declares its design size as a DESIGN constant
+(inches, the figsize it opens with, at DPI logical pixels per inch) and
+its text zoom is window_zoom(W, H, W0, H0) = min(W / W0, H / H0) limited to
+ZOOM_MIN .. ZOOM_MAX (Figure.font_zoom, set in Figure._relayout on every
+resize): plots, ticks, legends, the controls of widgets.py, the info panel
+and the toolbar follow it.  Shape: a figure window taller than it is wide
+is in portrait (Figure.portrait, set_portrait): its controls show their
+short labels (widgets.SHORT_LABELS) and a panel title that is a file name
+shows only the file's date-and-time stamp (file_stamp; short_title is the
+one rule for every title).  The details cut from a title go to the
+window's info panel (FigureManager.set_info), a dock at the bottom of the
+window.
+
+Also here: the events the windows connect to (FigureCanvas.mpl_connect:
+MouseEvent, KeyEvent, PickEvent, CloseEvent), the navigation toolbar
+(NavigationToolbar: Home, Pan, Zoom, Save), the saving of a figure
+(Figure.savefig: publication files through mplexport, pyqtgraph's own
+exporters, a screenshot, or the curves as CSV; export_vector writes PDF /
+SVG / EPS through Qt when matplotlib is missing), the registry of the Qt
+controls a figure places (Figure._register_control, used by widgets.py),
+and the crash log (CRASH_LOG, log_note, watchdog) for hangs and native
+crashes inside Qt.
 """
 
 import os
@@ -102,9 +125,11 @@ def log_note(text):
 
 class watchdog:
     """
-    with qtplot.watchdog('what'): ...  -- while the block runs longer than `after` seconds, the
-    Python stack of every thread is written every `after` seconds to the console and to CRASH_LOG,
-    so a step that hangs on a file names itself.
+    with qtplot.watchdog('what'): ...  -- `what` is noted in the crash log on entry, and while the
+    block runs longer than `after` seconds the Python stack of every thread is written every
+    `after` seconds (faulthandler.dump_traceback_later) to the console (sys.__stderr__), or to
+    CRASH_LOG when there is no console, so a step that hangs on a file names itself.  Blocks
+    nest: leaving an inner block re-arms the enclosing one with its own `what` and `after`.
     """
 
     def __init__(self, what, after=15.0):
@@ -228,7 +253,8 @@ def window_zoom(W, H, W0, H0):
     The one text-size rule of every window, the browser and the figure windows alike: the text
     zoom is the window's size relative to its design size (W0, H0), the smaller of the width ratio
     and the height ratio, limited to ZOOM_MIN to ZOOM_MAX.  Every text of a window (plots, ticks,
-    legends, controls, info panels, toolbar icons) is multiplied by it.
+    legends, controls, info panels, toolbar icons) is multiplied by it.  All four sizes are in the
+    same unit (logical pixels here); 1.0 when a size is not a number, zero, or not finite.
     """
     try:
         z = min(float(W) / float(W0), float(H) / float(H0))
@@ -244,11 +270,13 @@ def pt2px(pt):
     return float(pt) * DPI / 72.0
 
 
+# matplotlib's named font sizes in points (relative to the 10 pt default, factors of 1.2).
 _FONT_SIZES = {'xx-small': 5.79, 'x-small': 6.94, 'small': 8.33, 'medium': 10.0, 'large': 12.0,
                'x-large': 14.4, 'xx-large': 17.28, 'larger': 12.0, 'smaller': 8.33}
 
 
 def font_pt(size, default=10.0):
+    """A matplotlib font size (points, a named size, or None) as points; `default` for None or an unknown name."""
     if size is None:
         return float(default)
     if isinstance(size, str):
@@ -282,16 +310,24 @@ def qfont(size=10.0, family=None, weight=None, zoom=1.0):
 #  Colours                                                                 #
 # ---------------------------------------------------------------------- #
 
+# matplotlib's default colour cycle ('C0' .. 'C9', rcParams['axes.prop_cycle'], the colour a plot
+# call without a colour takes), its single-letter colours, and the 'tab:<name>' names of TAB10.
 TAB10 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
          '#bcbd22', '#17becf']
 _BASE = {'b': (0.0, 0.0, 1.0), 'g': (0.0, 0.5, 0.0), 'r': (1.0, 0.0, 0.0), 'c': (0.0, 0.75, 0.75),
          'm': (0.75, 0.0, 0.75), 'y': (0.75, 0.75, 0.0), 'k': (0.0, 0.0, 0.0), 'w': (1.0, 1.0, 1.0)}
 _TAB_NAMES = ['blue', 'orange', 'green', 'red', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
-_rgba_cache = {}
+_rgba_cache = {}              # (colour string, alpha) -> (r, g, b, a): to_rgba runs for every pen and brush
 
 
 def to_rgba(c, alpha=None):
-    """A matplotlib colour specification as an (r, g, b, a) tuple of floats (alpha overrides when given)."""
+    """
+    A matplotlib colour specification as an (r, g, b, a) tuple of floats in 0..1 (`alpha` overrides
+    the specification's own when given): a string ('none' = transparent, a single letter, 'C0' ..
+    'C9', 'tab:blue', '#rgb' / '#rgba' / '#rrggbb' / '#rrggbbaa', a grey level '0.5', or any colour
+    name Qt knows), a QColor, or a sequence of 3 or 4 numbers (0..1, or 0..255 when one exceeds 1).
+    Strings are cached.  Raises ValueError for an unknown string.
+    """
     if isinstance(c, str):
         key = (c, alpha)
         hit = _rgba_cache.get(key)
@@ -341,6 +377,7 @@ def to_rgba(c, alpha=None):
 
 
 def qcolor(c, alpha=None):
+    """A matplotlib colour specification (to_rgba) as a QColor, the components clipped to 0..1."""
     r, g, b, a = to_rgba(c, alpha)
     return QtGui.QColor.fromRgbF(min(max(r, 0.0), 1.0), min(max(g, 0.0), 1.0), min(max(b, 0.0), 1.0),
                                  min(max(a, 0.0), 1.0))
@@ -368,6 +405,7 @@ def mkpen(color, lw=1.5, ls='-', alpha=None):
 
 
 def mkbrush(color, alpha=None):
+    """A solid QBrush of `color` (to_rgba); None for no fill (color None or 'none')."""
     if color is None or (isinstance(color, str) and color.strip().lower() == 'none'):
         return None
     return QtGui.QBrush(qcolor(color, alpha))
@@ -531,11 +569,14 @@ class LinearSegmentedColormap(Colormap):
 
 
 class ListedColormap(Colormap):
+    """A colour map of the given colours as they are, one table entry each (matplotlib's ListedColormap)."""
+
     def __init__(self, colors, name='from_list'):
         super().__init__(name, np.array([to_rgba(c) for c in colors]))
 
 
 def _segment_table(data, N=256):
+    """An (N, 4) table from matplotlib's segment data ({'red' / 'green' / 'blue': rows of (x, y0, y1)}; y0 is used), alpha 1."""
     x = np.linspace(0.0, 1.0, N)
     cols = []
     for key in ('red', 'green', 'blue'):
@@ -617,6 +658,8 @@ def norm_lut(cmap, norm, vmin, vmax, n=1024):
     through a normalization and a colour map: bin i (data values from
     vmin + i d to vmin + (i + 1) d) takes cmap(norm(its centre)).  A gamma
     or a new norm only rebuilds this table; the image data stay as they are.
+    A plain Normalize (or None) is linear, so the table is the colour map's
+    own lut(n).  An empty or non-finite range is widened to [vmin, vmin + 1].
     """
     cmap = to_cmap(cmap)
     vmin, vmax = float(vmin), float(vmax)
@@ -753,6 +796,11 @@ class Affine2D:
 
 
 class _Composite:
+    """
+    `first + then`: a transform followed by another, as matplotlib composes them
+    (Affine2D() ... + ax.transData); AxesImage.set_transform reads the Affine2D out of it.
+    """
+
     def __init__(self, first, then):
         self.first, self.then = first, then
 
@@ -799,6 +847,8 @@ class _Transform:
 
 
 class _Inverse:
+    """transData.inverted() / transAxes.inverted(): display pixels (origin bottom left) back to data values or axes fractions."""
+
     def __init__(self, t):
         self.t = t
 
@@ -910,6 +960,7 @@ class QuadItem(pg.GraphicsObject):
         return QtCore.QRectF(self._bounds)
 
     def dataBounds(self, ax, frac=1.0, orthoRange=None):
+        """The quads' extent along axis `ax` (0 x, 1 y), for pyqtgraph's auto range; (None, None) without quads."""
         if not len(self._quads):
             return (None, None)
         v = self._quads[..., ax]
@@ -958,7 +1009,10 @@ class _LegendSample(pg.GraphicsWidget):
 
 
 def _tick_strings(vals, spacing):
-    """Tick labels with the decimals the spacing needs (0.25 -> 2), the same for every label (matplotlib)."""
+    """
+    Tick labels with the decimals the spacing needs (0.25 -> 2), the same for every label
+    (matplotlib); a negative sign is the minus sign U+2212, and -0 is written as 0.
+    """
     spacing = abs(float(spacing)) or 1.0
     d = max(0, int(math.ceil(-math.log10(spacing) - 1e-9)))
     while d < 8 and abs(spacing * 10 ** d - round(spacing * 10 ** d)) > 1e-6 * max(1.0, spacing * 10 ** d):
@@ -1115,6 +1169,8 @@ class _Axis(pg.AxisItem):
         return [(step, vals)]
 
     def generateDrawSpecs(self, p):
+        # pyqtgraph's draw specs (tickStrings sets self._sci on the way) plus, when the tick labels are
+        # mantissas, the power of ten '1e<n>' once: above a vertical axis, at the right end of a horizontal one.
         self._sci = None
         specs = super().generateDrawSpecs(p)
         self._note_sci()
@@ -1323,6 +1379,7 @@ class Artist:
                 f(v)
 
 
+# matplotlib marker -> pyqtgraph symbol (an unknown marker draws a circle).
 _MARKERS = {'o': 'o', 's': 's', 'D': 'd', 'd': 'd', '^': 't1', 'v': 't', '<': 't3', '>': 't2',
             'x': 'x', 'X': 'x', '+': '+', 'P': '+', '*': 'star', 'p': 'p', 'h': 'h', 'H': 'h', '.': 'o', ',': 's',
             '|': '|', '_': '_'}
@@ -1335,7 +1392,13 @@ def _marker_symbol(m):
 
 
 class Line2D(Artist):
-    """A curve and/or markers (pyqtgraph PlotDataItem): get_xdata, get_ydata, set_data, set_color, ..."""
+    """
+    A curve and/or markers: a pyqtgraph PlotCurveItem for a plain curve, a PlotDataItem with
+    markers (the '.' marker at half its size).  get_xdata, get_ydata, set_data, set_color, ...;
+    NaN points break the curve and are not drawn.  A picker (a radius in display pixels, or
+    True for 5) makes contains_px test the distance to the polyline, or to the points when there
+    is no line.
+    """
 
     def __init__(self, axes, x, y, color='C0', lw=1.5, ls='-', marker=None, ms=6.0, mec=None, mfc=None,
                  mew=1.0, alpha=None, label=None, zorder=None, picker=None, visible=True, fill=None):
@@ -1525,6 +1588,11 @@ class _RefLine(Artist):
 
 
 class _Span(Artist):
+    """
+    axvspan / axhspan: a filled band across the axes (pyqtgraph LinearRegionItem, not movable,
+    no edge lines), alpha 0.25 unless given.
+    """
+
     zorder_default = 1.0
 
     def __init__(self, axes, lo, hi, vertical, color='C0', alpha=None, label=None, zorder=None, visible=True):
@@ -1544,9 +1612,13 @@ class _Span(Artist):
 
 class AxesImage(Artist):
     """
-    imshow: a pyqtgraph ImageItem coloured through a lookup table from the
-    norm and the colour map at levels (vmin, vmax), placed by its extent
-    (and an optional Affine2D, set_transform).  NaN pixels are transparent.
+    imshow: a pyqtgraph ImageItem coloured through a lookup table (norm_lut)
+    from the norm and the colour map at levels (vmin, vmax), placed by its
+    extent (l, r, b, t; the pixel indices when None) and an optional
+    Affine2D (set_transform, applied after the extent: a rotated and
+    translated topography).  origin 'upper' puts row 0 at the top edge.  A
+    3D (RGB / RGBA) array is drawn as given.  NaN pixels are transparent.
+    A page without a size (an empty or degenerate extent) is not drawn.
     """
 
     zorder_default = 0.0
@@ -1770,7 +1842,11 @@ class ContourSet(Artist):
 
 
 class LineCollection(Artist):
-    """Line segments / polylines of one colour, one PlotCurveItem with breaks (matplotlib's LineCollection)."""
+    """
+    Line segments / polylines of one colour (a list of colours takes its first), one
+    PlotCurveItem with breaks (matplotlib's LineCollection); drawn once Axes.add_collection
+    attaches it.
+    """
 
     zorder_default = 2.0
 
@@ -1805,7 +1881,12 @@ class LineCollection(Artist):
 
 
 class PolyCollection(Artist):
-    """Filled polygons (quads here) with colours from an array and a norm, or face colours (QuadItem)."""
+    """
+    Filled polygons (quads; a triangle gets its last vertex repeated) coloured from `array`
+    through the norm and colour map, or by `facecolors` (one colour or one per polygon, 'C0' by
+    default); one QuadItem, drawn once Axes.add_collection attaches it; `edgecolors` and
+    `antialiased` are ignored.
+    """
 
     zorder_default = 1.0
 
@@ -1866,14 +1947,20 @@ class PolyCollection(Artist):
             self.item.setData(self._verts, self._colors())
 
 
+# matplotlib's ha / va as pyqtgraph TextItem anchors: the fraction of the text's box that sits at its
+# position (0 left / top, 1 right / bottom; 'baseline' approximated at 0.8 of the height).
 _HA = {'left': 0.0, 'center': 0.5, 'centre': 0.5, 'right': 1.0}
 _VA = {'top': 0.0, 'center': 0.5, 'centre': 0.5, 'center_baseline': 0.55, 'baseline': 0.8, 'bottom': 1.0}
 
 
 class Text(Artist):
     """
-    A text in data, axes, or figure coordinates (pyqtgraph TextItem):
-    set_text, get_text, set_color, set_fontsize, set_visible, set_position.
+    A text in data, axes, or figure coordinates (`coords`; pyqtgraph TextItem): set_text,
+    get_text, set_color, set_fontsize, set_visible, set_position.  `fontsize` in points, drawn at
+    the figure's zoom (_apply, re-run by Axes._refont); `offset` in logical pixels (matplotlib's
+    'offset points', converted by the caller); `bbox` a matplotlib bbox dict (facecolor / fc,
+    alpha, edgecolor / ec, lw).  A data text sits in the view box; an axes or figure text sits in
+    the scene and is placed again (_place) whenever its axes or the canvas moves.
     """
 
     zorder_default = 3.0
@@ -2009,7 +2096,13 @@ class Text(Artist):
 
 
 class Annotation(Artist):
-    """annotate: a text with an offset and/or an arrow from xytext to xy (data coordinates)."""
+    """
+    annotate: a text with an offset and/or an arrow from xytext to xy (data coordinates).  With
+    textcoords 'offset points' / 'offset pixels' the text sits at xy displaced by xytext; else at
+    xytext (data).  With `arrowprops` a line from xytext to xy and an arrow head at xy (filled for
+    the '-|>', 'simple', 'fancy' and 'wedge' styles, open otherwise), its colour and `lw` from
+    arrowprops.  The arguments are kept (_ann) for the publication export.
+    """
 
     zorder_default = 3.0
 
@@ -2070,9 +2163,14 @@ class Annotation(Artist):
 
 class Colorbar:
     """
-    A colour bar in its own axes: the colour map evenly along the bar, the
-    tick labels at their data values through the norm (so a gamma spaces
-    them as matplotlib does), the label on the right.
+    A colour bar in its own axes `cax` (its view fixed to [0, 1] x [0, 1],
+    no mouse): the colour map evenly along the bar (a 512-row image through
+    the map's lookup table), the tick labels on a right-hand side axis at
+    their data values through the norm (_Axis mode 'norm', so a gamma
+    spaces them as matplotlib does), the label on the right.  update_normal
+    follows a new mappable, norm or colour map (the mappables call it
+    through their `colorbar` attribute); remove deletes the axes and gives
+    the parent axes its rectangle back.
     """
 
     def __init__(self, figure, mappable, cax, label=None, parent_axes=None, parent_rect=None):
@@ -2136,6 +2234,8 @@ class Colorbar:
 # ---------------------------------------------------------------------- #
 
 class _Patch:
+    """ax.patch: the axes' background; set_facecolor colours the view box, alpha and visibility are ignored."""
+
     def __init__(self, ax):
         self._ax = ax
 
@@ -2189,9 +2289,13 @@ class SecondaryAxis:
 class Axes:
     """
     One axes: a pyqtgraph ViewBox placed exactly at its figure-fraction
-    rectangle (matplotlib's axes box, framed), its x and y tick axes outside
-    the box, the title above it.  The plotting methods return artists with
-    matplotlib's interface (remove, set_visible, get_label, ...).
+    rectangle (`rect`, or a SubplotSpec `spec`, or inside `inset_parent`;
+    matplotlib's axes box, framed), its x and y tick axes outside the box,
+    the title above it.  The plotting methods return artists with
+    matplotlib's interface (remove, set_visible, get_label, ...).  sharex /
+    sharey link the view to another axes' (a shared-y axes shows no y tick
+    values).  The mouse pans and zooms only while the toolbar's Pan or Zoom
+    is on; otherwise the windows handle their own mouse events.
     """
 
     def __init__(self, fig, rect=None, spec=None, sharex=None, sharey=None, inset_parent=None, label=''):
@@ -2316,6 +2420,11 @@ class Axes:
         return self._spec
 
     def _px_rect(self):
+        """
+        The box as drawn, (x0, y0, w, h) in canvas pixels from the top left: the figure-fraction
+        rectangle, shrunk for an adjustable-'box' aspect and moved clear of keep_clear_of's other
+        axes.
+        """
         W, H = self.figure._canvas_size()
         x, y, w, h = self.get_position().bounds
         r = (x * W, (1.0 - y - h) * H, w * W, h * H)
@@ -2377,8 +2486,11 @@ class Axes:
 
     def keep_legend_clear(self, pad_px=4.0):
         """
-        The y limits raised so that no curve reaches the legend (an upper legend): the data's
-        range with matplotlib's 5 % margin below, and above it room for the legend's height.
+        The y limits raised so that no curve reaches the legend (an upper legend): the visible
+        curves' range with 5 % of it below and 2 % above (matplotlib's margins), then the top
+        raised so that the legend's height (plus `pad_px`, at most 0.8 of the panel) lies above the
+        curves.  Marks the axes so that _place and _refont re-run it when the panel's height or the
+        zoom changes.  Nothing happens without a legend or without curves.
         """
         leg = self._legend
         ys = []
@@ -2415,6 +2527,11 @@ class Axes:
             QtCore.QTimer.singleShot(0, self._place)
 
     def _place(self):
+        """
+        Place the view box, the tick and side axes, the title (lifted over a power-of-ten label),
+        the axes texts, insets and dependent axes at _px_rect; a legend is refitted and
+        keep_legend_clear re-run on a size change.
+        """
         self._place_pending = False
         x0, y0, w, h = self._px_rect()
         w, h = max(w, 1.0), max(h, 1.0)
@@ -2552,7 +2669,11 @@ class Axes:
     # --- clearing ---
 
     def clear(self):
-        """Every artist, the title, the labels, the legend, the limits (autoscale on), and the aspect reset."""
+        """
+        Every artist, the title (and its info-panel line), the labels, the legend, the side axes
+        (secondary and colour-bar axes), the ticks, grid, inversion and colour-bar state, the limits
+        (autoscale on), and the aspect reset; the colour cycle restarts.
+        """
         if self._legend is not None:
             self._remove_legend()
         for a in list(self._children):
@@ -2621,6 +2742,12 @@ class Axes:
     # --- labels and title ---
 
     def set_title(self, label, fontsize=None, loc='center', pad=None, fontdict=None, color=None, y=None, **kw):
+        """
+        The title above the axes: the full text is kept (_title_full) and the shown part is
+        short_title(full, figure.portrait); when the two differ the full text goes to the figure's
+        info panel (Figure._set_info).  `fontsize` in points (12 when not given), `loc` 'left' /
+        'center' / 'right', `pad` in points (6), `y` the axes fraction of the baseline (1.0).
+        """
         if fontdict:
             fontsize = fontdict.get('fontsize', fontsize)
         if self._title is not None:
@@ -3039,6 +3166,7 @@ class Axes:
         return out
 
     def scatter(self, x, y, s=None, c=None, marker='o', label=None, zorder=None, **kw):
+        """Markers only (matplotlib's scatter): `s` in points squared; only a single colour string `c` is honoured."""
         ms = math.sqrt(s) if s is not None else 6.0
         return self.plot(x, y, ls='none', marker=marker, ms=ms, color=c if isinstance(c, str) else None,
                          label=label, zorder=zorder)[0]
@@ -3065,6 +3193,12 @@ class Axes:
 
     def imshow(self, X, cmap=None, norm=None, aspect=None, interpolation=None, alpha=None, vmin=None, vmax=None,
                origin=None, extent=None, zorder=None, label=None, **kw):
+        """
+        An image (AxesImage) as matplotlib's imshow: `aspect` None or 'equal' locks the aspect,
+        'auto' leaves it; without an `extent` and with origin 'upper' the y axis is inverted (row 0
+        at the top).  `interpolation` is accepted and ignored: pyqtgraph draws each data pixel as a
+        block, and mplexport passes 'none' to matplotlib.
+        """
         im = AxesImage(self, X, cmap=cmap, norm=norm, extent=extent, origin=origin or 'upper', alpha=alpha,
                        zorder=zorder, label=label, vmin=vmin, vmax=vmax)
         self._register(im)
@@ -3156,6 +3290,14 @@ class Axes:
         return self._legend
 
     def legend(self, *args, loc='best', frameon=True, fontsize=None, ncol=1, **kw):
+        """
+        The legend as matplotlib's: legend(), legend(labels) or legend(handles, labels); labels
+        starting with '_' are left out; `loc` a matplotlib location name or code ('best' and 0 / 1
+        are the upper right: the legend never moves to avoid curves); `fontsize` in points (10) at
+        the figure's zoom, shrunk when the longest label would not fit the panel.  Returns the
+        pyqtgraph LegendItem, None when nothing is to be listed.  The arguments are kept so that
+        _refont and _place can rebuild it at a new zoom or width.
+        """
         if len(args) >= 2:
             handles, labels = list(args[0]), list(args[1])
         elif len(args) == 1:
@@ -3243,6 +3385,8 @@ class Axes:
 # ---------------------------------------------------------------------- #
 
 class SubplotParams:
+    """fig.subplotpars: the margins and spacings of the subplot grids, matplotlib's defaults (subplots_adjust changes them)."""
+
     def __init__(self):
         self.left, self.right, self.bottom, self.top = 0.125, 0.9, 0.11, 0.88
         self.wspace, self.hspace = 0.2, 0.2
@@ -3635,6 +3779,7 @@ class FigureCanvas(pg.GraphicsView):
             super().keyPressEvent(ev)
 
     def wheelEvent(self, ev):
+        """matplotlib's scroll_event: button 'up' / 'down', step in wheel notches (120 units each, fractional on a touchpad)."""
         dy = ev.angleDelta().y()
         if dy:
             step = dy / 120.0
@@ -3743,7 +3888,9 @@ class NavigationToolbar(QtWidgets.QToolBar):
         for ax in self.figure._axes:
             ax._apply_toolbar_mode(mode)
 
-    # (dialog filter, extension, how): 'publication' through matplotlib, 'screen' through pyqtgraph.
+    # (dialog filter, extension, how) for Figure.savefig: 'publication' through matplotlib (mplexport; left
+    # out of the dialog without matplotlib), 'screen' through pyqtgraph's exporters, 'screenshot' the
+    # canvas's pixels, 'csv' the curves' data (export_csv).
     SAVE_FORMATS = [
         ("PDF, publication (vector, editable) (*.pdf)", '.pdf', 'publication'),
         ("EPS, publication (vector, editable) (*.eps)", '.eps', 'publication'),
@@ -3804,7 +3951,12 @@ class NavigationToolbar(QtWidgets.QToolBar):
 
 
 class FigureManager:
-    """The figure's window: the navigation toolbar on top, then the canvas (matplotlib's Qt window)."""
+    """
+    The figure's window (matplotlib's Qt window): the navigation toolbar on top, the canvas, and
+    the info panel docked at the bottom (set_info: the details cut from the titles; hidden while
+    empty, and once closed by hand it stays closed).  The window opens at the canvas's size plus
+    the toolbar, limited to the screen's available area (98 % of its width, 95 % of its height).
+    """
 
     def __init__(self, figure, canvas, w_px, h_px):
         self.figure = figure
@@ -3913,7 +4065,12 @@ _figures = {}
 
 
 class Figure:
-    """A figure window: axes at figure fractions, figure texts, Qt controls, a navigation toolbar."""
+    """
+    A figure: axes at figure fractions, figure texts, the Qt controls of widgets.py, and (in its
+    own window) a navigation toolbar and an info panel.  Its text zoom (font_zoom) and shape
+    (portrait) follow the canvas (_relayout, on every resize); the design size it was opened with
+    (_design_px) is the reference of both and the size of the publication export.
+    """
 
     def __init__(self, figsize=(6.4, 4.8), num=None, embed=False):
         """embed=True: the figure lives in another window's layout (fig.canvas is the widget; NavigationToolbar(fig) its toolbar)."""
@@ -4181,6 +4338,10 @@ class Figure:
             self._suptitle = None
 
     def suptitle(self, t, fontsize=None, y=0.98, x=0.5, ha='center', va='top', **kw):
+        """
+        The figure's title (a figure text at x, y): shown as short_title(t, portrait), the full
+        text in the info panel when they differ; 12 pt unless given.
+        """
         if self._suptitle is not None:
             self._suptitle.remove()
         full = '' if t is None else str(t)
@@ -4221,6 +4382,13 @@ class Figure:
 
     def colorbar(self, mappable, cax=None, ax=None, fraction=0.15, pad=0.05, label=None, shrink=1.0, aspect=20,
                  **kw):
+        """
+        A Colorbar for `mappable` (an AxesImage / QuadMesh, or an object with a `mappable`, such as
+        plots.RowHeatmap) in `cax`; without `cax`, matplotlib's placement: `ax` (the first axes when
+        None) gives up `fraction` + `pad` of its width on the right, and the bar takes `fraction` of
+        it (narrower when `aspect`, height over width, asks), `shrink` of the height, centred;
+        Colorbar.remove restores the axes.
+        """
         mappable = getattr(mappable, 'mappable', mappable) if not isinstance(mappable, (AxesImage, QuadMesh)) else mappable
         parent_rect = None
         if cax is None:
@@ -4243,14 +4411,18 @@ class Figure:
     def savefig(self, path, dpi=None, how=None, **kw):
         """
         Save the figure (the plots and texts; the controls are left out of every format but the
-        screenshot).  how:
-          'publication' (default for .pdf .eps .ps .svg .tif .tiff, and for .png/.jpg with dpi
-                         given): rebuilt and written by matplotlib (mplexport), vector files with
-                         editable text, raster files at dpi (300 by default);
-          'screen'      : as pyqtgraph draws it (pyqtgraph's ImageExporter / SVGExporter);
-          'screenshot'  : the window's pixels, controls included (default for .png/.jpg/.bmp);
-          'csv'         : the curves' data, one column pair per curve.
-        Without matplotlib, the vector formats are written by Qt (QPdfWriter / QSvgGenerator).
+        screenshot).  Returns the path written.  how:
+          'publication' (default for .pdf .eps .ps .svg .tif .tiff, and for any extension with
+                         dpi given): rebuilt and written by matplotlib (mplexport), vector files
+                         with editable text, raster files at dpi (300 by default);
+          'screen'      : as pyqtgraph draws it (pyqtgraph's SVGExporter for .svg, ImageExporter
+                         otherwise, at dpi / DPI times the canvas's pixels, twice them by default);
+          'screenshot'  : the canvas's pixels, controls included, toolbar and info panel not
+                         (default for every other extension, e.g. .png .jpg .bmp);
+          'csv'         : the curves' data, one column pair per curve (export_csv).
+        Without matplotlib a 'publication' request writes .pdf / .eps / .ps / .svg through Qt
+        (export_vector: QPdfWriter / QSvgGenerator, EPS through Ghostscript) and the raster
+        formats as 'screen', after a console note.
         """
         path = str(path)
         ext = os.path.splitext(path)[1].lower()
@@ -4354,6 +4526,7 @@ def _render_scene(fig, painter, W, H):
 
 
 def _have_matplotlib():
+    """Whether matplotlib is installed (without importing it: the Save dialog's publication formats)."""
     try:
         import importlib.util
         return importlib.util.find_spec('matplotlib') is not None
@@ -4362,6 +4535,7 @@ def _have_matplotlib():
 
 
 def _ghostscript():
+    """The Ghostscript executable on the PATH (gswin64c, gswin32c or gs), or None."""
     import shutil
     for name in ('gswin64c', 'gswin32c', 'gs'):
         p = shutil.which(name)
@@ -4426,6 +4600,7 @@ _RUNNING = [False]
 
 
 def _app():
+    """The QApplication, made on the first call (pg.mkQApp) with its default font scaled by FONT_SCALE."""
     app = QtWidgets.QApplication.instance()
     if app is None:
         # OpenCV's Linux wheels point Qt at their own (Qt5) platform plugins when cv2 is imported
@@ -4442,6 +4617,10 @@ def _app():
 
 
 def figure(num=None, figsize=None, dpi=None, **kw):
+    """
+    pyplot's figure: the Figure given, the open figure numbered `num`, or a new window of
+    `figsize` inches (6.4 x 4.8); `dpi` is ignored (DPI).
+    """
     if isinstance(num, Figure):
         return num
     if num is not None and num in _figures:
@@ -4463,6 +4642,11 @@ def gcf():
 
 
 def fignum_exists(num):
+    """
+    Whether a figure is open: for a Figure object, that this very object is still registered (an
+    embedded one: not closed), never just its number, which a later figure reuses after a close;
+    for a number, that some figure holds it.  The windows' is_open tests pass the object.
+    """
     if isinstance(num, Figure):
         if num._embedded:
             return not num._closed
@@ -4475,6 +4659,10 @@ def get_fignums():
 
 
 def close(fig=None):
+    """
+    pyplot's close: the current figure, 'all', a Figure, or a number; the window is closed and
+    the figure unregistered (close_event fired).
+    """
     if fig is None:
         targets = [gcf()] if _figures else []
     elif fig == 'all':
@@ -4569,6 +4757,9 @@ class _Cycler:
         return {'color': list(self._colors)}
 
 
+# The entries of matplotlib's rcParams the package reads ('axes.prop_cycle' for a colour per curve).
 rcParams = {'axes.prop_cycle': _Cycler(TAB10), 'figure.dpi': DPI, 'font.size': 10.0}
 
-_figures_main_windows = []      # windows embedding qtplot figures (browser_qt), kept referenced
+# The main windows that embed qtplot figures (browser.Browser appends its QMainWindow): kept
+# referenced, and show() blocks while one of them is visible.
+_figures_main_windows = []

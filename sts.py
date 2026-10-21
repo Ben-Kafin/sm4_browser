@@ -95,9 +95,10 @@ class STS:
     The pipeline (process / process_arrays): the recorded current through
     the Hampel and Savitzky-Golay filters once (filters; the channel's
     columns are never filtered), calibration against that current
-    (calibration.calibrate / calibrate_iets of whichever calibration file
-    is in place: calibration_zeroref, calibration_gainoffset, or
-    calibration_stretch renamed to calibration.py), the division by the broadened
+    (calibration.calibrate / calibrate_iets: the 0 V-referenced
+    gain-plus-offset regression of calibration.py, written as one of three
+    interchangeable calibration files of which the repository carries this
+    one), the division by the broadened
     I/V of the same current when divide_iv is on (feenstra; dI/dV only),
     and unit-area normalization (normalization).  Every step takes plain
     arrays, so the Line window (one chunk), the fit (its raw sets), the
@@ -354,8 +355,9 @@ class STS:
 
     def sweep_view(self, mode):
         """
-        One column per pixel (grid order) from the chosen sweeps of every pixel (sweeps.py,
-        SWEEP_MODES): the raw columns averaged over the chosen kept sweeps; a pixel with no chosen
+        One column per pixel (grid order) from the chosen sweeps of every pixel (`mode` one of
+        sweeps.sweep_modes; sweeps.chosen_columns): the raw columns averaged over the chosen kept
+        sweeps; a pixel with no chosen
         kept sweep keeps its first chosen column (never acquired or stopped).  The view knows its
         parent (the all-sweeps STS) and its chosen columns for the clock (Sm4File.energy_times).
         """
@@ -442,6 +444,7 @@ class STS:
         self.attrs = dict(ref.attrs)
 
         def column_array(page):
+            """A page's data (physical units) as a (npts, N) float64 array, a single spectrum as one column."""
             if page.data is None:
                 raise ValueError(f"{name}: the '{page.label}' page has no usable RHK_Zscale, so it has no "
                                  f"physical data.")
@@ -783,8 +786,9 @@ class STS:
         others (see the comment below), are left out of the calibration,
         and come back as zero columns (area 0).  With return_areas, returns
         (curves, areas).  vmod (the file's modulation amplitude,
-        RHK_CH1Drive_Amplitude) is handed to the calibration, which uses it
-        or not as its method says (calibration_stretch_vmod's 1/V_mod).
+        RHK_CH1Drive_Amplitude) is handed to the calibration, which accepts
+        it and does not use it (calibration.py's regression needs none; a
+        calibration written to divide by the modulation amplitude would).
         """
         lia = np.asarray(lia, dtype=np.float64)
         if acquired is None:

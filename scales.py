@@ -46,7 +46,7 @@ import os
 from sm4_Browser import sm4file
 
 
-SCALES_FORMAT = 1
+SCALES_FORMAT = 1         # not read anywhere: the 'scales' section carries no format number of its own (the settings store is migrated whole, never discarded)
 
 
 def file_time(path):
@@ -58,7 +58,14 @@ def file_time(path):
 
 
 class Scales:
-    """The timeline (the module docstring)."""
+    """
+    The timeline (the module docstring).  Scales(base, settings, files): `base` the starting scale
+    factor, in force without any entry; `settings` the experiment's caches.Settings, whose
+    'scales' section is read here and written by every change (None: the timeline lives in memory
+    only); `files` the directory's .sm4 paths, used only to report an entry whose file is no longer
+    there.  An entry without a time or a scale, or with a scale <= 0, is left out with a console
+    line.
+    """
 
     def __init__(self, base, settings=None, files=()):
         self.base = float(base)
@@ -82,16 +89,18 @@ class Scales:
                 print(f"scale timeline: the entry of {e['file']} ({e['scale']:g}) belongs to no file in the directory; kept.")
 
     def _sort(self):
+        """The entries in time order."""
         self.entries.sort(key=lambda e: e['time'])
 
     @staticmethod
     def _time(path_or_time):
+        """A file's time from its path (file_time; None without a stamp), a number as it is, None for None."""
         if isinstance(path_or_time, str):
             return file_time(path_or_time)
         return None if path_or_time is None else float(path_or_time)
 
     def at(self, path_or_time):
-        """The scale factor in force for a file (its path) or a time: the latest entry at or before it, the earliest when it is before every entry, the base without entries."""
+        """The scale factor in force for a file (its path) or a time (seconds since the epoch): the latest entry at or before it, the earliest when it is before every entry (or the path has no stamp), the base without entries."""
         if not self.entries:
             return self.base
         t = self._time(path_or_time)
@@ -110,12 +119,12 @@ class Scales:
         return 1e9 / self.at(path_or_time)
 
     def entry_of(self, path):
-        """The entry anchored at this file's time, or None."""
+        """The entry anchored at this file's time (within a microsecond), or None (also for a path without a stamp)."""
         t = file_time(path)
         return next((e for e in self.entries if t is not None and abs(e['time'] - t) < 1e-6), None)
 
     def set_from(self, path, scale):
-        """The timeline from this file's time on: an entry at its time (replacing one there) with `scale` (> 0); written at once."""
+        """The timeline from this file's time on: an entry at its time (replacing one there, and taking the file's name) with `scale` (> 0); written at once.  Returns the entry.  Raises ValueError for a scale <= 0 or a path without a stamp."""
         scale = float(scale)
         if scale <= 0:
             raise ValueError("the scale factor must be > 0")
@@ -133,7 +142,7 @@ class Scales:
         return e
 
     def remove(self, path):
-        """The entry at this file's time dropped (nothing without one); written at once."""
+        """The entry at this file's time dropped (nothing without one); written at once.  Returns the entry dropped, or None."""
         e = self.entry_of(path)
         if e is not None:
             self.entries.remove(e)
@@ -141,9 +150,11 @@ class Scales:
         return e
 
     def record(self):
+        """The 'scales' section as stored: {'entries': [{'file', 'time', 'scale'}, ...]} in time order."""
         return {'entries': [{'file': e['file'], 'time': float(e['time']), 'scale': float(e['scale'])} for e in self.entries]}
 
     def _save(self):
+        """The timeline into the settings store (Settings.put 'scales', written at once) when there is one."""
         if self.settings is not None:
             self.settings.put('scales', self.record())
 

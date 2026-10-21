@@ -1,13 +1,22 @@
 """
 Feenstra's normalized conductance (dI/dV)/(I/V): the division of a
 calibrated dI/dV column by the same column's broadened I/V (divide_by_iv,
-with iv_zero_offset, iv_corrected, iv_broadened; the Hampel and
-Savitzky-Golay filters act on the current here, before the 0 V subtraction
-and the broadening, and nowhere else in the pipeline), the settings helpers
+with iv_zero_offset, iv_corrected, iv_broadened), the settings helpers
 (feenstra_width, feenstra_titles, energy_has_zero), the zero-crossing
 diagnostic of the current (iv_zero_crossings), and the Feenstra companion
 window (FeenstraWindow) of the Line, Map, averaging, and line-average
 windows.
+
+The current the division works on is the recorded I(V) through the Hampel
+and Savitzky-Golay filters, with its value at 0 V subtracted when '0Vsub'
+is on, then broadened.  Where the filtering happens: the pipeline
+(sts.STS.process_arrays) filters the current once, before the calibration,
+and calls divide_by_iv with the filters off, so the calibration and the
+division use the same filtered current; the Feenstra windows' current and
+I/V panels, and the __main__ demonstrations, call iv_corrected /
+iv_broadened with the windows' filter settings and filter here.  The
+dI/dV columns are never filtered.  The method follows Feenstra's
+normalization (the code names no citation; see the README).
 """
 
 if __package__ in (None, ''):
@@ -226,7 +235,7 @@ class FeenstraWindow:
 
     Its 'calibrate' / 'normalize' box (widgets.PipelineBox, top right, as in
     every window) holds this window's own two flags, independent of the main
-    window's: 'normalize' turns the per-location unit-area normalization of
+    window's, both off at open: 'normalize' turns the per-location unit-area normalization of
     all four panels on or off together (the dI/dV and the ratio through the
     pipeline's unit-area step, the current and the I/V through
     normalization.normalize_abs); 'calibrate' turns the calibration of the
@@ -315,9 +324,11 @@ class FeenstraWindow:
         plt.show(block=False)
 
     def is_open(self):
+        """True while this window's figure is open (widgets.figure_is_open: the Figure object itself, not its number)."""
         return widgets.figure_is_open(self.fig)
 
     def close(self):
+        """Close the figure when it is open (the main window's close_event calls this)."""
         if self.is_open():
             plt.close(self.fig)
 
@@ -335,10 +346,12 @@ class FeenstraWindow:
 
     @property
     def stack_on(self):
+        """The state of this window's own 'stack' toggle (the curve panels offset vertically)."""
         return self.stacks.stack
 
     @property
     def substack_on(self):
+        """The state of this window's own 'substack' toggle (every member instead of one mean per group or file)."""
         return self.stacks.substack
 
     @staticmethod
@@ -361,6 +374,15 @@ class FeenstraWindow:
         return title[:k + 1].rstrip() + "\n" + title[k + 1:].lstrip()
 
     def _build_axes(self, kind):
+        """
+        The axes of the four columns for a view kind, replacing the previous
+        ones: 'sweeps' one panel per column (ROW_Y, ROW_H; the gamma boxes
+        hidden); 'line' and 'map' a top panel (the heatmap or map) with its
+        colour bar and a curve panel under it, and for 'line' a topo stripe
+        left of the top panel sharing its y axis, plus one topo colour bar
+        (TOPO_CBAR); the gamma boxes attached under the top panels.  Sets
+        self.cols (one dict of axes per column) and self.kind.
+        """
         for ax in self.axes:
             try:
                 ax.remove()
@@ -414,7 +436,14 @@ class FeenstraWindow:
         return self.SIMPLE[key]
 
     def _fingerprint(self, view, v, key):
-        """What the top panels of one column depend on (not the markers)."""
+        """
+        What the top panels of one column depend on (not the markers): the
+        kind, note and title, the data array's fingerprint, the gamma, the
+        drift (shear, shift, drift lines), the stripe and positions, the
+        extent, the colour map, the energy range and the limits.  Equal
+        fingerprints on consecutive refreshes skip the rebuild of the
+        heatmap / map (refresh).
+        """
         return (view['kind'], v.get('note'), v.get('title'), self._sig(v.get('top')), self.gammas[key].value,
                 self._sig(view.get('shear')), self._sig(view.get('shift')), self._sig(view.get('stripe')),
                 self._sig(view.get('pos')), self._sig(view.get('kept')), tuple(view.get('extent') or ()),
@@ -469,7 +498,18 @@ class FeenstraWindow:
                 plots.draw_drift_lines(top, view['drift_lines'])
 
     def refresh(self):
-        """Redraw from the main window's current view (nothing when either window is closed)."""
+        """
+        Redraw from the main window's current view, feenstra_view(calibrate,
+        normalize) with this window's own flags (nothing when this window is
+        closed; an exception from the main window is printed and ends the
+        refresh): the axes rebuilt when the kind changed, the settings boxes
+        synced to the main window's, then per column the sweep panel
+        ('sweeps'), or the heatmap / map rebuilt only when its fingerprint
+        changed, the marker overlays replaced, and the marker curve panel
+        redrawn (plots.draw_marker_curves); a column with a note shows the
+        note alone.  The figure title is 'Feenstra normalization: ' and the
+        view's title.
+        """
         if not self.is_open():
             return
         flags = self.pipeline.state()

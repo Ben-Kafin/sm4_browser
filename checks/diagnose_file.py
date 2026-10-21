@@ -20,6 +20,7 @@ from sm4_Browser import qtplot
 
 
 def step(name, fn):
+    """Run fn() as one named step under qtplot.watchdog (the stack printed every 15 s while it runs), timed; its result, or None after a printed exception."""
     t0 = time.perf_counter()
     print(f"-> {name} ...", flush=True)
     with qtplot.watchdog(f"diagnose: {name}"):
@@ -35,6 +36,7 @@ def step(name, fn):
 
 
 def stats(name, a):
+    """One line on an array: its shape, how many values are finite, their minimum and maximum."""
     a = np.asarray(a, dtype=np.float64)
     ok = np.isfinite(a)
     if a.size == 0:
@@ -44,6 +46,7 @@ def stats(name, a):
 
 
 def diagnose(path):
+    """The steps of the module docstring on one file, each timed and reported; stops after a failed Sm4File."""
     from sm4_Browser import sm4file
     print(f"file: {path}  ({os.path.getsize(path)} bytes)")
     h = step("header scan (sm4_header_info)", lambda: sm4file.sm4_header_info(path))

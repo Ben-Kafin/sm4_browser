@@ -7,17 +7,28 @@ Created on Fri May  2 14:01:51 2025
 The Line tool: a grid line's dI/dV or IETS against position.  Data
 extraction from the file (the channel's columns and the I(V) of one line,
 the topography rows of the stripe), and the Line window: the topo stripe,
-the heatmap with its 'γ' box, the marker curve panel, the marker groups
-(widgets.MarkerGroupControls), the window's own 'Feenstra' toggle with its
-Feenstra companion (feenstra.FeenstraWindow), the 'calibrate' /
-'normalize' box (widgets.PipelineBox, top right as in every window), the
-'line' box with its '< line' / 'line >' arrows, the topo-row controls,
-'save' (the marker record averages/<file stem>_line<k>_markers.json),
-'line → new avg' / 'line → existing avg' (this line into a line average,
+the heatmap with its 'γ' box, the energy slice with its E-markers (the
+'E-markers' slider, 'clear E-markers', the readout; Left / Right / Tab),
+the marker curve panel, the marker groups (widgets.MarkerGroupControls),
+the window's own 'Feenstra' toggle with its Feenstra companion
+(feenstra.FeenstraWindow), the 'calibrate' / 'normalize' box
+(widgets.PipelineBox, top right as in every window), the 'channel' radio,
+the 'sweeps' radio of a file with several sweeps per pixel, the 'E range'
+/ 'x range' boxes, the window's own 'auto drift' / 'manual drift' toggles
+and 'drift window', the 'line' box with its '< line' / 'line >' arrows,
+the topo-row controls (with a 'profile' button per row), 'save' (the
+marker record averages/<file stem>_line<k>_markers.json), 'line → new
+avg' / 'line → existing avg' (this line into a line average,
 lineavg.LineAverages), 'add new' / 'add existing' per marker group (the
 averaging windows), and 'Send to fit'.  Every control is built through
 widgets.py; every drawing goes through plots.py.  The pipeline is the
-package's one pipeline (STS.process_arrays).
+package's one pipeline (STS.process_arrays).  Positions are in Å after
+the file's scale factor (the `scalefactor` argument: recorded metres
+divided by it; the browser hands the scale in force at the file's time
+from its timeline, scales.Scales).  lineavg.LineAverage subclasses Line
+and replaces its source hooks (_int_load_source, _int_pipeline,
+_int_set_topo_lines, ...) to show an aligned average with the same
+controls.
 """
 
 if __package__ in (None, ''):
@@ -76,8 +87,11 @@ def line_axis(xy_m, n_fast, line, scalefactor, fast_page=None):
     from the grid's first spectrum to its second.  Spectrum j of the line
     sits at pos[j]; so does pixel j of the line's forward and reverse topo
     rows (Sm4File.topo_raw, raw pixel order: the image pixel (i, j) is
-    recorded at the position of spectrum i x n_fast + j).  Without recorded
-    positions the fast page's axis (line_positions) is used.
+    recorded at the position of spectrum i x n_fast + j).  A short last
+    line is continued at the nominal spacing to n_fast values.  Without
+    recorded positions (fewer than two in the file or on the line) the
+    fast page's axis (line_positions) is used, and without a fast page
+    the indices 0, 1, ..., n_fast - 1.
     """
     xy = np.asarray(xy_m, dtype=np.float64)
     n_fast = int(n_fast)
@@ -100,20 +114,24 @@ def stripe_rows(sm4, topo_lines, line=None, scalefactor=1.0, kept_only=True):
     """
     The raw row profiles of (row, mode) pairs from a grid file's topographic
     pages, every pixel at its own recorded location: a page row's pixels
-    (Sm4File.topo_raw, raw pixel order) with the along-line coordinate of
-    each, its recorded location from the page geometry
-    (Sm4File.pixel_xy_m) projected on the grid's fast axis from the first
-    spectrum of `line` (the window's line; the row's own line when None),
-    in Å after the scale factor.  A forward pixel is kept only when the
-    spectrum recorded at its location (Sm4File.spectrum_pixels, by
-    location, never by index) is kept; a forward pixel with no spectrum at
-    its location is NaN and counted; the reverse page has no spectroscopy
-    and its acquired pixels are all kept.  With kept_only False (the raw
-    profile window) every acquired forward pixel is kept whether or not its
-    spectrum is.  A row of None means the middle
-    row.  Returns ([profile, ...], [positions, ...], [(row, mode), ...]
-    resolved), each profile and its positions sorted by position.  Raises
-    on a bad row or mode.
+    (Sm4File.topo_raw, raw pixel order, heights in Å; a pixel never written
+    is NaN there already) with the along-line coordinate of each, its
+    recorded location from the page geometry (Sm4File.pixel_xy_m)
+    projected on the grid's fast axis from the first spectrum of `line`
+    (the window's line; the row's own index when None), in Å after
+    `scalefactor` (1.0: nominal Å).  A forward pixel is kept only when a
+    kept spectrum was recorded at its location (Sm4File.spectrum_pixels,
+    by location, never by index); every other forward pixel is NaN; the
+    kept spectra that have no forward pixel at their location (deviation
+    above sm4file.PIXEL_PAIR_TOL_PX) are counted on the console; the
+    reverse page has no spectroscopy and its acquired pixels are all
+    kept.  With kept_only False (the raw profile window) every acquired
+    forward pixel is kept whether or not its spectrum is.  A row of None
+    means the middle row.  Returns ([profile, ...], [positions, ...],
+    [(row, mode), ...] resolved), each profile and its positions sorted by
+    position.  Raises on a bad row or mode, on a reverse row of a file
+    with one topographic page, and on a file without recorded spectrum
+    positions.
     """
     profiles, positions, resolved = [], [], []
     imgs, locs = {}, {}
@@ -163,8 +181,9 @@ def common_stripe_axis(profiles, positions):
     """
     One position axis for several row profiles: the first profile's; a
     profile recorded on another set of positions is interpolated onto it
-    over its finite samples (NaN outside them).  Returns (positions,
-    [profile, ...]).
+    over its finite samples (NaN outside them; a profile with fewer than
+    two finite samples becomes all NaN).  Returns (positions, [profile,
+    ...]).
     """
     base = np.asarray(positions[0], dtype=np.float64)
     out = []
@@ -186,7 +205,17 @@ class Line:
     """
     A grid line's dI/dV or IETS against position: the data of one line of an
     SM4 grid file (extract_data) and the interactive window
-    (plot_line_with_topo_interactive).
+    (plot_line_with_topo_interactive).  __init__ loads the file (self.f,
+    self.spectra: the STS of its spectroscopy pages, or a sweep view of it)
+    and slices the line at chunk_index: self.chunk / self.iv_chunk (the
+    channel's raw columns and the I(V), (npts, n_fast)), self.kept (the
+    kept spectra of the line), self.pos (the position axis, Å after the
+    scale factor), self.energy, the setpoint and units.  Everything of the
+    window is prefixed _int_ (the figure _int_fig, the axes _int_ax_topo /
+    _int_ax_didv / _int_ax_slice / _int_ax_curve, the displayed array
+    _int_curves (rows = spectra at _int_pos, columns = _int_energy
+    ascending), the marker state _int_marker_pos / _int_group_sizes, ...).
+    lineavg.LineAverage subclasses this and overrides the source hooks.
     """
 
     # The Feenstra companion shows heatmaps (its own 'γ' boxes and pipeline box).
@@ -203,8 +232,9 @@ class Line:
     PANEL_CLEARANCE = 0.06
     TOPO_CBAR = [0.94, 0.35, 0.01, 0.35]        # the page's topo colour bar (plots.draw_topo_cbar)
     # Topo row controls: two columns of TOPO_ROWS_PER_COLUMN rows each (rows 1 to 4 at
-    # TOPO_ROW_X[0], 5 to 8 at TOPO_ROW_X[1]), a 'rows' box and an 'f' button per row, filled
-    # from the bottom; more than TOPO_ROWS_IN_FIGURE rows live in the 'topo rows' window.
+    # TOPO_ROW_X[0], 5 to 8 at TOPO_ROW_X[1]), a 'rows' box, an 'f' / 'r' button and a 'profile'
+    # button per row, filled from the bottom; more than TOPO_ROWS_IN_FIGURE rows live in the
+    # 'topo rows' window (ROWS_DESIGN, ROWS_ROW_IN, ROWS_PAD_IN below).
     TOPO_ROW_X = (0.848, 0.924)
     TOPO_ROW_GAP = 0.002
     TOPO_ROW_Y0, TOPO_ROW_PITCH = 0.105, 0.035
@@ -219,14 +249,22 @@ class Line:
     def __init__(self, ifile, chunk_index=0, cmap='jet', scalefactor=2.75, scan_mode='single', combine_scans=False,
                  sweeps=None):
         """
-        Initialize the Line tool (a grid line's dI/dV or IETS against position).
-          ifile         : Path to an SM4 file.
-          chunk_index   : Which full line (if more than one exists) for the dI/dV data.
-          cmap          : Colormap for plotting.
-          scalefactor   : Scale factor for converting positions.
-          scan_mode     : 'single' (one spectrum per position) or 'combined' (forward/backward interleaved).
-          combine_scans : Only used when scan_mode='combined'. If True, average forward and backward scans.
-                          If False, keep forward and backward separate for side-by-side plotting.
+        Initialize the Line tool (a grid line's dI/dV or IETS against position):
+        the file loaded, the channel chosen (the first the file holds: dI/dV,
+        else IETS), the line sliced (extract_data).  The window is opened by
+        plot_line_with_topo_interactive.
+          ifile         : Path to an SM4 grid file.
+          chunk_index   : Which line (0-based; the file holds total spectra / line length lines).
+          cmap          : Colormap of the heatmap.
+          scalefactor   : The file's x/y scale factor: positions are the recorded metres divided
+                          by it (Å; the browser hands the scale in force at the file's time,
+                          scales.Scales; 2.75 is the package's base scale).
+          scan_mode     : 'single' (one spectrum per position) or 'combined' (forward/backward
+                          sweeps interleaved column by column).
+          combine_scans : Only used when scan_mode='combined'. If True, average forward and backward
+                          sweeps (scan_mode 'combined').  If False, keep them separate (scan_mode
+                          'separate': the window shows their mean, _int_load_source; the 'add' and
+                          'line →' buttons need 'single').
           sweeps        : a file with several sweeps per pixel (sweeps.py): the sweep view to open on
                           ('forward sweeps', 'reverse sweeps', 'all sweeps', 'sweep n'); None: the file's default.
                           The window's 'sweeps' radio changes it.
@@ -280,7 +318,9 @@ class Line:
         self.energy = self.spectra.energy.copy()
         self.LIAcurrent = self.spectra.channel(self.channel).copy()  # shape: (npts, total_scans)
         total_scans = self.LIAcurrent.shape[1]
-        # The kept spectra of the file (STS.acquired: no column all zeros or ending in zeros).
+        # The kept spectra of the file (STS.acquired: no column of the channel or of the Current page
+        # never written or ending in never-written samples; a never-written sample is the page's
+        # RHK_Zoffset).
         kept_all = np.asarray(self.spectra.acquired, dtype=bool)
 
         # --- The I(V) current spectroscopy channel (STS: present when its shape matches) ---
@@ -670,9 +710,12 @@ class Line:
         row's line in one profile window (topo.ProfileWindow): every
         acquired pixel of each pass at its recorded position along the line
         from the line's first spectrum (stripe_rows with kept_only False,
-        nm after the scale factor), heights raw (in metres as the loader gives them, no
-        processor, no normalization), forward and reverse in their own
-        colours.
+        nm after the scale factor), heights in nm, raw (the loader's
+        metres converted, no processor, no normalization), forward and
+        reverse in their own colours (plots.PROFILE_FORWARD_COLOR /
+        PROFILE_REVERSE_COLOR).  The window's 'add new' / 'add existing'
+        put the pair into the browser's profile plots when the window was
+        given them (profile_plots).
         """
         if k >= len(self._int_topo_lines):
             return
@@ -893,10 +936,13 @@ class Line:
 
     def _int_topo_rows_window(self):
         """
-        The separate 'topo rows' window: every row with its line-index box and
-        f/r button (the same callbacks as the in-figure controls), used while
-        more than TOPO_ROWS_IN_FIGURE rows exist.  Opened by '+' / '-' when
-        needed; closed by hand it stays closed until the next '+' / '-'.
+        The separate 'topo rows' window: every row with its line-index box,
+        f/r button and 'profile' button (the same callbacks as the
+        in-figure controls), used while more than TOPO_ROWS_IN_FIGURE rows
+        exist.  Opened by '+' / '-' when needed; closed by hand it stays
+        closed until the next '+' / '-'.  Its size: ROWS_DESIGN wide, and
+        the taller of ROWS_DESIGN's height and ROWS_ROW_IN per row plus
+        ROWS_PAD_IN (inches; its text zoom follows qtplot.window_zoom).
         """
         self._int_close_rows_window()
         n = len(self._int_topo_lines)
@@ -947,7 +993,7 @@ class Line:
         self._int_rows_widgets = []
 
     def _int_rows_stack_top(self):
-        """The top of the in-figure topo row stack (0 when hidden or absent)."""
+        """The top of the in-figure topo row stack (figure fraction): the first column's height, at most TOPO_ROWS_PER_COLUMN rows; 0 when hidden (more than TOPO_ROWS_IN_FIGURE rows) or absent."""
         n = len(getattr(self, '_int_topo_lines', []))
         if not getattr(self, '_int_topo_row_widgets', None):
             return 0.0
@@ -1212,7 +1258,7 @@ class Line:
         return int(np.argmin(np.abs(self._int_pos - pos_val)))
 
     def _int_col_of(self, pos_val):
-        """Original column of the line (along self.pos) nearest a position; _int_row_of is its row."""
+        """Original column of the line (along self.pos) nearest a position; _int_row_of is its row (the same index: row j of the displayed array is spectrum j)."""
         return int(np.argmin(np.abs(self._int_pos - pos_val)))
 
     def _int_acquired(self, j):
@@ -1854,9 +1900,10 @@ class Line:
         line (a Selection of its columns, which carries the raw LIA and I(V)
         columns, the energy axis, V_bias, I_setpoint, and the current's
         scale), the line index, the positions (Å), the stripe rows as the
-        window has them (the raw profiles and their (row, pass) list), and
-        the window's marker positions and group centres.  scan_mode 'single'
-        only.
+        window has them (the raw profiles, their position axis 'topo_x'
+        and their (row, pass) list), the window's marker positions and
+        group centres (Å), and the window's scale factor (kept in the
+        line-average record).  scan_mode 'single' only.
         """
         cols = self._int_line_columns()
         selection = Selection(self._int_sm4(), cols, {'line': int(self.chunk_index),
@@ -1987,12 +2034,16 @@ class Line:
     def restore_markers(self, rec):
         """
         Put a marker record's state into the open window (the browser's
-        loader, after plot_line_with_topo_interactive on the record's file
-        and line): the filter boxes and states, the calibrate / normalize /
+        loader, browser.load_line_record, after
+        plot_line_with_topo_interactive on the record's file, line and sweep
+        view): the filter boxes and states, the calibrate / normalize /
         Feenstra states and settings, the gamma, the 'E range' and 'x range'
-        boxes, the topo rows and processor,
-        the group sizes and marker positions, Average / stack / substack.
-        Every part that cannot be applied is reported and skipped.
+        boxes (when the record has them), the topo rows and processor, the
+        group sizes, centres and marker positions (clipped to the line),
+        the E-markers (snapped to the recorded energies), Average / stack /
+        substack; then the pipeline rerun and the stripe redrawn.  Every
+        part that cannot be applied is reported and skipped (a record whose
+        group sizes and markers disagree keeps the window's markers).
         """
         hp, sp = rec.get('hampel'), rec.get('sgolay')
         try:
@@ -2142,7 +2193,8 @@ class Line:
 
         hp, sp = self._int_hampel_params, self._int_sgolay_params
 
-        # As displayed: calibrate against the raw I(V), (divide by the filtered I/V), normalize.
+        # As displayed, with calibration and normalization forced on: the I(V) through the filters once,
+        # the calibration against that current, (the division by its broadened I/V), the normalization.
         div = self._int_divide_iv
         quantity = 'ratio' if div else 'didv'
         width, zs = self._int_iv_width(), self._int_iv_zero_sub
@@ -2210,10 +2262,10 @@ class Line:
                               f"{self.ifile} | marker at {pos_val:.1f} A" + suffix,
                               raw[:, [j]], iv[:, [j]], 'column'))
 
-        # Fit history cache per sent curve, as in the fit module's __main__: with
-        # use_cache on and a readable <date_time>_<label>_fits.pkl present in this
-        # file's folder, the figure opens from it; otherwise a fresh sweep runs and
-        # writes the cache.
+        # Fit history cache per sent curve, as in the fit module's __main__: with use_cache on and an
+        # up-to-date <file stamp>_<cleaned marker text>_fits.pkl (Fit._stem_of of the label; the newest
+        # of its family) present in this file's folder, the figure opens from it; otherwise a fresh
+        # model selection runs and writes the cache.
         use_cache = settings.pop('use_cache', True)
         for data, data_unfiltered, areas, delta_I, label, lia_raw, iv_raw, stage in sends:
             print("\n" + "=" * 70)
@@ -2344,9 +2396,9 @@ class Line:
         self._int_gamma_box = widgets.GammaBox(fig, gamma=self._int_gamma0)
         self._int_gamma_box.on_change(self._int_on_gamma)
         self._int_gamma_box.attach(self._int_ax_didv)
-        # Topo stripe source: one row of controls per averaged profile (a 'rows' box and an
-        # 'f' button), TOPO_ROWS_IN_FIGURE of them in two columns filled from the bottom,
-        # hidden until used (_int_refresh_topo_rows); '+' / '-' add and remove rows.
+        # Topo stripe source: one row of controls per averaged profile (a 'rows' box, an 'f' / 'r'
+        # button and a 'profile' button), TOPO_ROWS_IN_FIGURE of them in two columns filled from the
+        # bottom, hidden until used (_int_refresh_topo_rows); '+' / '-' add and remove rows.
         self._int_topo_row_widgets = []
         w_box, _ = widgets.size_of(fig, 'rows')
         w_f, _ = widgets.size_of(fig, 'f')
@@ -2380,6 +2432,7 @@ class Line:
         self._int_line_steps.on_change(self._int_on_line_step)
 
     def _int_connect(self):
+        """The figure's events: pick, motion and release (the drags), key presses (the E-markers), and the Drift subscription."""
         fig = self._int_fig
         fig.canvas.mpl_connect('pick_event', self._int_on_pick)
         fig.canvas.mpl_connect('motion_notify_event', self._int_on_motion)
@@ -2424,8 +2477,9 @@ class Line:
         The Line window.
 
         Placement: every row of the heatmap is one kept spectrum of the line
-        (STS.acquired: no column all zeros or ending in zeros) at its
-        recorded position along the line (line_axis), and every cell of the
+        (STS.acquired: no column of the channel or of the Current page never
+        written or ending in never-written samples) at its recorded
+        position along the line (line_axis), and every cell of the
         topo stripe is a page pixel at the position its page geometry
         records for it (stripe_rows, Sm4File.pixel_xy_m), a forward pixel
         drawn only when the spectrum recorded at its location (found by
@@ -2439,22 +2493,35 @@ class Line:
         own topo pixel (the height was recorded before the sweep) and is
         sheared along the position axis by the drift during its own sweep
         (Drift.row_shear: pixel by pixel in time from the file's velocity,
-        the before/after topo pair's, auto or manual; the stripe matching
-        never enters here; nothing along the energy axis), the stripe is
-        never moved, and each row's drift line is drawn on the stripe from
-        its anchor through the along-line drift of its sweep, in the auto
-        or the manual colour; with both sources off, the rows are plain.
-        'drift window' opens the file's before and after topos for marker
-        pairs (drift.DriftWindow), whose span refits the rows at once.
-        Every topo row has a 'profile' button opening its line's raw
-        forward and reverse passes in a profile window
-        (_int_on_topo_row_profile).
+        the before/after topo pair's, auto or manual; nothing along the
+        energy axis), plus, when the grid's stripe matching is set, the
+        row's along-line offset from that placement and its line's measured
+        forward compression (_int_shear; the stripe matching is also what
+        shears the rows with both toggles off), the stripe is never moved,
+        and each row's drift line is drawn on the stripe from its anchor
+        through the along-line drift of its sweep, in the auto or the
+        manual colour; with both sources off and no stripe matching, the
+        rows are plain.  'drift window' opens the file's before and after
+        topos for marker pairs (drift.DriftWindow), whose span refits the
+        rows at once (Drift.subscribe).  Every topo row has a 'profile'
+        button opening its line's raw forward and reverse passes in a
+        profile window (_int_on_topo_row_profile).
 
         Static panels: topo stripe + dI/dV heatmap (its 'γ' box just below
-        its bottom-right corner: the colour map's exponent, plots.heat_norm).
-        Interactive: draggable position markers whose 1D spectra are shown in
-        a third panel.  The 'avgs' slider (1 to 10) is the number of average
-        groups; every group has its own 'Markers' slider (1 to 10 markers),
+        its bottom-right corner: the colour map's exponent, plots.heat_norm)
+        + the energy slice.  Interactive: draggable position markers whose
+        1D spectra are shown in a fourth panel.  The E-markers (the
+        'E-markers' slider, 0 to E_MAX; 'clear E-markers'; the readout
+        above the panels) are vertical lines at recorded energies on the
+        heatmap and the curve panel, draggable along the energy axis, the
+        selected one moved by Left / Right and chosen by Tab; the energy
+        slice shows the heatmap's quantity against position at every
+        E-marker (_int_redraw_e_markers).  The 'E range' box ((lo, hi) V)
+        is the shown energy range, the normalization range and the colour
+        scale's; the 'x range' box ((lo, hi) Å) the shown position range.
+        The 'avgs' slider (0 to MAX_GROUPS) is the number of average
+        groups; every group has its own 'Markers' slider (0 to 10 markers;
+        a group at 0 keeps its centre),
         the sliders stacked bottom to top in the order of the groups' average
         locations on the stripe (highest group at the top, as in the stack
         panel), each filled with its group's colour; the stack grows and
@@ -2505,20 +2572,24 @@ class Line:
         window.  The Savitzky-Golay and Hampel filters are in-window controls
         (widgets.FilterControls): every filter starts off, each switchable on
         its own, their boxes at hampel_filter_params / sgolay_filter_params
-        (or the control defaults when None); they act on the current alone,
-        inside the Feenstra division (Hampel, SG in that order, before the 0 V
-        subtraction and the broadening; the channel's columns are never
-        filtered, so with the division off they change nothing), and every
-        toggle or edit recomputes the heatmap and the marker curves through
-        the same pipeline (calibration against the raw I(V), division by the
-        filtered I/V, normalization; a group average is the plain mean).
+        (or the control defaults when None); they act on the current alone
+        (Hampel, SG in that order; the channel's columns are never
+        filtered): the calibration regresses against the filtered current
+        and the Feenstra division divides by its broadened I/V (after the
+        0 V subtraction), so with the calibration and the division both
+        off they change nothing; every toggle or edit recomputes the
+        heatmap and the marker curves through the same pipeline
+        (calibration against the filtered I(V), division by its broadened
+        I/V, normalization; a group average is the plain mean).
         A "Send to fit" button sends the marker spectra (or, when the
         Average toggle is on, one average per group, each labeled with its
         own marker positions) to the single-point fit (Fit) with
         the on-screen filter settings (dI/dV only).  The 'channel' radio
         switches the line between the dI/dV and the IETS channel of the file
         (STS; the IETS is calibrated with the double-derivative regression
-        and normalized, never divided by I/V).  The topo stripe source is
+        and normalized, never divided by I/V).  The 'sweeps' radio of a
+        file with several sweeps per pixel re-slices the line from the
+        chosen sweep view (_int_on_sweeps).  The topo stripe source is
         changeable in the window: one row of controls per averaged topo
         profile, a line-index box and an f/r button (forward / reverse), '+'
         adds a row (the current line, forward; at most 2 x the lines in the
@@ -2544,13 +2615,15 @@ class Line:
             that many markers).  If None, one group of two markers one
             spectrum step apart at the middle of the line.
         topo_lines : list of (row, 'forward' | 'reverse') or None
-            The initial rows; None gives (chunk_index, forward), (chunk_index, reverse).
+            The initial rows; None gives the line's forward row alone,
+            (chunk_index, 'forward').  Rows that cannot be extracted leave
+            the window unbuilt with the reason printed.
         fit_settings : dict or None
             Keyword arguments for Fit.select_model
-            (known_features, n_jobs, max_width_ratio, noise_z), plus
-            'use_cache' (default True): open a sent curve's figure from its
-            fit history cache when that file exists (see the fit module)
-            instead of running a fresh sweep.
+            (known_features, n_jobs, max_width_ratio, noise_z, background),
+            plus 'use_cache' (default True): open a sent curve's figure from
+            its fit history cache when that file exists (see the fit module)
+            instead of running a fresh model selection.
         divide_by_iv : bool
             Starting state of the window's own 'Feenstra' toggle (default
             on).  On: after the calibration every curve is divided point by
@@ -2578,6 +2651,11 @@ class Line:
             buttons use (the Browser's); None makes one at the first use.
         gamma : float
             Starting value of the heatmap's 'γ' box.
+        drift, auto_on, manual_on : drift.Drift or None, bool, bool
+            The directory's drift model and the starting states of the
+            window's own 'auto drift' / 'manual drift' toggles (the
+            browser's); without a Drift the toggles stay off and 'drift
+            window' says so.
         profile_plots : topo.ProfilePlots or None
             The Browser's profile plots: the 'profile' windows' 'add new' /
             'add existing' buttons add their forward/reverse pair there
@@ -2682,8 +2760,8 @@ class Line:
 if __name__ == '__main__':
     # Replace 'example.sm4' with the correct path.
     #analyzer = Line('experiment_dir/file.sm4', chunk_index=0, cmap='jet', scalefactor=2.75, scan_mode='single', combine_scans=False)
-    analyzer = Line('experiment_dir/file.sm4', chunk_index=1, cmap='jet', scalefactor=2.75, scan_mode='single', combine_scans=False)    
-    # Static plot (original).
+    analyzer = Line('experiment_dir/file.sm4', chunk_index=1, cmap='jet', scalefactor=2.75, scan_mode='single', combine_scans=False)
+    # The former static plot (plot_line_with_topo), no longer in the module; kept as a note in the string below.
     '''
     analyzer.plot_line_with_topo(hampel_filter_params={'window': 3, 'n_sigma': 2.5},
                                   sgolay_filter_params={'window_length': 5, 'polyorder': 3},

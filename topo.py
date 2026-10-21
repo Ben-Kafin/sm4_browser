@@ -3,7 +3,8 @@ Topography processing: slope subtraction and Δz subtraction of an image (per
 scan line) and of a profile, the topography processors (one active at a
 time) and their directions, the range matching of averaged topographies,
 the processed topography of a file, the Topo window, the raw cross section
-of the loaded topos along a line (cross_section), the profile window
+of the loaded topos along the browser's section path (cross_section: every
+segment of the path in order, each topo at its own scale), the profile window
 (ProfileWindow: raw height against position, the forward and reverse
 passes of a grid line from the Line window, or the browser's cross
 section), and the profile plots (ProfilePlots, ProfilePlot: the pairs sent
@@ -283,24 +284,33 @@ class TopoWindow:
     off, the processed image and the recorded positions.  A grid's own topo
     pixels are drawn over the image at their positions (grid_stripe_layers)
     as the scan area draws them, the pass chosen by the window's 'topo
-    pass' radio: with both drift toggles off forward, reverse, or the
-    average of the two at the recorded positions; with a source on the
-    chosen pass at its corrected positions, 'average' showing both passes
-    at theirs, the pass the radio names drawn on top.  'stripe match'
-    (grid files) opens the stripe window (stripe.StripeWindow); the grid's
-    stored fast-axis state for the setting in force places the lines
-    (Drift.result with stripe None); the browser's 'anchor to topo' state
-    is taken at opening (no toggle of its own here).  Its colour bar
-    carries the height scale (nm).
+    pass' radio ('average' counts as forward: a grid's two passes are never
+    averaged): with both drift toggles off that pass alone at the recorded
+    positions; with a source on both passes at their corrected positions,
+    the pass the radio names on top.  'stripe match' (grid files) opens the
+    stripe window (stripe.StripeWindow); the grid's stored fast-axis state
+    for the setting in force places the lines (Drift.result with stripe
+    None); the browser's anchor_on state is taken at opening (no toggle of
+    its own here; no window builds the 'anchor to topo' toggle today, so it
+    is off).  Its colour bar carries the height scale (nm).  Every length
+    is drawn at `scalefactor`: the window takes the scale the caller gives
+    and keeps it (the browser passes the current file's).
       topo        : the topography (Sm4File)
-      spec        : the spectra file drawn on it (Sm4File of kind 'point', 'grid',
-                    or 'phase'), or None
-      drift       : the directory's Drift, or None (no correction possible)
-      auto_on, manual_on : the toggles' starting states
-      anchor_on   : the state taken from the browser
-      spec_dir    : the grid's topo pass at opening ('forward' or 'reverse')
+      active_procs: the topo processor flags (TOPO_PROCESSORS, one on at most)
+      scalefactor : the scale factor the frame and every position are drawn at
+                    (nm = metres x 1e9 / scalefactor)
       marker_xy_m : (kept for callers without `spec`) positions (n, 2) drawn as
                     a point's sweeps
+      title       : the title's file text (the topo's name when None)
+      direction   : the topo's pass shown ('forward', 'reverse' or 'average')
+      spec        : the spectra file drawn on it (Sm4File of kind 'point', 'grid',
+                    or 'phase'), or None
+      drift       : the directory's Drift, or None (no correction possible; the
+                    toggles then start off and cannot be turned on)
+      auto_on, manual_on : the toggles' starting states
+      anchor_on   : the state taken from the browser (always False today)
+      spec_dir    : the grid's topo pass at opening ('forward' or 'reverse')
+      stripe_on   : accepted and unused
     """
 
     DESIGN = (7.5, 7.4)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
@@ -345,6 +355,7 @@ class TopoWindow:
         return self.drift is not None and (self.auto_on or self.manual_on)
 
     def _image(self):
+        """The image drawn (nm): skewed by the drift during its scan with a source on (Drift.corrected_topo; the plain processed image when that fails, said on the console), else processed_topo."""
         if self._drift_active():
             try:
                 return self.drift.corrected_topo(self.topo, self.direction, self.active, None,
@@ -354,6 +365,11 @@ class TopoWindow:
         return processed_topo(self.topo, self.direction, self.active) * 1e9
 
     def draw(self):
+        """
+        Everything drawn anew: the image in its scan frame with the height colour bar, the spectra
+        file's positions in that frame (corrected with a source on, with their drift lines in the
+        source's colour), a grid's own topo pixels, and the title with the pass and drift state.
+        """
         ax = self.ax
         ax.clear()
         if self.cbar is not None:
@@ -483,8 +499,9 @@ def cross_section(topos, points, scale_of):
     The raw cross section of the loaded topographies along a path: `points`
     (n, 2) in the scan area's drawing units (calibrated nm), the path's
     points in order, two or more.  Samples along the path at the finest
-    pixel pitch of the topos it crosses (each pitch in drawing units at that
-    topo's own scale); at every sample the topmost topo whose footprint
+    pixel pitch among the topos given (each pitch in drawing units at that
+    topo's own scale; a hundredth of the path's length without any topo with
+    an image); at every sample the topmost topo whose footprint
     contains it (`topos` oldest first, as the browser draws them: the last
     one containing the sample wins) supplies the raw height (Sm4File.topo_raw,
     in metres as the loader gives it, no processor, no normalization), its

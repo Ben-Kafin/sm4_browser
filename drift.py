@@ -151,16 +151,22 @@ that topo began; off, the file's first spectrum stays at its recorded
 position.  The MATLAB "deform topo" is the topo skew above, applied with the
 manual velocity when manual drift is on (MATLAB anchors the skewed image at
 the scan's end, this package at its first pixel: a rigid v T apart).
-The applied spans live in their own section of the cache, never touched by
-the tracking; the console names the source of every file's velocity
-('auto', 'auto (confirmed)', 'manual (markers)', 'manual (typed)').
+The applied spans are the 'drift' section of the settings store
+(settings_<stamp>.json, caches.Settings), never touched by the tracking;
+the console names the source of every file's velocity
+('auto (pair)', 'auto (next)', 'auto (previous)', 'auto (extrapolated)',
+'auto (confirmed)', 'manual (markers)', 'manual (typed)'; PairDrift's rule).
 The drift window (DriftWindow: the Browser's 'drift' button for the current
 file, the 'drift window' button of the Line and Map windows) shows the pair
 a file's auto velocity comes from side by side (Drift.window_pair: a spectra
 file's before and after topos; a topo and the next of its segment, else the
-previous and it), each panel also carrying the other topo's recorded frame
-as a thin black outline on top, and takes the marker pairs for exactly that
-span; its one velocity box is what gets applied.  Its '< before' / 'before >' and
+previous and it), the panels in calibrated nm with each topo image and each
+other topo's recorded frame (a thin black outline on top of its panel) at
+the scale in force at its own file's time, and takes the marker pairs for
+exactly that span; its one velocity box, 'v (nm/h, cal)', is what gets
+applied: it is typed and shown in calibrated nm/h (the window's file's
+scale), stored nominal (recorded metres), and every readout shows the
+calibrated value with the nominal beside it.  Its '< before' / 'before >' and
 '< after' / 'after >' buttons step either topo through the segment in time
 order, and the box then applies to the span between the topos shown, which
 covers every file between them.  The Browser applies the manual
@@ -168,18 +174,21 @@ velocities wherever they cover a file; the Browser, Topo, Line, and Map
 windows each have their own 'auto drift' and 'manual drift' toggles.
 
 Seeded markers, the velocity box, 'set from markers', 'apply velocity'.
-With auto drift on and the pair a file uses tracked (Drift.auto_pair_for), a
-marker clicked on one topo of that pair seeds its partner on the other topo
-where the auto velocity puts the same feature: xy_B = xy_A + v_auto (t_B -
+A marker clicked on one topo of the pair seeds its partner on the other
+topo where the velocity governing the pair puts the same feature
+(DriftWindow._seed_velocity: the pair's applied span, else the file's
+velocity with both sources on, else the pair's tracked velocity; nothing
+without one): xy_B = xy_A + v (t_B -
 t_A), t_B the pixel time at the seeded spot (seed_partner; three fixed-point
 passes, since v x row time is tiny; no seed when the spot falls outside the
 other topo).  Dragging the clicked marker re-seeds an unmoved partner;
 dragging the partner adjusts it ("moved" = more than half a pixel of its topo
 from the seeded spot).  The markers are a draft: placing, dragging,
 'Markers', and 'clear markers' change only the draft and the readout.  'set
-from markers' writes the draft's velocity into the 'v (nm/h)' box (every
-pair seeded and unmoved: the auto pair velocity itself, marked confirmed;
-otherwise the least-squares fit of the pairs) and stores nothing; typing
+from markers' writes the draft's velocity into the 'v (nm/h, cal)' box (every
+pair seeded by an auto velocity and unmoved: the pair's tracked velocity
+itself, marked confirmed; otherwise the least-squares fit of the pairs) and
+stores nothing; typing
 into the box only fills it.  'apply velocity' stores the box as the span of
 the window's pair, replacing what that pair had: kind 'confirmed' when the
 box still holds the unmoved seeded value (source 'auto (confirmed)'),
@@ -190,8 +199,8 @@ the pair's span, and the files between the two topos go back to auto.  A
 confirmed span is a stored span like the others, governed by the 'manual
 drift' toggle (also with auto drift off); its drift lines take
 plots.CONFIRMED_DRIFT_COLOR (auto white, manual red).  Each span carries its
-kind in the cache; a span without one (older cache) is adjusted, since it
-was hand-placed.  Pair k of a span has its own
+kind in the settings store; a span without one (carried over from an older
+drift cache) is adjusted, since it was hand-placed.  Pair k of a span has its own
 marker colour in both marker windows (plots.MARKER_COLORS, red, green, blue,
 then yellow, magenta, cyan, orange, purple: the eight chromatic basic colour
 terms of Boynton and Olson that read apart on a topo, so 'Markers' runs 1 to
@@ -638,7 +647,12 @@ class PairDrift:
     pair, so d(t) = v (t - t_ref) and only differences of d enter.
       v      : (2,) metres per second
       t_ref  : the reference time (s since the epoch; the displacement is 0 there)
-      rule   : how the velocity was chosen ('pair', 'next', 'previous', 'extrapolated')
+      rule   : how the velocity was chosen, the 'source' of a result and the
+               console's wording: 'auto (pair)', 'auto (next)', 'auto (previous)',
+               'auto (extrapolated)' (the tracker: model_for_spectra, model_for_topo),
+               'auto (confirmed)', 'manual (markers)', 'manual (typed)' (a stored
+               span: _manual_model), 'none (stripe match only)' (a zero velocity,
+               result)
       source : the pair(s) the velocity came from, for the console
     """
 
@@ -702,10 +716,12 @@ class TrackedPairs:
         self.topos = dict(content.get('topos') or {})
 
     def record(self):
+        """The section's content as stored (the dicts themselves)."""
         return {'pairs': self.pairs, 'topos': self.topos}
 
     @staticmethod
     def pair_key(a_name, b_name):
+        """The key of a pair in `pairs`: '<earlier name>|<later name>'."""
         return f"{a_name}|{b_name}"
 
     def get_pair(self, a_name, b_name):
@@ -724,6 +740,7 @@ class TrackedPairs:
         return out
 
     def put_pair(self, a_name, b_name, est):
+        """A track_pair result stored under the pair's key as plain numbers and lists (JSON): the displacement, the time separation, the counts, the spread and cluster distance, the note; not the velocity (get_pair recomputes it)."""
         self.pairs[self.pair_key(a_name, b_name)] = {
             'delta_m': None if est.get('delta_m') is None else [float(x) for x in est['delta_m']],
             'dt_s': float(est.get('dt_s', 0.0)), 'n_a': int(est.get('n_a', 0)), 'n_b': int(est.get('n_b', 0)),
@@ -738,7 +755,7 @@ class TrackedPairs:
 #
 # One optional correction of a grid file's spectrum positions along the fast
 # axis (along a line), on top of the baseline velocity, which owns the slow
-# axis (across the lines) and, with the sub-toggle off, both axes:
+# axis (across the lines) and, with the fast-axis state 'off', both axes:
 #
 #   slow axis (across the lines): the baseline d(t) = v (t - t_0) of the
 #       file's topo pair applied per spectrum as -(d(t_k) - d(t_0)) projected
@@ -1142,6 +1159,7 @@ class StripeReference:
         return bool(self.entries)
 
     def sample(self, xy_m):
+        """(heights (M,), source index (M,)) at absolute positions xy_m (M, 2): the raw forward page of the topmost entry covering each point, bilinear; NaN and -1 where none does."""
         xy = np.atleast_2d(np.asarray(xy_m, dtype=np.float64))
         h = np.full(len(xy), np.nan)
         src = np.full(len(xy), -1, dtype=int)
@@ -1162,6 +1180,7 @@ class StripeReference:
         return h, src
 
     def contains(self, xy_m):
+        """True when some reference topo covers the point (absolute metres)."""
         return bool(self.sample(np.reshape(xy_m, (1, 2)))[1][0] >= 0)
 
     def period_along(self, direction, ds, params=DRIFT_PARAMS):
@@ -1199,10 +1218,12 @@ class StripeReference:
         return float(np.median(periods)) if periods else None
 
     def centre(self, idx):
+        """The placed centre (absolute metres) of entry idx."""
         e = self.entries[idx]
         return e['M'][:2, 2]
 
     def nearest(self, xy_m):
+        """The index of the entry whose placed centre is nearest xy_m; None without entries."""
         if not self.entries:
             return None
         xy = np.asarray(xy_m, dtype=np.float64).reshape(2)
@@ -1303,13 +1324,21 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS, points=
 
     Returns (xy_corr, report lines, lines, pix): 'lines' holds one dict per
     line with its measured factors (Drift.line_velocities reads the forward
-    one): 'i', 'n_kept', 'b_f', 'b_f_measured'
-    (False when no factor could be measured and 1 was used), 'ref_f', 'k_f'
-    (the forward stripe's pairs in its link), 'b_r', 'b_r_measured',
-    'ref_r', 'k_r', 'c' (the line's corrected start coordinate, metres along
-    the fast axis), 'row' (the page row of the line); 'pix' holds
-    {'forward': (ny, nx, 2), 'reverse': (ny, nx, 2) or None}, the corrected
-    absolute position of every pixel (NaN where not used).
+    one, the stripe window the ends): 'i', 'n_kept', 'b_f', 'b_f_measured'
+    (False when no factor could be measured and 1 was used, or the factor
+    was borrowed), 'b_f_pairs' (the factor refitted from the matched
+    extrema, None without three pairs), 'n_fit' (those pairs),
+    'b_f_borrowed', 'b_r_borrowed' (the nearest measured line's factor
+    used), 'topo' (the name of the reference topo under most of the line,
+    None off every topo), 'ref_f', 'a_f' (always 0.0), 'k_f' (the forward
+    stripe's pairs in its link), 'b_r', 'b_r_measured', 'ref_r', 'k_r', 'c'
+    (the line's corrected start coordinate, metres along the fast axis from
+    the grid's first spectrum), 'E' (its corrected forward end, the same
+    units), 'R' (its return point, where the next line's start was measured
+    from; None for the last line without a reverse pass), 'row' (the page
+    row of the line); 'pix' holds {'forward': (ny, nx, 2), 'reverse':
+    (ny, nx, 2) or None}, the corrected absolute position of every pixel
+    (NaN where not used).
     """
     report = []
     lines = []
@@ -1765,13 +1794,17 @@ class TopoRef:
     """
     A topo of the directory without its data: what the baseline model reads
     of a topo (its name, path, times, pixel scales, and footprint), built from
-    the header scan (sm4_header_info) and the cached times of a build, so a
-    file's pair is looked up without loading its topos; the pair tracking
-    loads the files (Drift.pair) only for pairs not in the cache.  The times: the end
-    is the file-name stamp; the start is the cached start (the file's
-    RHK_DateTime, recorded when the topo was loaded), else the end minus the
-    scan's duration (rows x pixels x passes x RHK_Period) when the page has
-    a period, else the end.
+    the header scan (sm4_header_info's geometry, `geom`) and the topo times
+    of the computed store ('pairs' section, TrackedPairs.topos, `times`), so
+    a file's pair is looked up without loading its topos; the pair tracking
+    loads the files (Drift.pair) only for pairs not in the store.  The
+    times: the end is the file-name stamp; the start is the stored start
+    (the file's start_time, recorded with its end when the topo was loaded
+    in a build), else the header scan's RHK_DateTime (geom 'start_time'),
+    else the end minus the scan's duration (rows x pixels x passes x
+    RHK_Period) when the page has a period, else the end; mid_time is the
+    middle of the two.  The geometry methods (rotation, frame_extent_m,
+    geometry, contains_m, to_frame_m) are Sm4File's, from the header values.
     """
 
     kind = 'topo'
@@ -1803,11 +1836,13 @@ class TopoRef:
         self.mid_time = 0.5 * (self.start_time + self.end_time)
 
     def set_times(self, start, end):
+        """The times from the loaded file (a build): start, end and mid replaced."""
         self.start_time = float(min(start, end))
         self.end_time = float(end)
         self.mid_time = 0.5 * (self.start_time + self.end_time)
 
     def times_record(self):
+        """{'start', 'end', 'mid'} (seconds since the epoch): the store's entry for this topo."""
         return {'start': float(self.start_time), 'end': float(self.end_time), 'mid': float(self.mid_time)}
 
     def rotation(self):
@@ -1838,22 +1873,27 @@ class Drift:
     the directory's topos cut into segments at the long-range moves
     (index_segments, from the header scan the Browser made), every
     consecutive topo pair of every segment tracked at startup (build;
-    track_pair, the results kept in the on-disk drift cache so a later
-    startup tracks only new pairs), one result per spectra file (result:
+    track_pair, the results kept in the 'pairs' section of the computed
+    store, TrackedPairs, so a later startup tracks only new pairs), one
+    result per spectra file (result:
     the baseline velocity of the file's before/after pair, the stripe
     matching on top of it when asked), the corrected topographies
     (corrected_topo), the drift within every sweep (sweep_shift), the
     heatmap row shears (row_shear), the map pixel shifts (map_shift), and
     the sweep lines (sweep_lines).
-      directory  : the experiment directory (the drift cache is written there)
+      directory  : the experiment directory (the two stores live there)
       files      : the directory's .sm4 files in stamp order (the Browser's list)
       kinds      : {path: kind} of every file from the header scan (the Browser's dict,
                    shared: a file loaded later is added to it)
       head_geoms : {topo path: header geometry} (the Browser's dict)
       params     : the drift parameters (DRIFT_PARAMS with the Browser's overrides)
       loader     : loader(path) -> Sm4File, the Browser's _load
-    result(f, loaded, stripe) takes the Browser's loaded set for the
-    duration of the call, so files the Browser holds are not loaded again;
+      settings, computed : the experiment's stores (caches.Settings,
+                   caches.Computed), the Browser's; opened here
+                   (caches.open_stores) when either is None
+    result(f, loaded, stripe) keeps the Browser's loaded set (the dict
+    itself, from that call on), so files the Browser holds are not loaded
+    again;
     `stripe` is the fast-axis placement asked for a grid (None: the grid's
     stored state for the setting in force; True / 'auto', 'manual', False /
     'off'; ignored for a point).
@@ -1869,7 +1909,7 @@ class Drift:
         self.drift_params = dict(params)
         self._load = loader
         self.loaded = {}
-        self.drift_index = {}      # (spectra path, stripe flag) -> result entry (see result)
+        self.drift_index = {}      # (path, fast-axis state or False, points, auto, manual, anchor, sweep mode) -> result entry (see result)
         self.pair_cache = {}       # (earlier path, later path) -> track_pair result (this session)
         self._models = {}          # (path, 'spec' | 'topo') -> (PairDrift or None, [notes])
         self._lru = {}             # path -> Sm4File, the topos kept loaded during a build (LRU)
@@ -1904,14 +1944,16 @@ class Drift:
     # --- the manual drift (the spans applied in the drift window) ---
 
     def _topo_by_name(self, name):
+        """The path of the topo of the directory named `name`, or None."""
         return next((p for p in self.topo_seq if os.path.basename(p) == name), None)
 
     def _load_manual(self):
         """
         The settings' 'drift' section into manual_spans: a confirmed or
         adjusted span's velocity refitted from its markers, a typed span's
-        taken from its stored 'v'.  An older cache's global 'typed' entry is
-        no longer a source and is ignored.  A span or a stripe set naming a
+        taken from its stored 'v'.  An older drift cache's global 'typed'
+        entry, carried over with the section, is no longer a source and is
+        not read.  A span or a stripe set naming a
         file that is not in the directory is reported and left out of the
         session, but stays in the file (a setting is never dropped).
         """
@@ -1984,6 +2026,7 @@ class Drift:
         return 'manual' if str(model.rule).startswith('manual') else 'auto'
 
     def _stripe_set(self, path, setting, create=False):
+        """The set of a grid for a slow-axis setting ({'fast', 'points'}), None when absent; with `create` made when absent (fast 'off', no points)."""
         if create:
             return self.stripe_sets.setdefault(path, {}).setdefault(setting, {'fast': 'off', 'points': {}})
         return self.stripe_sets.get(path, {}).get(setting)
@@ -2002,7 +2045,7 @@ class Drift:
         return dict(st['points']) if st else {}
 
     def set_fast_state(self, f, setting, state):
-        """The fast-axis state of a grid for a slow-axis setting set; every result dropped, the cache written, the subscribers told."""
+        """The fast-axis state of a grid for a slow-axis setting set; every result dropped, the settings store written, the subscribers told."""
         if state not in self.FAST_STATES or setting not in self.SLOW_SETTINGS:
             raise ValueError(f"fast-axis state {state!r} / setting {setting!r} unknown.")
         st = self._stripe_set(f.path, setting, create=True)
@@ -2019,8 +2062,8 @@ class Drift:
         A point of a grid's set moved to s (metres along the fast axis from
         the grid's first spectrum): key 'E:i' (line i's forward end) or
         'R:i' (its return point, one point with line i + 1's start).  Every
-        result is dropped; with `commit` the cache is written and the
-        subscribers told (a drag commits on release only).
+        result is dropped; with `commit` the settings store is written and
+        the subscribers told (a drag commits on release only).
         """
         st = self._stripe_set(f.path, setting, create=True)
         st['points'][str(key)] = float(s)
@@ -2035,7 +2078,10 @@ class Drift:
         'lines' of a result: their 'E' and 'R') stored as the points of a
         grid's set, so that the placement reproduces itself exactly and a
         drag of one point then moves that point alone (the stripe window
-        pins the placement when a drag begins).  Returns the points.
+        pins the placement when a drag begins).  Every result is dropped;
+        with `commit` the settings store is written and the subscribers
+        told (the stripe window pins without and commits on release).
+        Returns the points.
         """
         st = self._stripe_set(f.path, setting, create=True)
         for ln in lines or []:
@@ -2074,10 +2120,11 @@ class Drift:
 
     def subscribe(self, fn, alive=None):
         """
-        fn() is run after every manual change (a span set or cleared, the
-        typed velocity set or cleared): the browser and every open Line and
-        Map window subscribe their own redraw, so a change made in any drift
-        window reaches all of them.  `alive`, when given, is a callable that
+        fn() is run after every manual change (a span set or cleared, a
+        stripe set's state or points changed): the browser, every open Line
+        and Map window and the stripe window subscribe their own redraw, so
+        a change made in any drift or stripe window reaches all of them.
+        `alive`, when given, is a callable that
         returns False once the subscriber's window is gone; such a
         subscriber is dropped at the next notify without being run.  A
         subscriber that raises is reported and dropped.  Subscribing the
@@ -2166,7 +2213,7 @@ class Drift:
     def set_manual_span(self, a_path, b_path, markers, kind='adjusted', v=None):
         """
         The manual velocity of the span between two topos, stored, reported,
-        written to the cache; every per-file result is recomputed from here
+        written to the settings store; every per-file result is recomputed from here
         on and the subscribers are told.  markers (n, 6): x_A, y_A, t_A,
         x_B, y_B, t_B, absolute metres and seconds, one row per marker pair
         (may be empty for a typed velocity).  kind 'adjusted': the
@@ -2302,9 +2349,13 @@ class Drift:
 
     def pair(self, A, B):
         """
-        track_pair of a topo pair (A, B TopoRef or Sm4File): the session's
-        result, else the drift cache's, else the two files loaded and tracked
-        now and the result cached.
+        track_pair of a topo pair (A, B TopoRef or Sm4File, A the earlier):
+        the session's result (pair_cache), else the computed store's
+        (TrackedPairs.get_pair), else the two files loaded (_topo_file) and
+        tracked now, the result put into TrackedPairs and reported.  The
+        store is written by build alone: a pair first tracked after the
+        build (the drift window stepped to a non-consecutive pair) is kept
+        for the session and tracked again at the next startup.
         """
         key = (A.path, B.path)
         if key in self.pair_cache:
@@ -2321,8 +2372,10 @@ class Drift:
     def build(self):
         """
         Every consecutive topo pair of every segment tracked (pair: from the
-        cache or now), in time order, then the drift cache written.  The
-        console reports every pair tracked now.
+        store or now), in time order, then the tracked pairs and the topo
+        times put into the computed store's 'pairs' section and the store
+        written, once; the build's LRU of loaded topos emptied.  The console
+        reports every pair tracked now and the totals.
         """
         if not self.segment_keys:
             print("drift: the directory has no topography; nothing to build.")
@@ -2416,9 +2469,10 @@ class Drift:
 
     def auto_pair_for(self, f):
         """
-        The tracked pair a file's auto velocity comes from, for seeding
-        markers (the module docstring, "Seeded markers"): (earlier path,
-        later path, v) or None.  A spectra file: (last topo of its segment
+        The tracked pair a file's auto velocity comes from: (earlier path,
+        later path, v) or None.  Not called by the package at present (the
+        drift window seeds from DriftWindow._seed_velocity, which also
+        covers manual spans).  A spectra file: (last topo of its segment
         before it, first after it); a topo: (it, the next topo of its
         segment), else (the previous one, it); None when that pair is not
         tracked (an extrapolated or absent velocity seeds nothing).
@@ -2641,6 +2695,7 @@ class Drift:
     # --- the per-file results ---
 
     def report(self, f, notes, report):
+        """The console report of a file's result: its name, the velocity notes, the report lines."""
         print(f"\n{f.name}: drift correction")
         for n in notes:
             print("  " + n)
@@ -2762,8 +2817,10 @@ class Drift:
         last energy point, the far end of its drift line (sweep_lines).
         Entry: {'xy_corr', 'xy_end', 'shift', 'line_v' (grids with stripe
         matching: line_velocities; None otherwise), 'report', 'drift' (the
-        PairDrift), 'source' (its rule: 'auto (...)' or 'manual (...)'),
-        'prev' (the before topo's name), 'off_page' (grids), 'lines' (grids
+        PairDrift), 'source' (its rule: 'auto (...)', 'manual (...)' or
+        'none (stripe match only)'), 'prev' (the before topo's name; the
+        reference's names with stripe matching), 'next' (None; single
+        points only), 'off_page' (grids), 'lines' (grids
         with stripe matching: drift_correct_grid's per-line factors), 'pix',
         'stripe', 'anchor' (the states used), 'anchor_shift' (the rigid
         shift applied, metres)}.
@@ -3177,10 +3234,14 @@ class DriftWindow:
     Line and Map windows' 'drift window' button): the pair its auto velocity
     comes from (Drift.window_pair: a spectra file's before and after topos,
     never its own; a topo and the next of its segment, else the previous
-    and it), side by side at absolute positions (nm after the scale factor),
-    each panel titled with the name of the file it draws, through the
-    caller's topo processors, a spectra file's recorded positions on both,
-    and on each panel the recorded frame of the other topo of the pair (its
+    and it), side by side at absolute positions in calibrated nm, every
+    object at the scale in force at its own file's time (`scalefactor`: the
+    browser's scale_of(path), or one number for everything; the topo image
+    at its topo's scale, the spectra at the file's, the other topo's frame
+    at that topo's), each panel titled with the name of the file it draws,
+    through the caller's topo processors (`active_procs`), a spectra file's
+    recorded positions on both, and on each panel the recorded frame of the
+    other topo of the pair (its
     centre, angle and extent as recorded, no drift correction: the drift is
     measured from the uncorrected topos), a thin black outline drawn last
     so it lies on top of the topo, the markers and the arrows
@@ -3189,18 +3250,24 @@ class DriftWindow:
     shape on both, so neither image is centred on its own.  Clicks place
     numbered markers
     (widgets.PairMarkers: the k-th on the left pairs with the k-th on the
-    right, pair k in its own colour; a press on a marker drags it); with
-    a click on either topo places the partner on the other at once where the
+    right, pair k in its own colour; a press on a marker drags it); a
+    click on either topo places the partner on the other at once where the
     velocity that currently governs the pair puts it (_seed_velocity: the
     pair's applied manual velocity, else the file's velocity with both
-    sources on; independent of `auto_on`; seed_partner, the module
-    docstring, "Seeded markers"), with the pair's arrow on both panels.
+    sources on, else the pair's tracked velocity; independent of `auto_on`,
+    which the openers pass and the window keeps as self.auto_on but nothing
+    reads; seed_partner, the module docstring, "Seeded markers"), with the
+    pair's arrow on both panels.
     'Markers' is the pair count (0 to 8; a click raises it), 'clear
     markers' empties the draft.  The markers are a draft: the readout
     lists the pairs (seeded and unmoved, adjusted by how much, or placed by
-    hand).  One velocity box, 'v (nm/h)' ("Vx, Vy"), is what gets applied:
-    'set from markers' fills it from the draft (every pair seeded and
-    unmoved: the auto velocity, confirmed; otherwise the pairs'
+    hand).  One velocity box, 'v (nm/h, cal)' ("Vx, Vy" in calibrated nm/h
+    by the window's file's scale, self.scale, fixed at opening; the stored
+    velocity is nominal, recorded metres, _parse_box), is what gets
+    applied; every readout shows the calibrated value first and the nominal
+    beside it (_v_text, marker_pair_text).  'set from markers' fills the box
+    from the draft (every pair seeded by an auto velocity and unmoved: the
+    pair's tracked velocity, confirmed; otherwise the pairs'
     least-squares fit; the MATLAB readout per pair printed) and stores
     nothing; typing or Enter in the box only fills it; 'apply velocity'
     stores the box as the span of this pair (Drift.set_manual_span:
@@ -3208,18 +3275,21 @@ class DriftWindow:
     'adjusted' when it still holds the pairs' fit, 'typed' when it was typed
     or edited; an empty box removes the pair's span) and shows the applied
     velocity.  Applying changes the one Drift, which tells its subscribers
-    (Drift.notify: the browser and every open Line and Map window redraw
-    from it, whichever drift window made the change); `on_change`, when a
+    (Drift.notify: the browser, every open Line and Map window and the
+    stripe window redraw from it, whichever drift window made the change);
+    `on_change`, when a
     caller outside the package gives one, runs as well (_changed).  A
     stored span between the two topos is restored at opening, its markers
     and its velocity in the box.  '< before' / 'before >' and '< after' /
     'after >' step the earlier and the later topo through the file's
     segment in time order (the earlier always before the later): the pair
-    is redrawn, the draft emptied, the new pair's stored span restored and
-    the box reseeded, and 'apply velocity' then stores the span between
-    the topos shown, which covers every file between them, whatever its
-    kind (Drift._manual_model).  Raises ValueError when the file has no
-    pair to show.
+    is redrawn, the draft emptied, the box cleared, the new pair's stored
+    span restored (its markers and its velocity in the box), and 'apply
+    velocity' then stores the span between the topos shown, which covers
+    every file between them, whatever its kind (Drift._manual_model); the
+    stepped topos are drawn at their own scales, the box and the readouts
+    stay calibrated by the window's file's scale.  Raises ValueError when
+    the file has no pair to show.
     """
 
     DESIGN = (14, 7.6)     # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
@@ -3233,7 +3303,7 @@ class DriftWindow:
         # scale in force at its own time, the panels in calibrated nm) or one number for everything.
         self.scale_of = scalefactor if callable(scalefactor) else (lambda p, v=float(scalefactor): v)
         self.scale = self.scale_of(f.path)       # the file's scale: the readouts and the box are calibrated by it
-        self.scalefactor = self.scale
+        self.scalefactor = self.scale            # the same under the name the other windows use
         self.active = list(active_procs)
         self._on_change = on_change
         self.auto_on = bool(auto_on)
@@ -3408,18 +3478,22 @@ class DriftWindow:
         self.fig.canvas.draw_idle()
 
     def is_open(self):
+        """True while the window is open (the figure itself is tested, not its reusable number)."""
         return plt.fignum_exists(self.fig)
 
     def raise_(self):
+        """The window brought to the front."""
         try:
             self.fig.canvas.manager.show()
         except Exception:
             pass
 
     def _topo(self, path):
+        """The loaded topo of a panel's path (self.a or self.b)."""
         return self.a if path == self.a.path else self.b
 
     def _resolve_on(self, path, x, y):
+        """A marker's data at (x, y) in the panel of `path` (drawing units at that topo's scale): 'xy_m' (absolute metres), 't' (the forward-pass pixel time, pixel_time_at), 'px_m' (the larger pixel size); None outside the topo."""
         t = self._topo(path)
         xy_m = np.array([x, y], dtype=np.float64) / self.k_of(path)     # the panel's topo at its own scale
         if not t.contains_m(xy_m):
@@ -3509,6 +3583,7 @@ class DriftWindow:
         return f"box: v = {self._v_text(v)}, {origin}; not applied: 'apply velocity' stores it for this pair"
 
     def _show(self, span):
+        """The readout for a stored span: its marker pairs (marker_pair_text, nominal with the calibrated value in brackets) and the applied velocity (the last 12 lines)."""
         lines = [marker_pair_text(k, rec, self.scale) for k, rec in enumerate(span.get('pairs', []))]
         v = span.get('v')
         if v is not None:
@@ -3521,6 +3596,7 @@ class DriftWindow:
         self.fig.canvas.draw_idle()
 
     def _show_draft(self):
+        """The readout for the draft: the markers' status and pair lines, the box's line, and the span applied now when there is one (the last 12 lines)."""
         lines = [self.markers.status()] + self.markers.pair_lines() + [self._box_line()]
         if self._applied is not None and self._applied.get('v') is not None:
             lines.append(f"applied now ({self._applied.get('kind', 'adjusted')}): v = {self._v_text(self._applied['v'])}")
@@ -3536,6 +3612,7 @@ class DriftWindow:
                 print(f"drift window: the opener could not be refreshed ({exc}).")
 
     def _on_markers(self):
+        """A marker placed, dragged or removed (PairMarkers.on_change): the status on the console, the readout refreshed."""
         print(self.markers.status())
         self._show_draft()
 
@@ -3576,10 +3653,11 @@ class DriftWindow:
         self._changed()
 
     def _on_clear(self):
+        """'clear markers': the draft emptied (PairMarkers.clear; its on_change refreshes the readout)."""
         self.markers.clear()
 
     def _on_typed(self, text):
-        """The 'v (nm/h)' box submitted (Enter or focus lost): it only fills the box; the readout says what it holds, not applied."""
+        """The 'v (nm/h, cal)' box submitted (Enter or focus lost): it only fills the box (an edit makes its provenance 'typed'); the readout says what it holds, not applied."""
         if str(text).strip() != self._box_text:
             self._box_kind = 'typed'
             self._box_markers = None
@@ -3588,8 +3666,9 @@ class DriftWindow:
     def _on_set_from_markers(self):
         """
         'set from markers': the draft's velocity into the box, nothing
-        stored: every pair seeded and unmoved, the pair's auto velocity
-        itself (confirmed); otherwise the pairs' least-squares fit
+        stored: every pair seeded by an auto velocity and unmoved, the
+        pair's tracked velocity itself (confirmed); otherwise the pairs'
+        least-squares fit
         (fit_marker_velocity; the MATLAB readout per pair printed).  No
         complete pair, or no pair with a positive time difference: the box
         is left alone.
@@ -3617,8 +3696,8 @@ class DriftWindow:
 
 if __name__ == '__main__':
     # The drift build of an experiment directory (every consecutive topo pair of every segment
-    # tracked, the cache written) and the drift result of one spectra file, loaded the way the
-    # Browser loads it.
+    # tracked, the computed store written) and the drift result of one spectra file, loaded the
+    # way the Browser loads it.
     directory = r'experiment_dir'
     name = 'file.sm4'
 

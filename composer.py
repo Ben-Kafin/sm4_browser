@@ -6,18 +6,24 @@ new_plotmapseries_CB) rebuilt on qtplot.
 Each "add to plot" button of the Map window copies what its panel shows
 into a list: a map at its energy with its colour limits, gamma and zoom
 (and its drift shift), the embedded topo as drawn, or the spectra of the
-curve panel, each with the position it was taken at.  After every press
-one figure shows everything collected so far, COLUMNS panels wide, square
+curve panel, each with the position it was taken at.  Positions, extents
+and limits are in the Map window's frame: the grid's scan frame in nm
+after the file's scale factor (map.Map.extent).  After every press one
+figure shows everything collected so far, COLUMNS panels wide, square
 panels, sorted: the topo first, then the maps in order of energy (titled
 with their bias, "0.45 V"), then the spectra.  The panels are
 cross-referenced: every collected spectrum gets its own symbol (SYMBOLS,
-in the order collected), drawn in black on every map and topo at that
-spectrum's position; every spectrum panel gets a down arrow at the energy
-of every collected map and is titled "<quantity> at '<symbol>'".  Maps and
-the topo carry a 1 nm scale bar at the bottom right and no axis ticks.  In
-the figure, Delete with the cursor over a panel removes it, and "new plot"
-in the Map window empties the list.  The figure's toolbar Save gives the
-usual exports (mplexport for the publication types).
+in the order collected, wrapping after the last), drawn in black on every
+map and topo at that spectrum's position; every spectrum panel gets a down
+arrow at the energy of every collected map and is titled "<quantity> at
+'<symbol>'".  Maps and the topo carry a SCALE_BAR_NM (1 nm) scale bar at
+the bottom right and no axis ticks.  In the figure, Delete with the cursor
+over a panel removes it, and "new plot" in the Map window empties the
+list.  The figure is one row of cells high per COLUMNS panels (DESIGN is
+one row); it is closed and made again when the row count changes, and
+made again at the next add when it was closed by hand.  The figure's
+toolbar Save gives the usual exports (mplexport for the publication
+types).
 
 If run as a file (Spyder F5) the if-main shows the composer on synthetic
 panels.
@@ -35,15 +41,21 @@ from sm4_Browser import plots
 
 class FigureComposer:
     """
-    The collected panels (items) and the one figure that shows them.
+    The collected panels (items) and the one figure that shows them; the
+    Map window makes one per grid file (title "<file>: figure", the window
+    title) at the first 'add to plot'.
       add_map(img, extent, limits, vmin, vmax, gamma, cmap, bias_V, shift=None)
       add_topo(layers, extent, limits)      layers: [(img, shift or None), ...], the first at the bottom
       add_spectrum(x, y, xlim, ylim, position, quantity)
       clear()                               the list emptied (the figure stays, empty)
       ordered()                             the items in the figure's order
+      is_open()                             the figure exists (plt.fignum_exists on the Figure
+                                            itself: a figure number is reused after a close)
     Every add rebuilds the figure (rebuild), which is made at the first add
     and made again when it was closed.  `panels` is [(axes, item, info)] of
     the last build, info = {'symbols': n, 'arrows': n} drawn on that panel.
+    Every item is a dict with a 'kind' ('map', 'topo', 'spectrum') and
+    copies (float64 arrays, floats) of what was handed in.
     """
 
     COLUMNS = 4
@@ -66,7 +78,15 @@ class FigureComposer:
     # --- the list ---
 
     def add_map(self, img, extent, limits, vmin, vmax, gamma, cmap, bias_V, shift=None):
-        """A map at one energy as the Map window shows it (its colour limits vmin / vmax, gamma, cmap, the axes limits, the pixel shifts)."""
+        """
+        A map at one energy as the Map window shows it: img (n_lines,
+        n_fast) over the frame `extent` [l, r, b, t], the axes `limits`
+        [x0, x1, y0, y1] as zoomed, its colour limits vmin / vmax (None:
+        the map's own range), gamma, cmap, its bias (V, the title and the
+        spectra's arrows), and the pixel shifts (n_lines, n_fast, 2) of the
+        drift correction when the map was drawn with one (then drawn as
+        plots.PixelMap).  The figure is rebuilt.
+        """
         self.items.append({'kind': 'map', 'img': np.array(img, dtype=np.float64), 'extent': [float(v) for v in extent],
                            'limits': [float(v) for v in limits],
                            'vmin': None if vmin is None else float(vmin), 'vmax': None if vmax is None else float(vmax),
@@ -75,7 +95,13 @@ class FigureComposer:
         self.rebuild()
 
     def add_topo(self, layers, extent, limits):
-        """The embedded topo as drawn: layers [(img, shift or None), ...] drawn in order, the first at the bottom."""
+        """
+        The embedded topo as drawn: layers [(img, shift or None), ...] drawn
+        in order, the first at the bottom (the Map window's two passes as
+        quads with their chained shifts when a drift source is on; else the
+        one processed pass without a shift), over `extent`, zoomed to
+        `limits`.  The figure is rebuilt.
+        """
         self.items.append({'kind': 'topo',
                            'layers': [(np.array(img, dtype=np.float64), None if sh is None else np.array(sh, dtype=np.float64))
                                       for img, sh in layers],
@@ -83,7 +109,12 @@ class FigureComposer:
         self.rebuild()
 
     def add_spectrum(self, x, y, xlim, ylim, position, quantity):
-        """One spectrum (x, y) with the curve panel's limits, taken at `position` (x, y in the frame), of `quantity`."""
+        """
+        One spectrum (x the energy in V, y the curve) with the curve panel's
+        limits xlim / ylim, taken at `position` (x, y in the frame: a
+        marker's pixel centre or a group's centre), of `quantity` (the
+        title's text, "dI/dV" or "(dI/dV)/(I/V)").  The figure is rebuilt.
+        """
         self.items.append({'kind': 'spectrum', 'x': np.array(x, dtype=np.float64), 'y': np.array(y, dtype=np.float64),
                            'xlim': [float(v) for v in xlim], 'ylim': [float(v) for v in ylim],
                            'position': (float(position[0]), float(position[1])), 'quantity': str(quantity)})
@@ -100,12 +131,23 @@ class FigureComposer:
         return sorted(self.items, key=lambda it: (rank[it['kind']], it['bias'] if it['kind'] == 'map' else 0.0))
 
     def is_open(self):
+        """True while the figure exists (tested on the Figure object, not its number)."""
         return self.fig is not None and plt.fignum_exists(self.fig)
 
     # --- the figure ---
 
     def rebuild(self):
-        """The figure made (or made again after a close) and filled with the ordered items, COLUMNS wide."""
+        """
+        The figure made (or made again after a close) and filled with the
+        ordered items, COLUMNS wide: rows = ceil(n / COLUMNS), at least 1;
+        a changed row count closes the figure and makes it again at
+        DESIGN[0] x rows * DESIGN[1] inches; with no item nothing is made
+        (an open figure is cleared).  Every item gets a square panel in its
+        cell (PANEL of the cell's side, centred across, BOTTOM up from the
+        cell's bottom), the spectra their symbols in collected order
+        (_draw_spectrum_panel), the maps and the topo the symbols of every
+        collected spectrum (_draw_image_panel).  `panels` is refilled.
+        """
         items = self.ordered()
         n = len(items)
         rows = max((n - 1) // self.COLUMNS + 1, 1)
@@ -145,7 +187,15 @@ class FigureComposer:
         self.fig.canvas.draw_idle()
 
     def _draw_image_panel(self, ax, it, spectra):
-        """A map or the topo: the image(s) as collected, square, no ticks, the scale bar, the spectra's symbols."""
+        """
+        A map or the topo: the image(s) as collected (a map with a shift as
+        plots.PixelMap, else plots.draw_heatmap with the collected colour
+        limits and gamma; the topo's layers as PixelMap with a shift, else
+        imshow, in TOPO_CMAP), titled with the bias ("0.45 V") or "Topo",
+        square, zoomed to the collected limits, no ticks, the scale bar,
+        and every collected spectrum's symbol at its position.  Returns the
+        panel's info dict.
+        """
         if it['kind'] == 'map':
             if it['shift'] is not None:
                 plots.PixelMap(ax, it['img'], it['extent'], it['cmap'], gamma=it['gamma'], shift=it['shift'],
@@ -181,7 +231,14 @@ class FigureComposer:
         return {'symbols': len(spectra), 'arrows': 0}
 
     def _draw_spectrum_panel(self, ax, it, biases, symbol):
-        """A spectrum: the curve, no y ticks, headroom above it with a down arrow at every collected map's bias."""
+        """
+        A spectrum: the curve in black over the collected x limits; the y
+        limits the collected ones, or the curve's finite range when those
+        are not finite or empty (a flat curve gets one unit), stretched so
+        the curve fills HEADROOM of the panel; no y ticks; a down arrow
+        ("↓" text) at every collected map's bias in the headroom; the title
+        "<quantity> at '<symbol>'".  Returns the panel's info dict.
+        """
         ax.plot(it['x'], it['y'], color='black', lw=1.2)
         ax.set_xlim(*it['xlim'])
         y0, y1 = it['ylim']
@@ -199,7 +256,7 @@ class FigureComposer:
         return {'symbols': 0, 'arrows': len(biases)}
 
     def _on_key(self, event):
-        """Delete with the cursor over a panel: that item removed and the figure rebuilt."""
+        """Delete with the cursor over a panel: that item removed and the figure rebuilt (event.handled: the key goes no further)."""
         if getattr(event, 'key', None) != 'delete' or getattr(event, 'inaxes', None) is None:
             return
         for ax, it, _ in self.panels:

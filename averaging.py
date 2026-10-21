@@ -124,8 +124,10 @@ class Selection:
     Chosen spectra of a grid file (the columns at a marker group of the Line
     or Map window) with the file's identity, behaving as a single-point file
     for the averaging window: MultiAverageWindow.add, the records, reload,
-    and the send read the same attributes a Sm4File has.  Every marker's
-    column is one sweep of the entry.
+    and the send read the same attributes a Sm4File has (the pass-through
+    properties below, each the STS.subset's value; kind is 'selection', key
+    the path with the column tuple).  Every marker's column is one sweep of
+    the entry.
 
     sm4   : the grid file's Sm4File
     cols  : the chosen columns as global indices of the file's spectra, in
@@ -328,6 +330,7 @@ class Averages:
         return records.saved_indices_of(directory)
 
     def saved_indices(self):
+        """The 'index' of every averaging record saved in this experiment's 'averages' subfolder."""
         return self.saved_indices_of(self.directory)
 
     def next_index(self):
@@ -560,15 +563,18 @@ class MultiAverageWindow:
     single-point files and marker-group selections added with the browser's
     'add new' / 'add existing' buttons and the Line, Map, and line-average
     windows' 'add' buttons.
-    Left panel: every acquired sweep of every added file (the window's Hampel /
-    SG controls on its dI/dV or IETS channel (the 'channel' choice; a file
-    without the chosen channel cannot be added or shown), calibrated against
-    the raw I(V) and unit-area normalized as the 'calibrate' / 'normalize'
-    box says (both off at open), divided by I/V
-    when the window's own 'Feenstra' toggle is on (on at open, independent of
-    the browser's toggle; off reverts every sweep and the average to dI/dV;
-    never applied to IETS), one colour per file; a change of the
-    controls rebuilds every file's sweeps and repeats the run); overlaid, or
+    Left panel: every acquired sweep of every added file through the
+    pipeline (STS.process_arrays: the file's dI/dV or IETS channel, the
+    'channel' choice, a file without the chosen channel cannot be added or
+    shown; the window's Hampel / SG controls act on the recorded current,
+    which the calibration and the Feenstra division use, never on the
+    channel's columns; calibrated against that current and unit-area
+    normalized as the 'calibrate' / 'normalize' box says (both off at
+    open); divided by I/V when the window's own 'Feenstra' toggle is on (on
+    at open, independent of the browser's toggle; off reverts every sweep
+    and the average to dI/dV; never applied to IETS)), one colour per file;
+    a change of the controls rebuilds every file's sweeps and repeats the
+    run; overlaid, or
     offset vertically by the 'stack' toggle (STACK_OFFSET_FRAC of the largest
     curve's range per step, the first added file's first sweep at the top and,
     after a run, the average at the bottom; with 'substack' off (the default)
@@ -656,7 +662,8 @@ class MultiAverageWindow:
         divide_iv : starting state of the window's own 'Feenstra' toggle (default on:
                     the sweeps are the normalized conductance); independent of the
                     browser's toggle
-        iv_broadening : the broadening width of I/V in volts (divide_by_iv)
+        iv_broadening : the broadening width of I/V in volts (feenstra.divide_by_iv), in force
+                    only with iv_broadened (iv_width)
         iv_zero_sub, iv_broadened : the Feenstra settings (the companion's '0Vsub' and
                     'broadened' boxes): the current's value at 0 V subtracted before
                     I/V is formed; I/V broadened by iv_broadening (off, the default:
@@ -727,19 +734,23 @@ class MultiAverageWindow:
         plt.show()
 
     def is_open(self):
+        """True while the window's figure is open (widgets.figure_is_open: the Figure object itself, not its number)."""
         return widgets.figure_is_open(self.fig)
 
     @property
     def stacked(self):
+        """The 'stack' toggle's state."""
         return self.stacks.stack
 
     @property
     def substack(self):
+        """The 'substack' toggle's state."""
         return self.stacks.substack
 
     # --- the Feenstra companion ---
 
     def _feenstra_refresh(self):
+        """Refresh the companion when it exists and is open (called at the end of every draw)."""
         w = getattr(self, 'feenstra', None)
         if w is not None and w.is_open():
             w.refresh()
@@ -917,6 +928,7 @@ class MultiAverageWindow:
         print(f"{old_name} renamed {self.name}" + (f"; renamed: {', '.join(renamed)}." if renamed else "."))
 
     def cache_path(self):
+        """The fit history path of this average (records.cache_path_of: the newest up-to-date file of <stem>_fits.pkl's family, or the path a new one gets)."""
         return records.cache_path_of(self.directory, self.stem)
 
     def record(self):
@@ -973,6 +985,7 @@ class MultiAverageWindow:
         return path
 
     def _on_save(self):
+        """'save': the record written (save), its path printed; nothing without entries."""
         if len(self.entries) == 0:
             print(f"{self.tag} save: no files added.")
             return
@@ -1040,10 +1053,12 @@ class MultiAverageWindow:
 
     def _sweeps_of(self, point, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None):
         """
-        A file's acquired sweeps through the pipeline (the window's Hampel / SG
-        settings on the channel, or the given ones when use_controls is False;
-        the window's calibrate / normalize flags unless given), rows in
-        ascending energy order, never-acquired sweeps left out.
+        A file's acquired sweeps through the pipeline (point.curves: the
+        window's channel, Feenstra state and settings; the window's Hampel /
+        SG settings, which the pipeline applies to the recorded current, or
+        the given ones when use_controls is False; the window's calibrate /
+        normalize flags unless given), rows in ascending energy order,
+        never-acquired sweeps left out: (npts, n_acquired).
         """
         if use_controls:
             hampel, sgolay = self.filters.params()
@@ -1076,6 +1091,7 @@ class MultiAverageWindow:
         return True
 
     def _on_filter_change(self):
+        """The filter controls changed: every file's sweeps rebuilt and the run repeated (_rebuild_sweeps)."""
         hp, sp = self.filters.params()
         self._rebuild_sweeps(f"Hampel {'on' if hp else 'off'}, "
                              f"SG {'on' if sp else 'off'} on the {STS.CHANNEL_NAMES[self.channel]}")
@@ -1112,6 +1128,13 @@ class MultiAverageWindow:
         self._set_channel(self.channel)
 
     def add(self, point):
+        """
+        Add an entry (a single-point Sm4File or a Selection; nothing when
+        the window holds it already, has): its acquired sweeps through the
+        pipeline with the window's settings (_sweeps_of), its ascending
+        energy axis, its kept columns and its label; the average is cleared
+        until the next run and the window redrawn.
+        """
         if self.has(point):
             return
         order = np.argsort(point.energy)
@@ -1261,7 +1284,14 @@ class MultiAverageWindow:
         return float(np.sqrt(np.min((p[:, 0] + t * d[:, 0] - x) ** 2 + (p[:, 1] + t * d[:, 1] - y) ** 2)))
 
     def _on_click(self, event):
-        # Right-click in the left panel removes the nearest sweep (within PICK_PX pixels).
+        """
+        A right click in the left panel removes the nearest drawn sweep
+        (within PICK_PX pixels of the pointer, _px_distance), ignored while
+        the toolbar is in pan / zoom mode and in the stacked per-file view
+        (a console line says how to remove sweeps there).  The removal is
+        appended to self.removed and the window redrawn (the average, when
+        one exists, follows at once through draw).
+        """
         if event.button != 3 or event.inaxes is not self.ax:
             return
         tb = getattr(self.fig.canvas, 'toolbar', None)
@@ -1286,6 +1316,7 @@ class MultiAverageWindow:
         self.draw()
 
     def _on_restore(self):
+        """'restore': the most recently removed sweep put back; a file that was empty at the last run clears that run."""
         if not self.removed:
             print(f"{self.tag}: nothing to restore.")
             return
@@ -1363,6 +1394,7 @@ class MultiAverageWindow:
         self.draw()
 
     def _on_clear(self):
+        """'clear': every entry, the average and the removals dropped (the index, name and settings stay)."""
         self.entries = []
         self.average = None
         self.removed = []
@@ -1414,6 +1446,11 @@ class MultiAverageWindow:
             self._fits.append(an)
 
     def draw(self):
+        """
+        Redraw both panels from the entries, the removals, the toggles and
+        the last run (the comments below say what each panel shows and how
+        the two share the width), then refresh the Feenstra companion.
+        """
         ax = self.ax
         ax.clear()
         self._lines = []

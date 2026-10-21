@@ -21,11 +21,19 @@ RESULTS = []
 
 
 def ok(name, cond, detail=''):
+    """Record and print one result: PASS or FAIL, the name, the detail in parentheses."""
     RESULTS.append(bool(cond))
     print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
 
 
 def run(layout='per_pixel'):
+    """
+    The standard experiment with a forward and a reverse sweep per grid pixel, stored `layout`
+    ('per_pixel' or 'pages'): the browser's sweep view and line styles, the Line window's 'sweeps'
+    radio (the views, the shear direction, a marker group's Selection carrying the view), the Map
+    window's views, one drift result per view, and a selection record reloading on its view.  An
+    exception fails the run.  Returns True when all passed.
+    """
     tmp = tempfile.mkdtemp(prefix='sm4sweepb_')
     exp = synth.standard(tmp, grid_sweeps=('forward', 'reverse'), grid_layout=layout)
     synth.install(exp)

@@ -18,13 +18,16 @@ Pipeline
    off on its own (every filter off unless given), in the order Hampel
    (spikes), Savitzky-Golay (filters.filter_lia; the LIA column is never
    filtered); the calibration of the LIA column against that current
-   (calibration.calibrate, the Line tool's calibration: whichever
-   calibration file is in place, calibration_zeroref, calibration_gainoffset,
-   or calibration_stretch renamed to calibration.py; each returns per sweep
-   a, c, and rms, which the console report prints); for quantity 'ratio' the
-   division by the broadened I/V of the same filtered current
-   (feenstra.divide_by_iv, before the 0 V subtraction and the broadening);
-   then unit-area normalization.
+   (calibration.calibrate, the Line tool's calibration: the 0 V-referenced
+   gain-plus-offset regression of calibration.py, written as one of three
+   interchangeable calibration files of which the repository carries this
+   one; it returns per sweep a, b, c and rms, and the console report of
+   process prints a, c, rms and the area); for quantity 'ratio' the division by the broadened I/V of the
+   same filtered current (feenstra.divide_by_iv, told not to filter again:
+   the current's value at 0 V subtracted first when iv_zero_sub is on,
+   then broadened by iv_broadening_V); then unit-area normalization
+   (normalization.normalize, over norm_range when the sender normalized
+   over an energy range).
 3. Average all sweeps: the plain mean of every sweep (a curve sent from the
    Browser's averages: of the pooled sweeps of its raw sets), and
    every rebuild averages the same way.  The result is the "data" curve that
@@ -95,7 +98,7 @@ Pipeline
    the Browser's and the Line tool's 'Feenstra' sends): the fitted
    curve is Feenstra's normalized conductance (dI/dV)/(I/V), every sweep
    divided after its calibration by its own exponentially broadened I/V
-   (STS.divide_by_iv, width iv_broadening_V), then normalized.  Its
+   (feenstra.divide_by_iv, width iv_broadening_V), then normalized.  Its
    integral is not the current, so there is no anchor (anchor_mode 'none');
    the background is set by the least squares under the ceiling and
    positivity alone.  Everything else (background family, constraints, noise
@@ -213,6 +216,16 @@ distance absorbed into a dimensionless exponent:
 
 Minimum at 0 V (a cusp, |V|), rising on both sides.  phi is bounded below by
 half the largest |V| of the window (plus 0.05 eV) so that the root is real.
+The code names no citation for the barrier model (see the README).
+
+Windows
+-------
+The fit window (plot) opens at DESIGN, the three-panel size, and narrows
+to two panels for a fit without a background (_layout); the edit window
+(_open_edit_figure) opens at EDIT_DESIGN.  Each is a design size in inches
+for qtplot.window_zoom: the text of a window scales with its size relative
+to the design size.  Whether the edit window is open is tested with its
+Figure object (plt.fignum_exists(fig), _edit_open).
 """
 
 if __package__ in (None, ''):
@@ -389,20 +402,39 @@ def _run_fit(state, feature_subset, peaks, seeds):
 
 
 class Fit:
+    """
+    The single-point fit of one curve (the module docstring): the data
+    context (the curve, its anchor, noise level and background ceiling),
+    the enumeration and selection (select_model), the fit history with its
+    cache on disk, and the two windows (plot, _open_edit_figure).  Three
+    ways in: Fit(path) + process() + select_model() for a .sm4 single-point
+    file opened directly; Fit.from_curve(...) for a curve sent from the
+    Line tool, an averaging window or a line-average window
+    (averaging.send_sets_to_fit) + select_model(); Fit.from_cache(path) to
+    reopen a fit history.  Attributes a reader meets: V (ascending energy
+    axis), data and data_unfiltered (the curve with and without the
+    filters), raw_sets (the raw columns a refit reruns), fits (the history,
+    fit N at index N - 1), _shown / _back / _fwd (the shown fit and the
+    Revert / Forward chains), quantity ('didv' or 'ratio'), background
+    ('wkb' or 'none'), hampel_filter_params / sgolay_filter_params (the
+    current data context's filters).
+    """
+
     def __init__(self, ifile, hampel_filter_params=None, sgolay_filter_params=None,
                  divide_by_iv=False, iv_broadening_V=0.0, iv_zero_sub=False):
         """
-        Initialize the single-point dI/dV fit.
+        Initialize the single-point dI/dV fit of a file opened directly
+        (the data are read here, extract_data; the curve is built by process).
           ifile                : Path to an SM4 single-point spectroscopy file.
           hampel_filter_params : dict for the Hampel filter (or None to skip).
           sgolay_filter_params : dict for the Savitzky-Golay filter (or None to skip).
           divide_by_iv         : fit the normalized conductance (dI/dV)/(I/V) instead of
                                  dI/dV (quantity 'ratio': every sweep divided after its
                                  calibration by its own broadened I/V, see
-                                 STS.divide_by_iv; no current anchor, see _set_anchor).
+                                 feenstra.divide_by_iv; no current anchor, see _set_anchor).
           iv_broadening_V      : broadening width (V) of I/V for divide_by_iv; 0 = plain ratio.
           iv_zero_sub          : subtract each sweep's current at 0 V before I/V is formed
-                                 (STS.iv_corrected; a vertical shift of the current only).
+                                 (feenstra.iv_corrected; a vertical shift of the current only).
         """
         self.ifile = ifile
         self.hampel_filter_params = hampel_filter_params
@@ -423,10 +455,13 @@ class Fit:
 
     def extract_data(self):
         """
-        The LIA (dI/dV) and I(V) sweeps in physical units (never-acquired
-        sweeps left out), the energy axis, the setpoint, the pages' units, and
-        the modulation amplitude (RHK_CH1Drive_Amplitude), through
-        STS.from_file on the file's ramp-spectroscopy pages.
+        The LIA (dI/dV) and I(V) sweeps in physical units (the kept sweeps
+        only, STS.acquired: never-acquired and stopped sweeps left out), the
+        energy axis, the setpoint (V_bias, I_setpoint), the pages' units,
+        and the modulation amplitude (RHK_CH1Drive_Amplitude), through
+        STS.from_file on the file's ramp-spectroscopy pages.  ValueError
+        without a dI/dV page, without a Current page (or one of another
+        shape), or without a kept sweep.
         """
         spectra = sts.STS.from_file(self.ifile)
         if spectra is None or spectra.lia is None:
@@ -508,6 +543,7 @@ class Fit:
         return "(dI/dV)/(I/V)" if getattr(self, 'quantity', 'didv') == 'ratio' else "dI/dV"
 
     def _anchor_text(self):
+        """One console line: the anchor mode and its target (none for the ratio)."""
         if self.anchor_mode == 'none':
             return "Anchor: none ((dI/dV)/(I/V) has no current anchor)"
         return f"Anchor: {self.anchor_mode} (target in arb. units = {self.target:.6g})"
@@ -515,15 +551,17 @@ class Fit:
     def _set_noise(self):
         """
         Noise level (see module docstring): successive-difference sigma of the
-        unfiltered curve.  The filters act on the current of the Feenstra
-        division only, never on the fitted dI/dV, so there is no filter gain
-        (sg_gain stays 1, kept in the record).
+        unfiltered curve (_noise_sigma).  The filters act on the recorded
+        current (which the calibration and the Feenstra division use), never
+        on the fitted dI/dV, so there is no filter gain (sg_gain stays 1,
+        kept in the record); noise_level = sigma_diff x sg_gain.
         """
         self.sigma_diff = _noise_sigma(self.data_unfiltered)
         self.sg_gain = 1.0
         self.noise_level = self.sigma_diff * self.sg_gain
 
     def _print_noise(self):
+        """One console line: the noise level and how it was taken."""
         print(f"Noise level ({NOISE_METHOD}): {self.noise_level:.4g} arb. units "
               f"(sigma of the unfiltered curve; no filter acts on the fitted dI/dV)")
 
@@ -569,8 +607,8 @@ class Fit:
         n_sweeps) per set, and per pooled sweep the normalization area and
         I(V_bias) - I(V_ref) in amps.  The per-set point weights of the
         average (axis step / set step for a binned or interpolated set, 1 for
-        a set on the axis; see STS.average) are left in self._set_weights,
-        one (n_points,) array per set.
+        a set on the axis; see averaging.Averages.average) are left in
+        self._set_weights, one (n_points,) array per set.
         """
         tol = self.ENERGY_TOL
         method = getattr(self, 'resample', None)
@@ -623,8 +661,10 @@ class Fit:
     def _process_raw_sets(self, hampel, sgolay, quantity=None):
         """
         The pipeline of _raw_set_columns followed by the average of
-        STS.average (the per-set point weights of _raw_set_columns).
-        Returns (data, areas_A, delta_I_window_A).
+        averaging.Averages.average (the weighted pooled mean of every
+        column of every set, with the per-set point weights of
+        _raw_set_columns; the plain mean of all sweeps when every set is on
+        the axis).  Returns (data, areas_A, delta_I_window_A).
         """
         cols, areas, dI = self._raw_set_columns(hampel, sgolay, quantity)
         return averaging.Averages.average(cols, self._set_weights)[0], areas, dI
@@ -897,7 +937,8 @@ class Fit:
           energy_raw       : energy axis of the raw columns (any order; V when omitted)
           filter_stage     : kept for the record ('column' or 'average' with raw columns,
                              'sets' with raw_sets, 'post' without); the pipeline is the
-                             same whatever the stage (filters on the LIA columns)
+                             same whatever the stage (the filters on each set's I(V)
+                             columns, _raw_set_columns)
           raw_sets         : list of dicts {'energy', 'lia', 'iv', 'units_lia', 'units_iv',
                              'vmod'} (STS.from_arrays), one per
                              file, each on its own full energy axis with the raw columns
@@ -912,10 +953,10 @@ class Fit:
                              are weighted axis step / set step in the average
           quantity         : 'didv' (the curve is dI/dV) or 'ratio' (the curve is the normalized
                              conductance (dI/dV)/(I/V): no current anchor, and a rebuild from
-                             raw columns divides after the calibration, STS.divide_by_iv)
+                             raw columns divides after the calibration, feenstra.divide_by_iv)
           iv_broadening    : broadening width (V) of I/V for quantity 'ratio' (0: the plain I/V)
           iv_zero_sub      : for quantity 'ratio', each sweep's current at 0 V subtracted
-                             before I/V is formed (STS.iv_corrected), as the sender did
+                             before I/V is formed (feenstra.iv_corrected), as the sender did
           norm_range       : (lo, hi) in V when the sender normalized over an energy range
                              (the Line window's 'E range' box): every rebuild of the
                              curve from raw columns normalizes over the same range
@@ -1007,17 +1048,25 @@ class Fit:
     def process(self):
         """
         The pipeline of a file opened directly: one raw set (this file's
-        sweeps), every sweep filtered on its LIA with the initial settings,
-        calibrated, divided by I/V for quantity 'ratio', normalized, and the
-        sweeps averaged (the plain mean; _process_raw_sets, the same path a
-        refit with other settings reruns).
+        kept sweeps), every sweep's current through the initial filter
+        settings, its LIA calibrated against that current, divided by the
+        broadened I/V for quantity 'ratio', normalized, and the sweeps
+        averaged (the plain mean; _process_raw_sets, the same path a refit
+        with other settings reruns).  Then the console report: the
+        calibration of every sweep (a, c, rms, area), the integral of the
+        averaged calibrated dI/dV from V_ref to V_bias against the measured
+        current and the setpoint, the anchor, the noise level.
 
         Produces
           self.V               : energy axis, ascending (V)
           self.data_unfiltered : averaged curve with every filter off (arb. units)
-          self.data            : averaged, smoothed dI/dV (arb. units), same order as self.V
+          self.data            : the averaged curve with the initial filter settings (dI/dV or
+                                 the ratio, arb. units), same order as self.V
+          self.areas_A, self.delta_I_window_A : per sweep the normalization area (A) and
+                                 I(V_bias) - I(V_ref) (A)
           self.target          : anchor target for the model integral, arb. units
           self.noise_level     : candidate-threshold noise level (arb. units)
+          self.calib_fits      : the calibration.ColumnFit of every sweep (the report)
         """
         # One raw set: this file's acquired sweeps on its own axis.
         self.raw_sets = [sts.STS.from_arrays(self.energy, self.lia, self.iv, self.units_lia, self.units_iv,
@@ -1144,11 +1193,13 @@ class Fit:
         """
         Candidate generic-peak positions: local maxima of the residual
         env_residual (data - envelope with the WKB background; the data itself
-        without a background).  Prominence threshold = noise_level (none if
-        None).  Returns a list of dicts sorted by prominence, descending, with
-        the seed height in the model's amplitude units ('height': LDOS units,
-        residual / ceiling, with the background; data units without) and the
-        half width at half maximum ('hwhm') from the residual.
+        without a background), scipy.signal.find_peaks.  Prominence threshold
+        = noise_level (none if None).  Returns a list of dicts sorted by
+        prominence, descending, with 'center' (V), the seed height in the
+        model's amplitude units ('height': LDOS units, residual / ceiling,
+        with the background; data units without), 'prominence', and the half
+        width at half maximum ('hwhm') from the residual's width at half
+        prominence (scipy.signal.peak_widths), at least one energy step.
         """
         res = self.env_residual
         if noise_level is not None:
@@ -1412,10 +1463,14 @@ class Fit:
         With the WKB background (self.background 'wkb'): minimize
         sum (data/B - [1 + sum])^2; bounds: background amplitude >= 0 and shape
         parameters within _bg_bounds; inequalities at every data point: B <= E
-        (the envelope, the ceiling; hence B <= data) and B >= floor > 0.
+        (the envelope, the ceiling; hence B <= data) and B >= floor > 0 (the
+        floor is 1e-6 of the data's maximum).
         Without a background ('none'): the model is the plain sum of the
         features and peaks in data units, minimize sum (data - sum)^2, no
-        ceiling, no positivity constraint, no offset.
+        ceiling, no positivity constraint, no offset.  Either objective is
+        divided by the squared norm of what it fits (data/E - 1, or the
+        data), so that SLSQP's ftol means the same for every curve; a
+        non-finite model scores 1e30.
         Both: all feature/peak amplitudes >= 0, Voigt widths >= 0; per peak
         side: Voigt half width >= one energy step; for an asymmetric peak the
         ratio of its two half widths <= max_width_ratio; equality: anchor
@@ -1838,6 +1893,7 @@ class Fit:
 
     @staticmethod
     def _guess_text(g):
+        """One line describing a peak dict of the edit set: centre, height, the half width and designation of each side."""
         ml, mr = g.get('mix', 0.5), g.get('mix_right', g.get('mix', 0.5))
         return (f"peak at {g['center']:.3f} V, height {g['amp_seed']:.4g}, "
                 f"HWHM left {g['hwhm']:.3f} V ({_voigt_designation(ml)} {ml:.2f}), "
@@ -2025,10 +2081,17 @@ class Fit:
         """
         Plain dict of everything the figure, the edit window, and a refit need
         (arrays, dicts, lists, and scalars only: no analyzer object and no SM4
-        file object, so the file unpickles however the module was imported).
-        Format 3: the raw columns ('lia', 'iv', with 'units_lia', 'units_iv',
-        'vmod'), the filter stage and the per-fit data contexts (inside
-        'fits') are included, and 'loader_format' (sm4file.LOADER_FORMAT).
+        file object, so the file unpickles however the module was imported):
+        the attributes named in `fields` (the label, the filters, the axes
+        and curves, the setpoint and anchor, the noise level and sweep
+        settings, the background context, the candidates and every row of
+        the sweep, the fit history with each fit's data context, the raw
+        columns and raw sets with their units and vmod, the filter stage,
+        the quantity and Feenstra settings, the resampling, the background
+        mode; a missing attribute is stored as None), plus 'shown', 'back'
+        and 'fwd' (the shown fit and the Revert / Forward chains), 'format'
+        (_CACHE_FORMAT) and 'loader_format' (sm4file.LOADER_FORMAT).
+        norm_range is not among the fields.
         """
         fields = ('ifile', 'hampel_filter_params', 'sgolay_filter_params',
                   'energy', 'V', 'data',
@@ -2296,6 +2359,7 @@ class Fit:
     # ------------------------------------------------------------------ #
 
     def _dV(self):
+        """The mean energy step of the axis (V): the unit of the width constraints and the drag rules."""
         return float(np.mean(np.diff(self.V)))
 
     @staticmethod
@@ -2307,6 +2371,7 @@ class Fit:
 
     @staticmethod
     def _new_guess(x, y, dV):
+        """A new peak dict for the edit set at (x, y): centre x, height y (at least 1e-12), both half widths two energy steps, equal Gaussian and Lorentzian parts, nothing held."""
         return {'shape': PEAK_SHAPE, 'center': float(x), 'amp_seed': max(float(y), 1e-12),
                 'hwhm': 2.0 * dV, 'hwhm_right': 2.0 * dV, 'mix': 0.5, 'mix_right': 0.5, 'hold': []}
 
@@ -2423,6 +2488,7 @@ class Fit:
     STACK_MIN, STACK_MAX = 0.12, 0.5  # the stack's share of the data slot, limits
 
     def _fig_width(self, n_panels):
+        """The figure width (inches) for n panel slots: the margins, the slots and the gaps between them (3 slots: DESIGN[0])."""
         return self.MARGIN_L + n_panels * self.PANEL_W + (n_panels - 1) * self.PANEL_GAP + self.MARGIN_R
 
     def _in(self, x, y, w, h):
@@ -2589,6 +2655,7 @@ class Fit:
 
     @staticmethod
     def _toolbar_idle(fig):
+        """True when the figure's toolbar is in no mode (pan or zoom): clicks on the edit plot then edit peaks."""
         tb = getattr(fig.canvas, 'toolbar', None)
         return tb is None or not getattr(tb, 'mode', '')
 
@@ -2621,6 +2688,7 @@ class Fit:
         self._draw_left()
 
     def _on_revert(self, event):
+        """'Revert fit': revert_fit, then the controls, the fit panels and an open edit window follow the fit now shown."""
         if not self.revert_fit():
             return
         self._sync_controls_to_shown()
@@ -2637,6 +2705,7 @@ class Fit:
             self._edit_draw()
 
     def _on_forward(self, event):
+        """'Forward fit': forward_fit, then the controls, the fit panels and an open edit window follow the fit now shown."""
         if not self.forward_fit():
             return
         self._sync_controls_to_shown()
@@ -2673,6 +2742,7 @@ class Fit:
                 and self._same_params(sp, source.get('sgolay_filter_params')))
 
     def _settings_text(self, hp, sp):
+        """'Hampel <params or off>; SG <params or off>' for legends and console lines."""
         return f"Hampel {self._params_text(hp)}; SG {self._params_text(sp)}"
 
     def _display_curve(self):
@@ -2820,6 +2890,7 @@ class Fit:
             print(f"Filter controls: {exc}")
 
     def _on_save(self, event):
+        """'Save fit': save_fit next to the data file."""
         self.save_fit()
 
     # --- edit figure ---
@@ -2983,6 +3054,7 @@ class Fit:
 
     @staticmethod
     def _fmt_param(v):
+        """A parameter value as the panel's box shows it (6 significant digits)."""
         return f"{v:.6g}"
 
     def _edit_panel_refresh(self):
@@ -3168,6 +3240,15 @@ class Fit:
         st['fig'].canvas.draw_idle()
 
     def _edit_on_press(self, event):
+        """
+        A press on the edit plot (ignored outside it or while the toolbar is
+        in pan / zoom mode).  Right button: the peak hit (_hit) is removed
+        from the edit set.  Left button, in this order: with 'Add peak'
+        armed a new peak is added at the press and a creation drag starts;
+        else within two energy steps of the selected peak's centre an
+        adjustment drag starts; else a peak hit becomes the selected one;
+        else, with a peak selected, its centre and height move to the press.
+        """
         st = getattr(self, '_edit', None)
         if st is None or event.inaxes is not st['ax'] or not self._toolbar_idle(st['fig']):
             return
@@ -3215,6 +3296,7 @@ class Fit:
             self._edit_draw()
 
     def _edit_on_motion(self, event):
+        """A drag in progress on the edit plot: the dragged peak follows the pointer (_apply_drag) and the window redraws."""
         st = getattr(self, '_edit', None)
         if st is None or st['drag'] is None or event.inaxes is not st['ax'] or event.xdata is None:
             return
@@ -3222,6 +3304,7 @@ class Fit:
         self._edit_draw()
 
     def _edit_on_release(self, event):
+        """The end of a drag: the peak as adjusted (or added) is printed and the window redrawn."""
         st = getattr(self, '_edit', None)
         if st is None or st['drag'] is None:
             return
@@ -3233,6 +3316,7 @@ class Fit:
         self._edit_draw()
 
     def _edit_on_add(self, event):
+        """'Add peak': arm the next press-drag on the edit plot to draw a new peak (_edit_on_press)."""
         st = getattr(self, '_edit', None)
         if st is None:
             return
@@ -3241,6 +3325,17 @@ class Fit:
         self._edit_draw()
 
     def _edit_on_refit(self, event):
+        """
+        'Refit': the joint fit from the edit set's peaks and working
+        background (_refit_peaks).  When the filter controls, the pending
+        background mode, the pending quantity or the Feenstra settings
+        differ from the shown fit's, the data context is rebuilt with them
+        first (_rebuild; refused with a console line when the curve cannot
+        be rebuilt, the shown fit's context restored).  An accepted fit is
+        appended to the history (_accept_fit) and both windows redraw from
+        it; a rejected one is printed with its reason and, when the context
+        was rebuilt, the shown fit's context is restored.
+        """
         st = getattr(self, '_edit', None)
         if st is None:
             return
@@ -3373,8 +3468,8 @@ if __name__ == '__main__':
     hampel_filter_params = {'window': 3, 'n_sigma': 2}
     sgolay_filter_params = {'window_length': 6, 'polyorder': 3}
 
-    # Known modeled dI/dV features (the background is always the 'wkb' model, see
-    # the module docstring).  Each entry:
+    # Known modeled dI/dV features (the background mode is select_model's 'background',
+    # 'wkb' unless given, see the module docstring).  Each entry:
     #   {'type': 'asym_voigt' | 'erf_step',
     #    'center': <V>, 'fix_center': True/False,
     #    widths: 'hwhm' and 'hwhm_right' (asym_voigt, split into equal Gaussian and
@@ -3394,12 +3489,14 @@ if __name__ == '__main__':
     # Cap on width_long / width_short for every asymmetric peak (features and generic peaks).
     max_width_ratio = 3
 
-    # Candidate threshold = noise_z x noise level (successive-difference sigma x SG gain).
+    # Candidate threshold = noise_z x noise level (the successive-difference sigma of the
+    # unfiltered curve; the SG gain is 1, see _set_noise).
     noise_z = 2.5
 
-    # Fit history cache: True opens the figure from <date_time>_fits.pkl next to the
-    # .sm4 when that file exists (and is of the current format); False runs a fresh
-    # sweep and overwrites the cache.
+    # Fit history cache: True opens the figure from the newest up-to-date file of
+    # <date_time>_fits.pkl's family next to the .sm4 when one exists (Fit.has_cache);
+    # False runs a fresh sweep, which rewrites that file (or writes a new one beside an
+    # out-of-date family).
     use_cache = True
 
     if use_cache and Fit.has_cache(ifile):
