@@ -87,9 +87,11 @@ class NoiseSpectrum:
         ax.set_ylabel(f"spectrum ({', '.join(units) if units else 'no units recorded'})")
         ax.legend(loc='best', fontsize=7, frameon=False)
 
+    DESIGN = (10, 5)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def show(self, title=None):
         """The spectra in their own figure (draw), with the measurement information printed."""
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=self.DESIGN)
         self.draw(ax)
         ax.set_title(title or self.name, fontsize=9)
         for name, text in self.info():

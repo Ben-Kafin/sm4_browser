@@ -643,6 +643,8 @@ class MultiAverageWindow:
     # The Feenstra companion has sweep panels and no heatmaps.
     feenstra_heatmaps = False
 
+    DESIGN = (15, 7)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, index, directory, hampel_defaults, sgolay_defaults, fit_settings=None,
                  divide_iv=True, iv_broadening=0.0, channel='didv', name=None,
                  iv_zero_sub=True, iv_broadened=False):
@@ -684,7 +686,7 @@ class MultiAverageWindow:
         self._lines = []           # (entry index, sweep index, Line2D) of the sweeps drawn in the left panel
         self.fit_settings = dict(fit_settings) if fit_settings else {}
         self._fits = []   # sent and loaded fits stay referenced so their widgets stay live
-        self.fig = plt.figure(figsize=(15, 7))
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(self.tag)
         except Exception:

@@ -366,7 +366,8 @@ if __name__ == '__main__':
             S[:, ia] = np.sum(r * r, axis=1)
         return aa, bb, S, float(np.sum(cf.residual * cf.residual))
 
-    fig = plt.figure(figsize=(17, 9.5))
+    DESIGN = (17, 9.5)        # the demo window's design size (inches)
+    fig = plt.figure(figsize=DESIGN)
     # Fixed margins (a strip at the bottom for the sweep buttons), so every rebuild lands identically.
     fig.subplots_adjust(left=0.05, right=0.985, bottom=0.12, top=0.92, wspace=0.28, hspace=0.32)
     state = {'k': int(column), 'axes': []}

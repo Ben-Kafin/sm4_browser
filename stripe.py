@@ -65,6 +65,8 @@ class StripeWindow:
     FLAGS = {'off': (False, False), 'auto': (True, False), 'manual': (False, True)}   # the toggles each setting means
     HANDLE_COLORS = {'E': '#ffd700', 'R': '#00ffff'}                                   # forward ends, return points
 
+    DESIGN = (12, 8.8)     # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, drift, grid, scalefactor, active_procs, setting='auto', pass_top='forward'):
         if grid.kind != 'grid' or not grid.topo_pages:
             raise ValueError(f"{grid.name} is not a grid with topo pages; no stripe matching.")
@@ -75,7 +77,7 @@ class StripeWindow:
         self.active = list(active_procs)
         self.setting = setting if setting in drift.SLOW_SETTINGS else 'auto'
         self.top = pass_top if pass_top in ('forward', 'reverse') else 'forward'
-        self.fig = plt.figure(figsize=(12, 8.8))
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(f"stripe matching: {grid.name}")
         except Exception:

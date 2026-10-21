@@ -303,6 +303,8 @@ class TopoWindow:
                     a point's sweeps
     """
 
+    DESIGN = (7.5, 7.4)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, topo, active_procs, scalefactor, marker_xy_m=None, title=None, direction='forward',
                  spec=None, drift=None, auto_on=False, manual_on=False, anchor_on=False,
                  spec_dir='forward', stripe_on=None):
@@ -320,7 +322,7 @@ class TopoWindow:
         self.anchor_on = bool(anchor_on)
         self.spec_dir = spec_dir if spec_dir in ('forward', 'reverse') else 'forward'
         self.stripe_window = None
-        self.fig, self.ax = plt.subplots(figsize=(7.5, 7.4))
+        self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
         self.fig.subplots_adjust(bottom=0.17)
         self.cbar = None
         self.chk_auto = widgets.make(self.fig, 'auto drift', 0.02, 0.015, value=self.auto_on)
@@ -534,13 +536,15 @@ class ProfileWindow:
     is simply gone; is_open() says whether it still exists.
     """
 
+    DESIGN = (8.5, 4.2)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, curves, title, xlabel="position (nm)", ylabel="height (nm, raw)", pair=None, registry=None):
         from sm4_Browser import widgets
         self.xlabel = xlabel
         self.ylabel = ylabel
         self.registry = registry
         self.pair = pair
-        self.fig, self.ax = plt.subplots(figsize=(8.5, 4.2))
+        self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
         self.fig.subplots_adjust(bottom=0.2 if registry is not None else 0.15, left=0.09, right=0.98, top=0.9)
         try:
             self.fig.canvas.manager.set_window_title(title)
@@ -634,12 +638,14 @@ class ProfilePlot:
     label is in; name is 'profile<index>'.
     """
 
+    DESIGN = (9.0, 4.6)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, index):
         from sm4_Browser import widgets
         self.index = int(index)
         self.name = f"profile{self.index}"
         self.entries = []
-        self.fig, self.ax = plt.subplots(figsize=(9.0, 4.6))
+        self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
         self.fig.subplots_adjust(bottom=0.14, left=0.09, right=0.98, top=0.92)
         try:
             self.fig.canvas.manager.set_window_title(self.name)

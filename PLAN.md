@@ -36,7 +36,10 @@ the owner and is final. When all three items are done, item 3 removes this file.
   file-name title rule (`fa3f282`): each drift-window panel is titled with the exact name of its file, carries
   the other topo's recorded frame as a thin black outline drawn last, and both panels show one view centred
   on the two frames together.
-* Item 1: not started.
+* Item 1: done (the commit "Item 1: one text-size rule ...").  Of note for later items: the browser's
+  layout needs about 1990 px at zoom 1 on the test platform, more than its 1700 px design width, so
+  at the design size its font is fitted to about 0.86x (browser._WindowZoom._fit); the figure
+  windows' controls keep their sizes in inches and crowd in a canvas far below 0.5x its design width.
 * Item 2: not started.
 * Item 3: not started.
 

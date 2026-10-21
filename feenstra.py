@@ -279,10 +279,12 @@ class FeenstraWindow:
     TOG_Y = 0.004
     TOPO_CBAR = [0.985, 0.56, 0.007, 0.33]
 
+    DESIGN = (18, 8)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, parent, title):
         self.parent = parent
         self.title = title
-        self.fig = plt.figure(figsize=(18, 8))
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(f"Feenstra: {title}")
         except Exception:

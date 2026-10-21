@@ -900,7 +900,7 @@ class Line:
         """
         self._int_close_rows_window()
         n = len(self._int_topo_lines)
-        fig = plt.figure(figsize=(3.6, max(2.0, 0.42 * n + 0.8)))
+        fig = plt.figure(figsize=(self.ROWS_DESIGN[0], max(self.ROWS_DESIGN[1], self.ROWS_ROW_IN * n + self.ROWS_PAD_IN)))
         try:
             fig.canvas.manager.set_window_title('topo rows')
         except Exception:
@@ -2391,6 +2391,10 @@ class Line:
     #  Main interactive entry point                                       #
     # ------------------------------------------------------------------ #
 
+    DESIGN = (16, 7.5)     # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+    ROWS_DESIGN = (3.6, 2.0)       # the topo-rows pop-up: its width and its least height (inches)
+    ROWS_ROW_IN, ROWS_PAD_IN = 0.42, 0.8   # ... its height grows by one row's height per topo row, plus the padding
+
     def plot_line_with_topo_interactive(self, hampel_filter_params=None,
                                         sgolay_filter_params=None,
                                         apply_calibration=False,
@@ -2652,7 +2656,7 @@ class Line:
         self._int_panel_bottom = self.PANEL_BOTTOM_MIN
 
         # --- The figure, its panels and controls ---
-        self._int_fig = plt.figure(figsize=(16, 7.5))
+        self._int_fig = plt.figure(figsize=self.DESIGN)
         self._int_build_axes()
         self._int_build_controls()
         self._int_draw_heatmap()

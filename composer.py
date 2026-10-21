@@ -48,6 +48,8 @@ class FigureComposer:
 
     COLUMNS = 4
     CELL_IN = 1.9             # every cell a square of this size (inches); the panel a square inside it
+    DESIGN = (COLUMNS * CELL_IN, CELL_IN)   # the design size of one row of cells (inches); the window opens
+                                            # at as many rows as the panels need (qtplot.window_zoom)
     PANEL = 0.74              # the panel's side, fraction of the cell (room above for the title, below for tick labels)
     BOTTOM = 0.11             # the panel's bottom, fraction of the cell
     SYMBOLS = ['+', 'x', '*', '.', '^', 'v', '>', '<', 'o', 's', 'd', 'p', 'h']   # MATLAB's specMarker list
@@ -113,7 +115,7 @@ class FigureComposer:
         if not self.is_open():
             if n == 0:
                 return
-            self.fig = plt.figure(figsize=(self.COLUMNS * self.CELL_IN, rows * self.CELL_IN))
+            self.fig = plt.figure(figsize=(self.DESIGN[0], rows * self.DESIGN[1]))
             self.fig.canvas.mpl_connect('key_press_event', self._on_key)
             try:
                 self.fig.canvas.manager.set_window_title(self.title)

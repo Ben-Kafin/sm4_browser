@@ -22,6 +22,15 @@ changes it.
 make(fig, name, x, y, ...) builds the widget named `name` at the figure
 fraction (x, y) (its lower-left corner) with the size of its specification.
 A window never builds a Qt widget itself.
+
+Text size and short labels: a control's text follows its figure's zoom
+(qtplot.window_zoom: the window's size relative to its design size, 0.5x to
+4x), shrinking to at most 75 % of that when its box is too small and the box
+then growing to fit, so no text is ever cut.  When the window is taller than
+it is wide (qtplot.Figure.set_portrait) every label with a short form in
+SHORT_LABELS shows it (Control.set_short), and the full label returns when
+the window is wider than tall again; the browser's native controls use the
+same table (browser.QControl.set_short).
 """
 
 if __package__ in (None, ''):
@@ -110,7 +119,7 @@ SPECS = {
     'close': _spec('button', 0.9, 0.36),
     'Grid view': _spec('button', 0.9, 0.36),
     'Topo Window': _spec('button', 1.5, 0.45),
-    'section line': _spec('button', 1.1, 0.36),                   # the browser: the draggable cross-section line
+    'section': _spec('button', 1.1, 0.36),                        # the browser: the cross-section path (editing on / off)
     'cross section': _spec('button', 1.1, 0.36),                  # ... and its profile window
     'clear markers': _spec('button', 1.2, 0.36),                  # the manual-drift markers removed
     'clear points': _spec('button', 1.1, 0.36),                   # the stripe window: the dragged points dropped
@@ -176,6 +185,46 @@ LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
           'γ': 'γ ', 'drift v': 'v (nm/h) ', 'E range': 'E (V) ', 'x range': 'x (Å) '}
 
+# The short form of every label that has one, used when a window is taller than it is wide (the
+# figure's portrait flag, qtplot.Figure.set_portrait; the browser's window, browser._WindowZoom):
+# a control whose label is a key here shows the value instead, and the full label when the window
+# is wider than tall again.  Keys are the label texts as shown (LABELS applied), stripped.  A label
+# not listed keeps its text in both modes.  One table for the figure windows' controls
+# (Control.set_short) and the browser's native controls (browser.QControl.set_short) alike.
+SHORT_LABELS = {
+    # toggles and boxes
+    'calibrate': 'cal', 'normalize': 'norm', 'auto drift': 'auto', 'manual drift': 'manual',
+    'anchor to topo': 'anchor', 'broadened': 'broad', 'substack': 'sub', 'Average': 'Avg',
+    'Feenstra': 'Feen', 'Feenstra (refit)': 'Feen refit', 'cmap norm': 'cmap', 'WKB background': 'WKB',
+    'step through': 'step', 'topo processing': 'topo proc', 'filters (on the current of the division)': 'filters',
+    'polyorder': 'order', 'Savitzky-Golay': 'SG',
+    # radio options
+    'forward': 'fwd', 'reverse': 'rev', 'average': 'avg', 'experiment': 'exp', 'pulsing': 'pulse',
+    'forward sweeps': 'fwd', 'reverse sweeps': 'rev', 'all sweeps': 'all', 'fitted stretch': 'stretch',
+    'slow axis': 'slow', 'fast axis': 'fast', 'stripe pass': 'pass', 'topo pass': 'pass',
+    'up to current': 'current', 'last 25': 'last',
+    # buttons
+    'stripe match': 'stripe', 'Topo Window': 'Topo', 'load saved averages': 'load avgs',
+    'cross section': 'x-section', 'set scale': 'scale', 'add existing': 'existing', 'add new': 'new',
+    'Send to fit': 'fit', 'apply velocity': 'apply v', 'set from markers': 'from markers',
+    'drift window': 'drift', 'clear markers': 'clear', 'clear points': 'clear', 'clear E-markers': 'clear E',
+    'remove last': 'remove', 'edit alignment': 'align', 'edit background': 'bkg',
+    'line → new avg': 'line→new', 'line → existing avg': 'line→exist', 'map → new avg': 'map→new',
+    'map → existing avg': 'map→exist', 'add to plot': 'add', 'new plot': 'new', 'Grid view': 'grid',
+    'prev region': '< region', 'next region': 'region >', '< spectra': '<', 'spectra >': '>',
+    '< Prev': '<', 'Next >': '>', 'Add peak': 'peak', 'Revert fit': 'revert', 'Forward fit': 'forward',
+    'Edit peaks': 'peaks', 'Save fit': 'save',
+    # text-box and slider labels
+    'scale factor': 'scale', 'min (min)': 'min', 'width (V)': 'width', 'v (nm/h)': 'v', 'E (V)': 'E',
+    'x (Å)': 'x', 'reference': 'ref', 'E-markers': 'E-mk', 'Markers': 'mk',
+}
+
+
+def short_form(text):
+    """The short form of a label text (SHORT_LABELS), or the text itself when it has none."""
+    t = str(text)
+    return SHORT_LABELS.get(t.strip(), t)
+
 
 # ---------------------------------------------------------------------- #
 #  Qt helpers                                                              #
@@ -215,10 +264,15 @@ def _refont_widgets(widgets_fs, zoom):
 
 
 class _LabelProxy:
-    """A control's label text as matplotlib's Text (set_color, set_text, set_fontsize, get_text)."""
+    """
+    A control's label text as matplotlib's Text (set_color, set_text, set_fontsize, get_text).
+    `setter(text)`, when given, is the control's own way of changing that label, so that the text
+    set here is the label the control shows in its full or short form (Control.set_short).
+    """
 
-    def __init__(self, qwidget):
+    def __init__(self, qwidget, setter=None):
         self._w = qwidget
+        self._setter = setter
         self._color = None
 
     def set_color(self, c):
@@ -231,7 +285,10 @@ class _LabelProxy:
             self._w.setStyleSheet(base + (self._w.property('ind_css') or ''))
 
     def set_text(self, s):
-        self._w.setText(str(s))
+        if self._setter is not None:
+            self._setter(str(s))
+        else:
+            self._w.setText(str(s))
 
     def get_text(self):
         return self._w.text()
@@ -293,6 +350,7 @@ class Control:
         if labels is not None:
             self.spec['labels'] = list(labels)
         self.label = LABELS.get(name, name) if label is None else label
+        self._short = False       # short labels on: the window is taller than wide (set_short)
         self._cb = None
         self._quiet = False
         self._visible = True
@@ -328,6 +386,26 @@ class Control:
     def _text_need(self, zoom):
         """(width, height) in pixels the control's own text needs at a font zoom, or None (no text inside)."""
         return None
+
+    def shown(self, text):
+        """The text a label shows: its short form (SHORT_LABELS) in the short mode, else as it is."""
+        return short_form(text) if self._short else str(text)
+
+    def _apply_labels(self):
+        """Every label of the control set to its shown form (the kinds with text override this)."""
+        return None
+
+    def set_short(self, flag):
+        """
+        Short labels on or off (the figure's shape, qtplot.Figure.set_portrait: on when the
+        window is taller than it is wide).  Every label with a short form in SHORT_LABELS
+        switches, and the control is placed again so that its box fits the new text.
+        """
+        flag = bool(flag)
+        if flag != self._short:
+            self._short = flag
+            self._apply_labels()
+            self._relayout()
 
     def _set_zoom(self, z):
         if abs(z - getattr(self, '_zoom', 1.0)) > 1e-6:
@@ -454,9 +532,17 @@ class Check(_Boxed):
         cb.setChecked(bool(value))
         lay.addWidget(cb)
         self.widget = cb
-        self._labels = [_LabelProxy(cb)]
+        self._labels = [_LabelProxy(cb, self._set_label)]
         cb.toggled.connect(lambda flag: self._fire(self.value))
         self._finish()
+
+    def _set_label(self, text):
+        self.label = str(text)
+        self._apply_labels()
+        self._relayout()
+
+    def _apply_labels(self):
+        self.widget.setText(self.shown(self.label))
 
     def _text_need(self, zoom):
         fm = QtGui.QFontMetricsF(_font(self.spec['fs'], zoom))
@@ -509,8 +595,17 @@ class Checks(_Boxed):
             lay.addWidget(cb)
             self.boxes.append(cb)
         self.widget = frame
-        self._labels = [_LabelProxy(cb) for cb in self.boxes]
+        self._labels = [_LabelProxy(cb, lambda s, i=i: self._set_label(i, s)) for i, cb in enumerate(self.boxes)]
         self._finish()
+
+    def _set_label(self, i, text):
+        self.spec['labels'][i] = str(text)
+        self._apply_labels()
+        self._relayout()
+
+    def _apply_labels(self):
+        for cb, lab in zip(self.boxes, self.spec['labels']):
+            cb.setText(self.shown(lab))
 
     def _text_need(self, zoom):
         fm = QtGui.QFontMetricsF(_font(self.spec['fs'], zoom))
@@ -575,6 +670,10 @@ class Radio(_Boxed):
         self.widget = frame
         self._finish()
 
+    def _apply_labels(self):
+        for rb, lab in zip(self.buttons, self.spec['labels']):
+            rb.setText(self.shown(lab))
+
     def _text_need(self, zoom):
         fm = QtGui.QFontMetricsF(_font(self.spec['fs'], zoom))
         st = self.buttons[0].style() if self.buttons else QtWidgets.QApplication.style()
@@ -612,6 +711,7 @@ class PushButton(Control):
 
     def __init__(self, fig, name, x, y, label=None):
         super().__init__(fig, name, x, y, label=label)
+        self._text = self.label        # the button's text as set (set_text); shown full or short
         b = QtWidgets.QPushButton(self.label)
         b.setFont(_font(self.spec['fs']))
         b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -631,8 +731,12 @@ class PushButton(Control):
         return self.widget.text()
 
     def set_text(self, text):
-        self.widget.setText(str(text))
+        self._text = str(text)
+        self._apply_labels()
         self._relayout()
+
+    def _apply_labels(self):
+        self.widget.setText(self.shown(self._text))
 
 
 class Range(Control):
@@ -693,10 +797,13 @@ class Range(Control):
         except TypeError:
             self._val.setText(f"{v:g}")
 
+    def _apply_labels(self):
+        self._lab.setText(self.shown(self.label))
+
     def _layout(self, x, y, w, h):
         self.widget.setGeometry(x, y, w, h)
         fm = QtGui.QFontMetrics(self._lab.font())
-        lw = fm.horizontalAdvance(self.label) + 6
+        lw = fm.horizontalAdvance(self._lab.text()) + 6
         th = max(h, fm.height())
         self._lab.setGeometry(x - lw - 2, y + (h - th) // 2, lw, th)
         vw = fm.horizontalAdvance('8' * max(len(self._val.text()), 3)) + 6
@@ -757,7 +864,7 @@ class Text(Control):
         self._lab = self._add(QtWidgets.QLabel(self.label))
         self._lab.setFont(_font(self.spec['fs']))
         self._lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._labels = [_LabelProxy(self._lab)]
+        self._labels = [_LabelProxy(self._lab, self._set_label)]
         if not self.label.strip():
             self._lab.hide()
         self._finish()
@@ -766,10 +873,19 @@ class Text(Control):
     def label_text(self):
         return self._labels[0]
 
+    def _set_label(self, text):
+        self.label = str(text)
+        self._apply_labels()
+        self._lab.setVisible(self._visible and bool(self.label.strip()))
+        self._relayout()
+
+    def _apply_labels(self):
+        self._lab.setText(self.shown(self.label))
+
     def _layout(self, x, y, w, h):
         self.widget.setGeometry(x, y, w, h)
         fm = QtGui.QFontMetrics(self._lab.font())
-        lw = fm.horizontalAdvance(self.label) + 4
+        lw = fm.horizontalAdvance(self._lab.text()) + 4
         self._lab.setGeometry(x - lw - 1, y, lw, h)
 
     def _set_visible(self, flag):
@@ -910,10 +1026,10 @@ class FilterControls:
         self.chk_h = check(self._on[0], 0)
         self.box_win = box(self._hp['window'], 'window')
         self.box_nsig = box(self._hp['n_sigma'], 'n_sigma')
-        self._box_labels = {'window_length': label('window', Qt.AlignmentFlag.AlignRight),
-                            'polyorder': label('polyorder', Qt.AlignmentFlag.AlignRight),
-                            'window': label('window', Qt.AlignmentFlag.AlignRight),
-                            'n_sigma': label('nσ', Qt.AlignmentFlag.AlignRight)}
+        self._box_label_text = {'window_length': 'window', 'polyorder': 'polyorder', 'window': 'window',
+                                'n_sigma': 'nσ'}
+        self._box_labels = {k: label(t, Qt.AlignmentFlag.AlignRight) for k, t in self._box_label_text.items()}
+        self._short = False
         self._placed = [(self.chk_s, 'chk', 'sg'), (self.box_wl, 'box1', 'sg'), (self.box_po, 'box2', 'sg'),
                         (self.chk_h, 'chk', 'hampel'), (self.box_win, 'box1', 'hampel'),
                         (self.box_nsig, 'box2', 'hampel')]
@@ -959,6 +1075,13 @@ class FilterControls:
             lw = fm.horizontalAdvance(lab.text()) + 4
             pad = int(round(0.12 * ww))
             lab.setGeometry(x - lw - pad, y, lw, hh)
+
+    def set_short(self, flag):
+        """Short labels on or off (the figure's shape, qtplot.Figure.set_portrait): the box labels with a short form switch ('polyorder' -> 'order')."""
+        self._short = bool(flag)
+        for k, lab in self._box_labels.items():
+            t = self._box_label_text[k]
+            lab.setText(short_form(t) if self._short else t)
 
     def set_rect(self, rect):
         """Move the box (frame and widgets) to another figure-fraction rect, e.g. after a figure resize."""
@@ -2357,7 +2480,8 @@ if __name__ == '__main__':
     # labels can be checked at a glance.
     import math
     names = list(SPECS)
-    fig = plt.figure(figsize=(16, 9))
+    DESIGN = (16, 9)          # the demo window's design size (inches)
+    fig = plt.figure(figsize=DESIGN)
     cols = 6
     rows = math.ceil(len(names) / cols)
     for k, name in enumerate(names):

@@ -153,9 +153,11 @@ class PhaseRotate:
                         max(float(np.max(c['deg'])) for c in self.curves))
         ax.legend(loc='best', fontsize=7, frameon=False)
 
+    DESIGN = (9, 5)        # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def show(self, title=None):
         """The curves in their own figure (draw), with the measurement information printed."""
-        fig, ax = plt.subplots(figsize=(9, 5))
+        fig, ax = plt.subplots(figsize=self.DESIGN)
         self.draw(ax)
         ax.set_title(title or self.name, fontsize=9)
         for name, text in self.info():

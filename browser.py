@@ -123,7 +123,7 @@ the manual drift window of the current file (see "Manual drift").  Right, for th
 highlights it), the 'calibrate' / 'normalize' box of the spectra panels
 (widgets.PipelineBox, both off at open, as in every window that uses
 Feenstra; see the pipeline order below), the cross-section controls
-('section line', 'cross section'; see "Cross section"),
+('section', 'cross section'; see "Cross section"),
 'add new' and 'add existing' (point; the second drops a list of the open
 averages above the button, and a text line names the open averages that
 already hold the current file), the forward / reverse / average list
@@ -135,6 +135,18 @@ and, always, the 'site' radio (pulsing / clean / experiment) of the current
 file.  Every control is built through widgets.py (one specification per
 widget name, so a control shared with another window is the same there);
 every drawing goes through plots.py.
+Text size: the window's design size is Browser.DESIGN (1700 x 950 pixels);
+every text of the window, the controls, the info panel, the panels' ticks,
+labels and legends, is scaled by the window's size relative to it, from
+0.5x to 4x (qtplot.window_zoom, the one rule of every window; the
+figure windows apply it to their own DESIGN sizes).  When the controls
+would not fit the window at that size their font is reduced, to at most
+75 % of it, and when even that does not fit the window stops shrinking
+(_WindowZoom), so no text is ever cut.  When the window is taller than it
+is wide every control with a short form in widgets.SHORT_LABELS shows it
+('calibrate' -> 'cal', 'manual drift' -> 'manual', ...) and every panel
+title that is a file name shows the file's date-and-time stamp alone; the
+full labels and names return when the window is wider than tall again.
 
 Analysis windows
 ----------------
@@ -409,7 +421,7 @@ the scan-area title.
 
 Cross section
 -------------
-'section line' places a line across the middle of the current view of the
+'section' places a line across the middle of the current view of the
 scan area (pressed again, removes it); its endpoints drag (a press near an
 endpoint moves it, elsewhere the pan works as before).  'cross section'
 samples the raw topography under the line (topo.cross_section: along the
@@ -461,6 +473,7 @@ import io
 import time
 import contextlib
 import textwrap
+import weakref
 from collections import deque
 import numpy as np
 from sm4_Browser import qtplot as plt
@@ -1664,7 +1677,7 @@ class _BrowserCore:
     # --- the cross section ---
 
     def _on_section_line(self):
-        """'section line': a line across the middle of the current view (pressed again, it goes)."""
+        """'section': a line across the middle of the current view (pressed again, it goes)."""
         if self.section.active():
             self.section.clear()
             print("cross section: line removed.")
@@ -1685,7 +1698,7 @@ class _BrowserCore:
         """'cross section': the raw topo under the line into the profile window (topo.cross_section)."""
         pts = self.section.points()
         if pts is None:
-            print("cross section: no line; 'section line' places one.")
+            print("cross section: no line; 'section' places one.")
             return
         k = 1e9 / self.scalefactor
         p0_m, p1_m = pts[0] / k, pts[1] / k
@@ -2223,12 +2236,36 @@ Qt = QtCore.Qt
 # ---------------------------------------------------------------------- #
 
 class QControl:
+    """
+    The interface of widgets.Control on a native Qt widget: value, set (never fires), on_change,
+    show, enable, and set_short (the browser's window taller than wide: every label with a short
+    form in widgets.SHORT_LABELS shows it; _WindowZoom switches every registered control).
+    """
+
+    _all = weakref.WeakSet()       # every native control made, for _WindowZoom's label switch
+
     def __init__(self, name, qwidget):
         self.name = name
         self.qt = qwidget
         self._cb = None
         self._quiet = False
+        self._short = False
         self.qt.setObjectName(name)
+        QControl._all.add(self)
+
+    def _shown(self, text):
+        """The text a label shows: its short form in the short mode, else as it is."""
+        return widgets.short_form(text) if self._short else str(text)
+
+    def _apply_labels(self):
+        """Every label of the control set to its shown form (the kinds with text override this)."""
+        return None
+
+    def set_short(self, flag):
+        flag = bool(flag)
+        if flag != self._short:
+            self._short = flag
+            self._apply_labels()
 
     def show(self, flag):
         self.qt.setVisible(bool(flag))
@@ -2262,9 +2299,13 @@ class QCheck(QControl):
     """A one-row toggle: callback(flag)."""
 
     def __init__(self, name, value=False, label=None):
-        super().__init__(name, QtWidgets.QCheckBox(_label_of(name) if label is None else label))
+        self._label = _label_of(name) if label is None else label
+        super().__init__(name, QtWidgets.QCheckBox(self._label))
         self.qt.setChecked(bool(value))
         self.qt.toggled.connect(lambda flag: self._fire(bool(flag)))
+
+    def _apply_labels(self):
+        self.qt.setText(self._shown(self._label))
 
     @property
     def value(self):
@@ -2284,6 +2325,7 @@ class QChecks(QControl):
     def __init__(self, name, labels, values=None, title=None):
         box = QtWidgets.QGroupBox(title or '')
         super().__init__(name, box)
+        self._title = title or ''
         lay = QtWidgets.QVBoxLayout(box)
         lay.setContentsMargins(6, 4, 6, 4)
         lay.setSpacing(2)
@@ -2296,6 +2338,11 @@ class QChecks(QControl):
             cb.toggled.connect(lambda _f, lab=lab: self._fire(lab, self.value))
             lay.addWidget(cb)
             self._boxes.append(cb)
+
+    def _apply_labels(self):
+        self.qt.setTitle(self._shown(self._title))
+        for cb, lab in zip(self._boxes, self._labels):
+            cb.setText(self._shown(lab))
 
     @property
     def labels(self):
@@ -2327,6 +2374,7 @@ class QRadio(QControl):
     def __init__(self, name, labels, value=None, title=None):
         box = QtWidgets.QGroupBox(title or '')
         super().__init__(name, box)
+        self._title = title or ''
         lay = QtWidgets.QVBoxLayout(box)
         lay.setContentsMargins(6, 4, 6, 4)
         lay.setSpacing(2)
@@ -2341,6 +2389,11 @@ class QRadio(QControl):
             lay.addWidget(rb)
             self._buttons.append(rb)
         self._group.idClicked.connect(lambda i: self._fire(self._labels[i]))
+
+    def _apply_labels(self):
+        self.qt.setTitle(self._shown(self._title))
+        for rb, lab in zip(self._buttons, self._labels):
+            rb.setText(self._shown(lab))
 
     @property
     def labels(self):
@@ -2361,7 +2414,8 @@ class QPush(QControl):
     """A button: callback()."""
 
     def __init__(self, name, label=None):
-        super().__init__(name, QtWidgets.QPushButton(_label_of(name) if label is None else label))
+        self._text = _label_of(name) if label is None else label
+        super().__init__(name, QtWidgets.QPushButton(self._text))
         self.qt.clicked.connect(lambda _=False: self._fire())
 
     @property
@@ -2369,7 +2423,11 @@ class QPush(QControl):
         return self.qt.text()
 
     def set_text(self, text):
-        self.qt.setText(str(text))
+        self._text = str(text)
+        self._apply_labels()
+
+    def _apply_labels(self):
+        self.qt.setText(self._shown(self._text))
 
 
 class QRange(QControl):
@@ -2385,7 +2443,9 @@ class QRange(QControl):
         super().__init__(name, w)
         lay = QtWidgets.QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(QtWidgets.QLabel(_label_of(name) if label is None else label))
+        self._label = _label_of(name) if label is None else label
+        self.label = QtWidgets.QLabel(self._label)
+        lay.addWidget(self.label)
         self.slider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(int(vmin), int(vmax))
         self.slider.setValue(int(value))
@@ -2397,6 +2457,9 @@ class QRange(QControl):
         self._release = None
         self.slider.valueChanged.connect(self._changed)
         self.slider.sliderReleased.connect(self._released)
+
+    def _apply_labels(self):
+        self.label.setText(self._shown(self._label))
 
     def _changed(self, v):
         self.readout.setText(str(v))
@@ -2439,6 +2502,7 @@ class QText(QControl):
         lay = QtWidgets.QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lab = _label_of(name) if label is None else label
+        self._label = lab
         self.label = QtWidgets.QLabel(lab)
         if lab:
             lay.addWidget(self.label)
@@ -2473,12 +2537,20 @@ class QText(QControl):
     def set_label_color(self, color):
         self.label.setStyleSheet(f"color: {color};")
 
+    def _apply_labels(self):
+        self.label.setText(self._shown(self._label))
+
 
 class QTextLabel:
-    """Stands in for a matplotlib figure text: set_text, set_visible."""
+    """
+    Stands in for a matplotlib figure text: set_text, set_visible.  The text wraps: a long line (a
+    file name in the navigation text) never widens the window beyond its design size, and nothing
+    of it is cut; the text can be selected and copied.
+    """
 
     def __init__(self, text=''):
         self.qt = QtWidgets.QLabel(text)
+        self.qt.setWordWrap(True)
         self.qt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
     def set_text(self, text):
@@ -2565,7 +2637,8 @@ class QFilterControls(widgets.FilterControls):
         self._on = [bool(hampel_on), bool(sgolay_on)]
         self._callback = None
         self._quiet = False
-        self.qt = QtWidgets.QGroupBox('filters (on the current of the division)')
+        self._title = 'filters (on the current of the division)'
+        self.qt = QtWidgets.QGroupBox(self._title)
         grid = QtWidgets.QGridLayout(self.qt)
         grid.setContentsMargins(6, 4, 6, 4)
         self.chk_s = QCheck('sg', self._on[1], label='SG')
@@ -2584,6 +2657,10 @@ class QFilterControls(widgets.FilterControls):
 
     def set_rect(self, rect):
         pass
+
+    def set_short(self, flag):
+        """Short labels on or off (the browser's window taller than wide): the box's title shows 'filters'; its controls switch on their own."""
+        self.qt.setTitle(widgets.short_form(self._title) if flag else self._title)
 
     def show(self, flag):
         self.qt.setVisible(bool(flag))
@@ -2653,9 +2730,15 @@ class QAveragePicker:
 
 class _WindowZoom(QtCore.QObject):
     """
-    The main window's own controls (native Qt) keep a readable text size at any window size and
-    on any monitor: their font follows the window's size relative to its design size, as the
-    figures' text does (qtplot's font_zoom).
+    The main window's own controls (native Qt) follow the one text-size rule of every window
+    (qtplot.window_zoom): their font is the window's size relative to its design size, ZOOM_MIN
+    to ZOOM_MAX, as the figures' text does (qtplot's font_zoom); when the controls would not fit
+    the window at that zoom the font is reduced, to at most FIT_MIN of it, until they do (_fit),
+    so no text is cut, as a figure window's control shrinks its font to fit its box.  The same resize decides the
+    window's shape: taller than wide, every native control with a short form shows it
+    (QControl.set_short, widgets.SHORT_LABELS), the objects given to track_short switch their own
+    titles, and the embedded figures are told (Figure.set_portrait), so their controls and their
+    file-name titles switch with the window and not with their own canvas.
     """
 
     def __init__(self, win, design):
@@ -2667,23 +2750,96 @@ class _WindowZoom(QtCore.QObject):
             self.base.setPointSizeF(9.0)
         self.base.setPointSizeF(self.base.pointSizeF() * plt.FONT_SCALE)
         self.extra = []              # (widget, its own base font)
+        self.figs = []               # the embedded figures: their portrait flag follows the window
+        self.shorts = []             # objects with set_short(flag) that are not QControls (the filter box)
         self.zoom = None
+        self.portrait = None
+        self._busy = False           # against re-entry: the fit delivers layout events itself
         win.installEventFilter(self)
 
     def track(self, widget, font):
         self.extra.append((widget, QtGui.QFont(font)))
         self._apply(force=True)
 
+    def track_figures(self, *figs):
+        self.figs.extend(figs)
+
+    def track_short(self, obj):
+        self.shorts.append(obj)
+
     def eventFilter(self, obj, ev):
-        if obj is self.win and ev.type() == QtCore.QEvent.Type.Resize:
-            self._apply()
+        # A resize, and a layout request (a label's text changed, so the controls may need more or
+        # less room at the current font): the zoom and the fit are applied again.
+        if obj is self.win and ev.type() in (QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.LayoutRequest) \
+                and not self._busy:
+            self._busy = True
+            try:
+                self._apply()
+            finally:
+                self._busy = False
         return False
 
+    def _apply_shape(self):
+        """The window's shape: taller than wide switches every label with a short form, and back."""
+        p = self.win.height() > self.win.width()
+        if p == self.portrait:
+            return
+        self.portrait = p
+        for c in list(QControl._all):
+            try:
+                if self.win.isAncestorOf(c.qt):
+                    c.set_short(p)
+            except RuntimeError:
+                pass
+        for o in self.shorts:
+            o.set_short(p)
+        for f in self.figs:
+            f.set_portrait(p)
+
+    FIT_MIN = 0.75               # the controls' font shrinks to at most this fraction of the rule's zoom to fit the window
+
     def _apply(self, force=False):
+        self._apply_shape()
         k = plt.screen_scale()
-        z = min(max(min(self.win.width() / (self.design[0] * k), self.win.height() / (self.design[1] * k)), 0.8), 4.0) * k
+        z = plt.window_zoom(self.win.width(), self.win.height(), self.design[0] * k, self.design[1] * k) * k
+        z = self._fit(z)
         if not force and self.zoom is not None and abs(z - self.zoom) < 0.03 * self.zoom:
             return
+        self._set_fonts(z)
+
+    def _fit(self, z):
+        """
+        The text is never cut: when the window's controls, at the rule's zoom, need more room than
+        the window has (Qt's layout minimum), the font is reduced step by step, to at most FIT_MIN
+        of that zoom, until they fit, as a figure window's control shrinks its font to fit its box.
+        Returns the zoom to use.
+        """
+        central = self.win.centralWidget()
+        lay = central.layout() if central is not None else None
+        if lay is None:
+            return z
+        z0, zc = z, z
+        for _ in range(12):
+            self._set_fonts(zc)
+            # The widgets' size hints follow the new font only once the layout events the font
+            # change posted are delivered; then the layout's minimum is current.
+            QtWidgets.QApplication.sendPostedEvents()
+            lay.invalidate()
+            lay.activate()
+            m = lay.minimumSize()
+            if m.width() <= self.win.width() and m.height() <= self.win.height():
+                return zc
+            if zc <= z0 * self.FIT_MIN + 1e-9:
+                break
+            zc = max(zc * 0.96, z0 * self.FIT_MIN)
+        # Even at the smallest font the controls need more room than the window has: the window's
+        # minimum is raised to what they need, so that nothing is cut (the window grows to it).
+        central.setMinimumSize(max(central.minimumWidth(), m.width()), max(central.minimumHeight(), m.height()))
+        return zc
+
+    def _set_fonts(self, z):
+        """Every font of the window at the zoom z: the window font, the indicators, the boxes' widths, the icons, the tracked widgets."""
+        k = plt.screen_scale()
         self.zoom = z
         f = QtGui.QFont(self.base)
         f.setPointSizeF(self.base.pointSizeF() * z / k)
@@ -2761,6 +2917,11 @@ class Browser(_BrowserCore):
     starts the event loop.
     """
 
+    # The design sizes: the window in pixels at qtplot.DPI (the text zoom is the window's size
+    # relative to it, qtplot.window_zoom), and the two embedded canvases' figure sizes in inches.
+    DESIGN = (1700, 950)
+    SCAN_DESIGN = (9, 7)          # the scan-area canvas
+    SPEC_DESIGN = (8, 3.6)        # the spectra canvas
     # The spectra figure is its own canvas: the panel rects are fractions of IT.
     SPEC_RECT = [0.07, 0.17, 0.91, 0.72]
     SPEC_RECTS = [[0.06, 0.17, 0.205, 0.72], [0.305, 0.17, 0.205, 0.72], [0.55, 0.17, 0.205, 0.72],
@@ -2785,9 +2946,14 @@ class Browser(_BrowserCore):
         self._closer = _OnClose(self.win, self._bg_shutdown)     # the worker processes end with the window
         self.win.setWindowTitle(f"sm4 browser: {self.directory}")
         k = plt.screen_scale()
-        self.win.resize(int(1700 * k), int(950 * k))
-        self._zoomer = _WindowZoom(self.win, (1700, 950))
+        self.win.resize(int(self.DESIGN[0] * k), int(self.DESIGN[1] * k))
+        self._zoomer = _WindowZoom(self.win, self.DESIGN)
         central = QtWidgets.QWidget()
+        # An explicit minimum size (the design size at the smallest text zoom): with it Qt's layout does
+        # not pin the window to the layout's own minimum at the current font (QLayout's default size
+        # constraint), which would stop the window from shrinking back after it was enlarged, since
+        # the text only shrinks once the window does.
+        central.setMinimumSize(int(self.DESIGN[0] * k * plt.ZOOM_MIN), int(self.DESIGN[1] * k * plt.ZOOM_MIN))
         self.win.setCentralWidget(central)
         outer = QtWidgets.QHBoxLayout(central)
         split = QtWidgets.QSplitter(Qt.Orientation.Horizontal)
@@ -2797,7 +2963,7 @@ class Browser(_BrowserCore):
         left = QtWidgets.QWidget()
         lv = QtWidgets.QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
-        self.fig_scan = Figure(figsize=(9, 7))
+        self.fig_scan = Figure(figsize=self.SCAN_DESIGN)
         self.canvas_scan = FigureCanvasQTAgg(self.fig_scan)
         self.ax_scan = self.fig_scan.add_axes([0.11, 0.09, 0.78, 0.81])
         self.ax_topo_cbar = plots.draw_topo_cbar(self.fig_scan, [0.925, 0.25, 0.02, 0.5])
@@ -2846,6 +3012,7 @@ class Browser(_BrowserCore):
         bottom.addWidget(filt)
         lv.addLayout(bottom)
         self._status_label = QtWidgets.QLabel('')
+        self._status_label.setWordWrap(True)           # a long status line wraps rather than widening the window
         lv.addWidget(self._status_label)
         split.addWidget(left)
 
@@ -2853,7 +3020,7 @@ class Browser(_BrowserCore):
         right = QtWidgets.QWidget()
         rv = QtWidgets.QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        self.fig_spec = Figure(figsize=(8, 3.6))
+        self.fig_spec = Figure(figsize=self.SPEC_DESIGN)
         self.canvas_spec = FigureCanvasQTAgg(self.fig_spec)
         self.ax_spec = self.fig_spec.add_axes(self.SPEC_RECT)
         self.ax_spec_iv = self.fig_spec.add_axes(self.SPEC_RECTS[1])
@@ -2865,6 +3032,7 @@ class Browser(_BrowserCore):
         self.spec_settings.on_change(self.set_feenstra_settings)
         self.filters = QFilterControls(hampel=self.hampel_defaults, sgolay=self.sgolay_defaults)
         self.filters.on_change(self._on_filter_change)
+        self._zoomer.track_short(self.filters)
         self.pipeline = QPipelineBox(calibrate=False, normalize=False)
         self.pipeline.on_change(self._on_pipeline_change)
         settings = QtWidgets.QHBoxLayout()
@@ -2904,7 +3072,7 @@ class Browser(_BrowserCore):
         self.btn_line, self.btn_map = QPush('Line'), QPush('Map')
         self.btn_add_new, self.btn_add_existing = QPush('add new'), QPush('add existing')
         self.txt_in_avgs = QTextLabel()
-        self.btn_section, self.btn_cross = QPush('section line'), QPush('cross section')
+        self.btn_section, self.btn_cross = QPush('section'), QPush('cross section')
         self.txt_dir = QTextLabel('topo under')
         self.rad_dir = QRadio('topo pass', list(TOPO_DIRECTIONS), 'forward')
         self.txt_site = QTextLabel('site')
@@ -2930,6 +3098,7 @@ class Browser(_BrowserCore):
         # Everything the experiment logic redraws goes through self.fig.canvas.draw_idle():
         # only the canvases whose figure changed are redrawn.
         self.fig = _Figures(self.fig_scan, self.fig_spec)
+        self._zoomer.track_figures(self.fig_scan, self.fig_spec)
         # The details cut from the panel titles go into this window's info panel.
         self.fig_scan.on_info = self.fig_spec.on_info = lambda text: self._draw_info()
         self._picker = QAveragePicker(self.averages)

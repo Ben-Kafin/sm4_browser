@@ -896,7 +896,8 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None, top='fo
 
 if __name__ == '__main__':
     # The topo colour bar and a gamma series of one heatmap, as a check of the drawing helpers.
-    fig = plt.figure(figsize=(8, 4))
+    DESIGN = (8, 4)           # the demo window's design size (inches)
+    fig = plt.figure(figsize=DESIGN)
     img = np.outer(np.linspace(0, 1, 50), np.linspace(0, 1, 80))
     for k, g in enumerate((0.5, 1.0, 2.0)):
         ax = fig.add_axes([0.05 + 0.3 * k, 0.2, 0.24, 0.6])

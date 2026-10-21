@@ -206,6 +206,7 @@ WINDOW_BG = '#f0f0f0'     # the window colour around the white panels
 FONT_SCALE = 1.25         # every text (plots, legends, controls) this much larger than matplotlib's points
 DPI = 100.0               # logical pixels per inch: figure sizes, widget sizes, and font points as matplotlib's
 ANTIALIAS = True          # antialiased curves (False draws faster, with jagged lines)
+ZOOM_MIN, ZOOM_MAX = 0.5, 4.0   # the text zoom of any window: its size relative to its design size, within these
 pg.setConfigOptions(imageAxisOrder='row-major', background='w', foreground='k', antialias=ANTIALIAS)
 
 
@@ -220,6 +221,22 @@ def screen_scale():
         return max(1.0, float(scr.logicalDotsPerInch()) / 96.0) if scr is not None else 1.0
     except Exception:
         return 1.0
+
+
+def window_zoom(W, H, W0, H0):
+    """
+    The one text-size rule of every window, the browser and the figure windows alike: the text
+    zoom is the window's size relative to its design size (W0, H0), the smaller of the width ratio
+    and the height ratio, limited to ZOOM_MIN to ZOOM_MAX.  Every text of a window (plots, ticks,
+    legends, controls, info panels, toolbar icons) is multiplied by it.
+    """
+    try:
+        z = min(float(W) / float(W0), float(H) / float(H0))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 1.0
+    if not np.isfinite(z):
+        return 1.0
+    return float(min(max(z, ZOOM_MIN), ZOOM_MAX))
 
 
 def pt2px(pt):
@@ -982,13 +999,35 @@ def short_label(text):
 _FILE_NAME_RE = re.compile(r'\.[A-Za-z0-9]{1,4}$')     # a title that is a file name: it ends in an extension
 
 
-def short_title(text):
+def is_file_name(text):
+    """Whether a title is a file name: it ends in an extension such as '.sm4'."""
+    return bool(_FILE_NAME_RE.search(str(text or '').strip()))
+
+
+def file_stamp(name):
+    """
+    The date-and-time stamp of a file name, 'YYYY_MM_DD_HH_MM_SS_mmm' as sm4file.STAMP_RE finds it
+    at the end of the base name, or None when the name has none.  The one short form of a file name
+    in the package: exact, and still a usable search term in a file explorer.
+    """
+    from sm4_Browser.sm4file import STAMP_RE
+    base = os.path.splitext(os.path.basename(str(name or '').strip()))[0]
+    m = STAMP_RE.search(base)
+    if m is None:
+        return None
+    return '_'.join(m.groups())
+
+
+def short_title(text, portrait=False):
     """
     The essential part of a title: its first line, cut at the first ': ', ', ', double space,
     or ' ['.  The rest (counts, states, file details) goes to the window's info panel.  A title
     that starts with two lower-case letters is capitalised ('raw dI/dV' -> 'Raw dI/dV'), except a
     file name (anything ending in an extension such as '.sm4'), which is shown exactly as the
-    file is named, so that the name can be copied from the info panel into a file search.
+    file is named, so that the name can be copied from the info panel into a file search.  With
+    `portrait` (the window taller than it is wide, Figure.portrait) a file name is shortened to its
+    date-and-time stamp (file_stamp); a file name without a stamp stays whole.  The one rule for
+    every file name shown as a title in the package.
     """
     t = str(text or '').strip()
     t = t.split('\n')[0]
@@ -997,7 +1036,13 @@ def short_title(text):
         if k > 0:
             t = t[:k]
     t = t.strip().rstrip(':,;')
-    if len(t) > 1 and t[0].islower() and t[1].islower() and not _FILE_NAME_RE.search(t):
+    if is_file_name(t):
+        if portrait:
+            stamp = file_stamp(t)
+            if stamp:
+                return stamp
+        return t
+    if len(t) > 1 and t[0].islower() and t[1].islower():
         t = t[0].upper() + t[1:]              # 'raw dI/dV' -> 'Raw dI/dV' (never 'dI/dV' -> 'DI/dV')
     return t
 
@@ -2150,6 +2195,7 @@ class Axes:
     """
 
     def __init__(self, fig, rect=None, spec=None, sharex=None, sharey=None, inset_parent=None, label=''):
+        self._place_pending = False    # set first: the axis items' zoom below may already ask for a placement
         self.figure = fig
         self._rect = list(rect) if rect is not None else None
         self._spec = spec
@@ -2168,6 +2214,7 @@ class Axes:
             a.apply_zoom(fig.font_zoom)
         self._side_axes = []           # right / secondary axes
         self._title = None
+        self._title_full = ''          # the title as given (set_title); the shown part follows the window's shape
         self._title_size = 12.0
         self.title = _TitleProxy(self)
         self.transData = _Transform('data', self)
@@ -2186,7 +2233,6 @@ class Axes:
         self._colorbar = None
         self._is_colorbar = False
         self._home = None
-        self._place_pending = False
         self._aspect = 'auto'
         self._shared_x = sharex
         self._shared_y = sharey
@@ -2528,6 +2574,7 @@ class Axes:
             except Exception:
                 pass
             self._title = None
+            self._title_full = ''
             self.figure._set_info(self, '')
         sc = self.figure.canvas.scene()
         for a in self._side_axes:
@@ -2580,7 +2627,8 @@ class Axes:
             self._title.remove()
             self._title = None
         full = '' if label is None else str(label)
-        label = short_title(full)
+        self._title_full = full
+        label = short_title(full, self.figure.portrait)
         self.figure._set_info(self, full if full.strip() != label else '')
         size = font_pt(fontsize, self._title_size) if fontsize is not None else 12.0
         self._title_size = size
@@ -2603,6 +2651,11 @@ class Axes:
 
     def get_title(self, loc='center'):
         return self._title.get_text() if self._title is not None else ''
+
+    def _retitle(self):
+        """The shown title re-derived from the full one for the figure's current shape (a file name: whole, or its stamp)."""
+        if self._title is not None and self._title_full:
+            self._title.set_text(short_title(self._title_full, self.figure.portrait))
 
     def _axis_label(self, axis, text, fontsize=None, color=None):
         text = '' if text is None else str(text)
@@ -3869,12 +3922,14 @@ class Figure:
         self._embedded = bool(embed)
         self.number = int(num) if num is not None else (max(_figures) + 1 if _figures else 1)
         w_px, h_px = float(figsize[0]) * DPI, float(figsize[1]) * DPI
-        # The design size (matplotlib's figsize at DPI): the text is at FONT_SCALE x its points when
-        # the canvas has this size and grows / shrinks with the canvas (font_zoom), so it stays
-        # readable on any monitor and in a maximized window.  On a high-DPI screen the window opens
-        # proportionally larger.
+        # The design size (matplotlib's figsize at DPI; every window declares it as a DESIGN
+        # constant): the text is at FONT_SCALE x its points when the canvas has this size and
+        # grows / shrinks with the canvas (font_zoom = window_zoom(...), ZOOM_MIN to ZOOM_MAX, the
+        # one rule of every window), so it stays readable on any monitor and in a maximized window.
+        # On a high-DPI screen the window opens proportionally larger.
         self._design_px = (w_px, h_px)
         self.font_zoom = 1.0
+        self.portrait = False          # the window taller than wide: short labels and stamp titles (set_portrait)
         if not embed:
             k = screen_scale()
             w_px, h_px = w_px * k, h_px * k
@@ -3977,12 +4032,14 @@ class Figure:
             self.canvas._size_px = (vp.width(), vp.height())
         W0, H0 = self._design_px
         W, H = self._canvas_size()
-        z = min(max(min(W / W0, H / H0), 1.0), 4.0)     # never below the designed size
+        if not self._embedded and self._shown:
+            self.set_portrait(H > W, relayout=False)   # an embedded figure takes its window's shape from its owner
+        z = window_zoom(W, H, W0, H0)        # the one rule: the size relative to the design size, ZOOM_MIN to ZOOM_MAX
         if abs(z - self.font_zoom) > 0.03 * self.font_zoom:
             self.font_zoom = z
             for tb in self._toolbars:
                 try:
-                    k = int(round(22 * screen_scale() * max(z, 1.0)))
+                    k = int(round(22 * screen_scale() * z))
                     tb.setIconSize(QtCore.QSize(k, k))
                     tb.coords.setFont(qfont(9, zoom=z))
                 except RuntimeError:
@@ -4127,11 +4184,38 @@ class Figure:
         if self._suptitle is not None:
             self._suptitle.remove()
         full = '' if t is None else str(t)
-        t = short_title(full)
+        self._suptitle_full = full
+        t = short_title(full, self.portrait)
         self._set_info('suptitle', full if full.strip() != t else '')
         self._suptitle = self.text(x, y, t, fontsize=font_pt(fontsize, 12.0), ha=ha, va=va,
                                    fontweight=kw.get('fontweight'))
         return self._suptitle
+
+    def set_portrait(self, flag, relayout=True):
+        """
+        The figure's shape for the short forms: True when its window is taller than it is wide.
+        A figure in its own window sets it from its canvas (_relayout, with relayout=False); an
+        embedded figure is told by the window that holds it (the browser).  On a change every
+        control with a short form switches (widgets.Control.set_short) and every file-name title
+        to its stamp and back, and the controls are placed again for their new text.
+        """
+        flag = bool(flag)
+        if flag == self.portrait:
+            return
+        self.portrait = flag
+        for ax in list(self._axes):
+            ax._retitle()
+        if self._suptitle is not None and getattr(self, '_suptitle_full', ''):
+            self._suptitle.set_text(short_title(self._suptitle_full, flag))
+        for c in self._qt_controls:
+            f = getattr(c, 'set_short', None)
+            if f is not None:
+                try:
+                    f(flag)
+                except Exception:
+                    traceback.print_exc()
+        if relayout:
+            self._relayout()
 
     # --- colour bars ---
 

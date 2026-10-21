@@ -3239,6 +3239,8 @@ class DriftWindow:
     pair to show.
     """
 
+    DESIGN = (14, 7.6)     # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, drift, f, scalefactor, active_procs, on_change=None, auto_on=True):
         from sm4_Browser import widgets, plots
         from sm4_Browser import topo as topo_mod
@@ -3253,7 +3255,7 @@ class DriftWindow:
         self.v_auto = drift.auto_velocity_of(a.path, b.path)
         k = 1e9 / self.scalefactor
         self.k = k
-        self.fig = plt.figure(figsize=(14, 7.6))
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(f"manual drift: {f.name}")
         except Exception:

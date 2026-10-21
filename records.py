@@ -229,6 +229,8 @@ class SavedAveragesWindow:
     ROW_H = 0.045          # figure fraction per row
     MAX_TIMES = 8          # file times shown per row before '+k more'
 
+    DESIGN = (16, 6)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, directory, on_load):
         self.directory = os.path.abspath(directory)
         self.avg_dir = avg_dir_of(self.directory)
@@ -237,7 +239,7 @@ class SavedAveragesWindow:
         self.selected = 0
         self.ax_list = None
         self._highlight = None
-        self.fig = plt.figure(figsize=(16, 6))
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(f"saved averages: {self.directory}")
         except Exception:

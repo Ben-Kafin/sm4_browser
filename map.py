@@ -93,6 +93,8 @@ class Map:
     # The Feenstra companion shows heatmaps (its own 'γ' boxes and pipeline box).
     feenstra_heatmaps = True
 
+    DESIGN = (16, 9)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def __init__(self, grid, active_procs, scalefactor, hampel_defaults, sgolay_defaults, cmap='jet',
                  divide_iv=False, iv_broadening=0.0, channel='didv', averages=None, fit_settings=None,
                  iv_zero_sub=True, iv_broadened=False, drift=None, auto_on=False, manual_on=False):
@@ -162,7 +164,7 @@ class Map:
         self._marker_artists = []
         self._panel_bottom = self.PANEL_BOTTOM_MIN
 
-        self.fig = plt.figure(figsize=(16, 9))
+        self.fig = plt.figure(figsize=self.DESIGN)
         # The controls (widgets.py).
         self.filters = widgets.FilterControls(self.fig, [0.04, 0.005, 0.19, 0.125],
                                               hampel=hampel_defaults, sgolay=sgolay_defaults,

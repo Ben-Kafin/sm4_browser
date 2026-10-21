@@ -2411,7 +2411,8 @@ class Fit:
 
     # --- figure layout: panel slots in inches, the width following the panels shown ---
 
-    FIG_H = 6.2            # in
+    DESIGN = (18.0, 6.2)   # in: the three-panel width (_fig_width(3)) and the height; the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+    FIG_H = DESIGN[1]      # in
     PANEL_W = 4.567        # in, one panel slot (three slots make the 18 in figure)
     PANEL_GAP = 1.4        # in, between slots
     MARGIN_L = 1.1         # in, room for the y labels
@@ -2852,7 +2853,7 @@ class Fit:
     # Edit window geometry (figure fractions): the plot, and right of it the
     # parameter panel of the selected curve, as tall as the plot; panel rows from
     # the top at a compact pitch, three columns: hold toggle, name, text box.
-    EDIT_FIGSIZE = (14.5, 6.5)
+    EDIT_DESIGN = (14.5, 6.5)      # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
     EDIT_PLOT = [0.055, 0.30, 0.60, 0.61]            # left, bottom, width, height (the settings band under it)
     FEENSTRA_WIDTH_DEFAULT_V = 0.2                   # the width box when the fit holds no broadening (plain I/V)
     EDIT_ROW_H, EDIT_ROW_PITCH = 0.05, 0.072
@@ -2893,7 +2894,7 @@ class Fit:
                 plt.close(old['fig'])
             except Exception:
                 pass
-        fig = plt.figure(figsize=self.EDIT_FIGSIZE)
+        fig = plt.figure(figsize=self.EDIT_DESIGN)
         ax = fig.add_axes(self.EDIT_PLOT)
         st = {'fig': fig, 'ax': ax, 'peaks': self._working_peaks(b), 'bg': self._working_bg(b),
               'selected': None, 'bg_selected': False, 'drag': None, 'add_armed': False,

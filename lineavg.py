@@ -1090,6 +1090,8 @@ class AlignmentEditor:
                 plt.close(f)
         self.figs = []
 
+    DESIGN = (16, 10)      # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
+
     def build(self):
         self.close()
         self.rows = {}
@@ -1098,7 +1100,7 @@ class AlignmentEditor:
         n = len(p.members)
         n_figs = int(np.ceil(n / self.PER_FIGURE)) or 1
         for fi in range(n_figs):
-            fig = plt.figure(figsize=(16, 10))
+            fig = plt.figure(figsize=self.DESIGN)
             try:
                 fig.canvas.manager.set_window_title(f"{p.name}: alignment" + (f" ({fi + 1} of {n_figs})" if n_figs > 1 else ""))
             except Exception:

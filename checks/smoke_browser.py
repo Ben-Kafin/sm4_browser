@@ -13,7 +13,27 @@ import tempfile
 import time
 import traceback
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
+
+def _offscreen_platform():
+    """
+    Qt's offscreen platform with a screen large enough for every window at twice its design size
+    (its built-in screen is 800 x 800, which caps the windows): the plugin takes a JSON config file
+    with a 'screens' list (offscreen:configfile=<path>).  Used when QT_QPA_PLATFORM is unset or
+    plain 'offscreen'; any other setting is left alone.
+    """
+    cur = os.environ.get('QT_QPA_PLATFORM', '')
+    if cur not in ('', 'offscreen'):
+        return
+    import json
+    path = os.path.join(tempfile.gettempdir(), 'sm4_browser_offscreen_screen.json')
+    with open(path, 'w') as fh:
+        json.dump({'screens': [{'name': 'checks', 'x': 0, 'y': 0, 'width': 4200, 'height': 2600,
+                                'logicalDpi': 96, 'logicalBaseDpi': 96, 'dpr': 1.0}]}, fh)
+    os.environ['QT_QPA_PLATFORM'] = f"offscreen:configfile={path}"
+
+
+_offscreen_platform()
 if __package__ in (None, ''):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -876,6 +896,248 @@ def _drift_outline(b, exp):
     w._step('before', +1)
     check_frames()
     plt.close(w.fig)
+
+
+# ---------------------------------------------------------------------- #
+#  Item 1: one text-size rule, design sizes, short labels and stamp titles  #
+# ---------------------------------------------------------------------- #
+
+def _new_figures(fn):
+    """The figures a call opens (qtplot's registry before and after), in number order."""
+    before = set(plt._figures)
+    fn()
+    plt._app().processEvents()
+    return [plt._figures[n] for n in sorted(set(plt._figures) - before)]
+
+
+def _item1_windows(b):
+    """One figure window of every kind the synthetic experiment opens: [(kind, fig)]."""
+    wins = []
+    goto_kind(b, 'grid')
+    b._on_topo_window()
+    wins.append(('Topo', b.children[-1].fig))
+    w = open_line(b)
+    wins.append(('Line', w._int_fig))
+    if w._int_feenstra is not None and w._int_feenstra.is_open():
+        wins.append(('Feenstra', w._int_feenstra.fig))
+    rows = _new_figures(w._int_topo_rows_window)
+    wins += [('topo rows', f) for f in rows]
+    fits = _new_figures(w._int_on_send)
+    wins += [(f"fit {i + 1}", f) for i, f in enumerate(fits)]
+    m = open_map(b)
+    wins.append(('Map', m.fig))
+    m._on_add_to_plot('map')
+    wins.append(('composer', m.composer.fig))
+    b._on_drift_window()
+    wins.append(('drift', b.drift_window.fig))
+    b._on_stripe_window()
+    wins.append(('stripe', b.stripe_window.fig))
+    b._on_section_line()
+    b._on_cross_section()
+    wins.append(('profile', b.profile_window.fig))
+    goto_kind(b, 'point')
+    b._on_add_new_avg()
+    wins.append(('averaging', list(b.averages.open().values())[-1].fig))
+    w._int_on_line_new()
+    wins.append(('line average', list(b.line_averages.open().values())[-1]._int_fig))
+    b._on_load_saved()
+    wins.append(('saved averages', b.saved_window.fig))
+    plt._app().processEvents()
+    return wins
+
+
+def _text_widgets(c):
+    """The Qt widgets with a text of one widgets.Control: (widget, extra width its indicator needs)."""
+    from sm4_Browser.qtplot import QtWidgets
+    out = []
+    for qw in c._qws:
+        for w in [qw] + qw.findChildren(QtWidgets.QWidget):
+            if not w.isVisible() or not hasattr(w, 'text') or not str(w.text()).strip():
+                continue
+            if isinstance(w, QtWidgets.QLineEdit):
+                continue
+            extra = 0
+            if isinstance(w, QtWidgets.QCheckBox):
+                st = w.style()
+                extra = st.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_IndicatorWidth, None, w) \
+                    + st.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_CheckBoxLabelSpacing, None, w)
+            elif isinstance(w, QtWidgets.QRadioButton):
+                st = w.style()
+                extra = st.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_ExclusiveIndicatorWidth, None, w) \
+                    + st.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_RadioButtonLabelSpacing, None, w)
+            out.append((w, extra))
+    return out
+
+
+def _settle_dock(ms=120):
+    """Run the event loop for a moment: the windows' info docks open on a 50 ms timer after a title is set."""
+    from PySide6.QtTest import QTest
+    QTest.qWait(ms)
+
+
+def _assert_text_rule(kind, fig, factor):
+    """The fonts of a figure window follow the one rule at this size factor, and no text is cut."""
+    from sm4_Browser.qtplot import QtGui, qfont, window_zoom, ZOOM_MIN, ZOOM_MAX, DPI
+    from sm4_Browser import widgets
+    W, H = fig._canvas_size()
+    W0, H0 = fig._design_px
+    z = window_zoom(W, H, W0, H0)
+    want = min(max(factor, ZOOM_MIN), ZOOM_MAX)
+    assert abs(z - want) < 0.06, (kind, factor, (W, H), (W0, H0), z)
+    assert abs(fig.font_zoom - z) <= 0.03 * z + 1e-9, (kind, factor, fig.font_zoom, z)
+    z = fig.font_zoom                 # the fonts are at the figure's zoom (updated on a change above 3 %)
+    n_axes = 0
+    for ax in fig.axes:
+        if not ax._visible:
+            continue
+        n_axes += 1
+        for item in (ax.xaxis_item, ax.yaxis_item):
+            tf = item.style.get('tickFont')
+            assert tf is not None and tf.pixelSize() == qfont(item._tick_pt, zoom=z).pixelSize(), (kind, factor, tf)
+        if ax._title is not None:
+            got, want_px = ax._title.item.textItem.font().pixelSize(), qfont(ax._title._size, zoom=z).pixelSize()
+            assert got == want_px, (kind, factor, ax._title_full[:50], ax._title._size, got, want_px, fig.font_zoom, z)
+    n_ctrl = 0
+    for c in fig._qt_controls:
+        if not isinstance(c, widgets.Control) or not c._visible:
+            continue
+        base = widgets._font(c.spec['fs'], z).pixelSize()
+        for w, extra in _text_widgets(c):
+            n_ctrl += 1
+            px = w.font().pixelSize()
+            assert 0.75 * base - 1.0 <= px <= base + 1.0, (kind, factor, c.name, w.text(), px, base)
+            need = QtGui.QFontMetricsF(w.font()).horizontalAdvance(w.text()) + extra
+            assert need <= w.width() + 1.0, (kind, factor, c.name, w.text(), need, w.width())
+    return n_axes, n_ctrl
+
+
+def _label_map(fig):
+    """{id(widget): text} of every text widget of the figure's controls (buttons, toggles, radios, labels)."""
+    from sm4_Browser import widgets
+    out = {}
+    for c in fig._qt_controls:
+        if isinstance(c, widgets.Control):
+            for w, _ in _text_widgets(c):
+                out[id(w)] = (w, w.text())
+    return out
+
+
+@check("I1 text size: one rule 0.5x to 4x for every window kind at its design size, 2x and 0.5x; no text cut")
+def _text_rule(b, exp):
+    from sm4_Browser.qtplot import DPI
+    wins = _item1_windows(b)
+    assert len(wins) >= 12, [k for k, _ in wins]
+    counts = {}
+    for kind, fig in wins:
+        W0, H0 = fig._design_px
+        _settle_dock()                  # the info dock a title's details open appears on a short timer
+        for factor in (1.0, 2.0, 0.5, 1.0):
+            for _ in range(2):          # twice: the dock and the toolbar take window height, the canvas gets the rest
+                fig.set_size_inches(W0 / DPI * factor, H0 / DPI * factor)
+                plt._app().processEvents()
+            counts[kind] = _assert_text_rule(kind, fig, factor)
+    assert all(n_axes + n_ctrl >= 1 for n_axes, n_ctrl in counts.values()), counts   # the topo-rows pop-up has controls only
+    assert sum(n_axes for n_axes, _ in counts.values()) >= 20 and sum(n_ctrl for _, n_ctrl in counts.values()) > 40, counts
+    b._item1_windows = wins
+
+
+@check("I2 short labels and stamp titles when a window is taller than wide, and back")
+def _portrait(b, exp):
+    from sm4_Browser.qtplot import DPI, file_stamp, is_file_name
+    from sm4_Browser import widgets
+    wins = getattr(b, '_item1_windows', None) or _item1_windows(b)
+    n_short = n_stamp = 0
+    for kind, fig in wins:
+        W0, H0 = fig._design_px
+        assert not fig.portrait, kind
+        full = _label_map(fig)
+        titles = [(ax, ax._title_full) for ax in fig.axes if ax._title is not None and ax._title_full]
+        # a shape taller than wide for every window, the wide composer strip included
+        pw = min(0.3 * W0, 0.5 * H0)
+        for _ in range(2):
+            fig.set_size_inches(pw / DPI, H0 / DPI)
+            plt._app().processEvents()
+        assert fig.portrait, (kind, fig._canvas_size())
+        _assert_text_rule(kind, fig, pw / W0)
+        for w, text in full.values():
+            want = widgets.short_form(text)
+            assert w.text() == want, (kind, text, w.text(), want)
+            n_short += want != text
+        for ax, tfull in titles:
+            name = plt.short_title(tfull)
+            if is_file_name(name):
+                assert ax.get_title() == file_stamp(name), (kind, ax.get_title(), name)
+                n_stamp += 1
+            else:
+                assert ax.get_title() == name, (kind, ax.get_title(), name)
+        fig.set_size_inches(W0 / DPI, H0 / DPI)
+        plt._app().processEvents()
+        assert not fig.portrait, kind
+        for w, text in full.values():
+            assert w.text() == text, (kind, text, w.text())
+        for ax, tfull in titles:
+            assert ax.get_title() == plt.short_title(tfull), (kind, ax.get_title())
+    assert n_short >= 10 and n_stamp >= 2, (n_short, n_stamp)
+    for kind, fig in wins:
+        plt.close(fig)
+
+
+@check("I3 the browser window: the one rule, its native controls' labels short in portrait, the embedded figures follow")
+def _browser_text(b, exp):
+    from sm4_Browser.qtplot import QtGui, QtWidgets, window_zoom, screen_scale, ZOOM_MIN, ZOOM_MAX
+    from sm4_Browser.browser import QControl
+    from sm4_Browser import widgets
+    k = screen_scale()
+    W0, H0 = b.DESIGN
+    mine = [c for c in list(QControl._all) if b.win.isAncestorOf(c.qt)]
+    assert len(mine) > 20, len(mine)
+
+    def texts():
+        out = []
+        for c in mine:
+            for w in [c.qt] + c.qt.findChildren(QtWidgets.QWidget):
+                if hasattr(w, 'text') and str(w.text()).strip() and not isinstance(w, QtWidgets.QLineEdit) and w.isVisible():
+                    out.append(w)
+            if isinstance(c.qt, QtWidgets.QGroupBox) and c.qt.title():
+                out.append(c.qt)
+        return out
+
+    for factor in (1.0, 2.0, 0.5):
+        b.win.resize(int(W0 * k * factor), int(H0 * k * factor))
+        plt._app().processEvents()
+        z = window_zoom(b.win.width(), b.win.height(), W0 * k, H0 * k) * k
+        zb = b._zoomer.zoom
+        assert z * b._zoomer.FIT_MIN - 1e-9 <= zb <= z * 1.03 + 1e-9, (factor, zb, z)    # the rule, or fitted below it
+        assert abs(b.win.font().pointSizeF() - b._zoomer.base.pointSizeF() * zb / k) < 0.05, factor
+        lay = b.win.centralWidget().layout()
+        assert lay.minimumSize().width() <= b.win.width() and lay.minimumSize().height() <= b.win.height(), \
+            (factor, lay.minimumSize(), b.win.size())
+        for w in texts():
+            text = w.title() if isinstance(w, QtWidgets.QGroupBox) else w.text()
+            need = QtGui.QFontMetricsF(w.font()).horizontalAdvance(text)
+            if isinstance(w, (QtWidgets.QCheckBox, QtWidgets.QRadioButton)):
+                need += 24
+            if not isinstance(w, QtWidgets.QGroupBox):
+                assert need <= w.width() + 1.0, (factor, text, need, w.width())
+        assert not b.win.height() > b.win.width() or b._zoomer.portrait
+    before = {id(w): (w, w.title() if isinstance(w, QtWidgets.QGroupBox) else w.text()) for w in texts()}
+    b.win.resize(int(W0 * k * 0.3), int(H0 * k * 1.6))
+    plt._app().processEvents()
+    assert b.win.height() > b.win.width(), (b.win.width(), b.win.height())
+    assert b._zoomer.portrait and b.fig_scan.portrait and b.fig_spec.portrait
+    n_short = 0
+    for w, text in before.values():
+        now = w.title() if isinstance(w, QtWidgets.QGroupBox) else w.text()
+        assert now == widgets.short_form(text), (text, now)
+        n_short += now != text
+    assert n_short >= 10, n_short
+    assert b.btn_section.qt.text() == 'section'
+    b.win.resize(int(W0 * k), int(H0 * k))
+    plt._app().processEvents()
+    assert not b._zoomer.portrait and not b.fig_scan.portrait
+    for w, text in before.values():
+        now = w.title() if isinstance(w, QtWidgets.QGroupBox) else w.text()
+        assert now == text, (text, now)
 
 
 def widgets_text(lo, hi):
