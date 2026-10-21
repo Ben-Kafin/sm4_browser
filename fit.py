@@ -16,11 +16,12 @@ Pipeline
    calibration and normalization (same convention as the Line tool).
 2. Per sweep: the recorded I(V) through the two filters once, each on or
    off on its own (every filter off unless given), in the order Hampel
-   (spikes), Savitzky-Golay (filters.filter_lia; the LIA column is never
-   filtered); the calibration of the LIA column against that current
-   (calibration.calibrate, the Line tool's calibration: the 0 V-referenced
-   gain-plus-offset regression of calibration.py; it returns per sweep a,
-   b, c and rms, and the console report of
+   (spikes), Savitzky-Golay (filters.filter_lia), and the LIA column through
+   the same filters under its own two toggles (the dI/dV pair); the
+   calibration of the LIA column against that current
+   (calibration.calibrate, the Line tool's calibration: the gain-plus-offset
+   regression of calibration.py anchored at the setpoint; it returns per
+   sweep a, b, c and rms, and the console report of
    process prints a, c, rms and the area); for quantity 'ratio' the division by the broadened I/V of the
    same filtered current (feenstra.divide_by_iv, told not to filter again:
    the current's value at 0 V subtracted first when iv_zero_sub is on,
@@ -419,13 +420,15 @@ class Fit:
     """
 
     def __init__(self, ifile, hampel_filter_params=None, sgolay_filter_params=None,
-                 divide_by_iv=False, iv_broadening_V=0.0, iv_zero_sub=False):
+                 divide_by_iv=False, iv_broadening_V=0.0, iv_zero_sub=False,
+                 hampel_didv_params=None, sgolay_didv_params=None):
         """
         Initialize the single-point dI/dV fit of a file opened directly
         (the data are read here, extract_data; the curve is built by process).
           ifile                : Path to an SM4 single-point spectroscopy file.
-          hampel_filter_params : dict for the Hampel filter (or None to skip).
-          sgolay_filter_params : dict for the Savitzky-Golay filter (or None to skip).
+          hampel_filter_params : dict for the Hampel filter on the recorded current (or None to skip).
+          sgolay_filter_params : dict for the Savitzky-Golay filter on the recorded current (or None to skip).
+          hampel_didv_params, sgolay_didv_params : the same filters on the LIA columns (None = off).
           divide_by_iv         : fit the normalized conductance (dI/dV)/(I/V) instead of
                                  dI/dV (quantity 'ratio': every sweep divided after its
                                  calibration by its own broadened I/V, see
@@ -437,6 +440,8 @@ class Fit:
         self.ifile = ifile
         self.hampel_filter_params = hampel_filter_params
         self.sgolay_filter_params = sgolay_filter_params
+        self.hampel_didv_params = hampel_didv_params
+        self.sgolay_didv_params = sgolay_didv_params
         self.resample = None               # files opened directly: one raw set on the curve's own axis
         self.background = 'wkb'            # the model's background mode until select_model sets it
         self._sweep_done = False           # True once select_model (or a cache) has given a fit history
@@ -477,6 +482,9 @@ class Fit:
             raise ValueError("No acquired sweep in this SM4 file.")
         self.lia = spectra.lia[:, cols]
         self.iv = spectra.iv[:, cols]
+        # A sweep view's forward-sweep reference (the calibration's `ref`), the same columns; None otherwise.
+        self.lia_ref = None if getattr(spectra, 'lia_ref', None) is None else spectra.lia_ref[:, cols]
+        self.iv_ref = None if getattr(spectra, 'iv_ref', None) is None else spectra.iv_ref[:, cols]
         self.units_lia, self.units_iv = spectra.units_lia, spectra.units_iv
         self.vmod = spectra.vmod                             # RHK_CH1Drive_Amplitude (V), None when not recorded
         self.n_sweeps = self.lia.shape[1]
@@ -570,7 +578,8 @@ class Fit:
     # Everything that depends on the smoothing settings, the background mode and
     # the quantity (dI/dV or the Feenstra ratio, with the I/V broadening), stored
     # with every fit.
-    _CONTEXT_KEYS = ('hampel_filter_params', 'sgolay_filter_params', 'background',
+    _CONTEXT_KEYS = ('hampel_filter_params', 'sgolay_filter_params', 'hampel_didv_params', 'sgolay_didv_params',
+                     'background',
                      'quantity', 'iv_broadening', 'iv_zero_sub',
                      'data', 'target', 'anchor_mode', 'areas_A', 'delta_I_window_A',
                      'envelope', 'bg_seed', 'env_bg', 'env_residual')
@@ -586,12 +595,16 @@ class Fit:
 
     ENERGY_TOL = 1e-6      # V: a raw set's energies must coincide with the common axis to this
 
-    def _raw_set_columns(self, hampel, sgolay, quantity=None):
+    def _raw_set_columns(self, hampel, sgolay, quantity=None, hampel_didv=None, sgolay_didv=None):
         """
         The one pipeline on self.raw_sets for these filter settings: per set,
-        the set's I(V) through the filters once (filters.filter_lia),
-        calibration of its LIA columns against that current on its own
-        axis (calibration.calibrate), the division by the broadened I/V of
+        the set's I(V) through the I(V) filters once and its LIA columns
+        through the dI/dV ones (filters.filter_lia), calibration of the LIA
+        columns against that current on its own axis
+        (calibration.calibrate, anchored at the set's setpoint, the
+        analyzer's when the set carries none; a set's forward-sweep
+        reference through the same filters; a set the calibration refuses
+        stays in the LIA's units, said once), the division by the broadened I/V of
         the same current for quantity 'ratio' (the analyzer's quantity, or
         `quantity` when given; feenstra.divide_by_iv with the analyzer's
         iv_broadening and iv_zero_sub, told not to filter again), unit-area normalization
@@ -618,7 +631,19 @@ class Fit:
             for rs in self.raw_sets:
                 self.energy = rs['energy']
                 iv_f = filters.filter_lia(rs['iv'], hampel, sgolay)   # the set's current through the filters once
-                cal, _ = calibration.calibrate(self.energy, rs['lia'], iv_f, rs.get('vmod'))
+                lia_f = filters.filter_lia(rs['lia'], hampel_didv, sgolay_didv)
+                ref = None
+                if rs.get('lia_ref') is not None and rs.get('iv_ref') is not None:
+                    ref = (filters.filter_lia(rs['lia_ref'], hampel_didv, sgolay_didv),
+                           filters.filter_lia(rs['iv_ref'], hampel, sgolay))
+                try:
+                    cal, _ = calibration.calibrate(self.energy, lia_f, iv_f, rs.get('vmod'),
+                                                   V_bias=rs.get('V_bias') if rs.get('V_bias') is not None else self.V_bias,
+                                                   I_setpoint=rs.get('I_setpoint') if rs.get('I_setpoint') is not None
+                                                   else self.I_setpoint, ref=ref)
+                except ValueError as exc:
+                    sts.STS._note_once(f"calibration not applied: {exc}")
+                    cal = lia_f
                 if quantity == 'ratio':
                     cal = feenstra.divide_by_iv(self.energy, cal, iv_f, self.iv_broadening,
                                                bool(getattr(self, 'iv_zero_sub', False)), None, None)
@@ -656,7 +681,7 @@ class Fit:
         self._set_weights = weights
         return cols, np.array(areas, dtype=np.float64), np.array(dI, dtype=np.float64)
 
-    def _process_raw_sets(self, hampel, sgolay, quantity=None):
+    def _process_raw_sets(self, hampel, sgolay, quantity=None, hampel_didv=None, sgolay_didv=None):
         """
         The pipeline of _raw_set_columns followed by the average of
         averaging.Averages.average (the weighted pooled mean of every
@@ -664,10 +689,10 @@ class Fit:
         _raw_set_columns; the plain mean of all sweeps when every set is on
         the axis).  Returns (data, areas_A, delta_I_window_A).
         """
-        cols, areas, dI = self._raw_set_columns(hampel, sgolay, quantity)
+        cols, areas, dI = self._raw_set_columns(hampel, sgolay, quantity, hampel_didv, sgolay_didv)
         return averaging.Averages.average(cols, self._set_weights)[0], areas, dI
 
-    def _build_data(self, hampel, sgolay, quantity=None):
+    def _build_data(self, hampel, sgolay, quantity=None, hampel_didv=None, sgolay_didv=None):
         """
         The curve a fit with these settings is made against, ascending energy
         order: the pipeline on the raw sets (see _process_raw_sets) for the
@@ -677,28 +702,32 @@ class Fit:
         Returns (data, areas_A, delta_I_window_A).
         """
         if getattr(self, 'raw_sets', None):
-            return self._process_raw_sets(hampel, sgolay, quantity)
+            return self._process_raw_sets(hampel, sgolay, quantity, hampel_didv, sgolay_didv)
         if (self._same_params(hampel, self.hampel_filter_params)
                 and self._same_params(sgolay, self.sgolay_filter_params)
+                and self._same_params(hampel_didv, getattr(self, 'hampel_didv_params', None))
+                and self._same_params(sgolay_didv, getattr(self, 'sgolay_didv_params', None))
                 and (quantity is None or quantity == getattr(self, 'quantity', 'didv'))):
             return self.data, getattr(self, 'areas_A', None), getattr(self, 'delta_I_window_A', None)
         raise ValueError("this fit history holds no raw columns, so the curve cannot be rebuilt with "
                          "other filter settings or quantity; only the stored settings can be fitted.")
 
-    def _rebuild(self, hampel, sgolay, background=None, quantity=None):
+    def _rebuild(self, hampel, sgolay, background=None, quantity=None, hampel_didv=None, sgolay_didv=None):
         """
-        Make these filter settings (and background mode and quantity, each
-        unchanged when None) the current data context: data, anchor (none
-        for the ratio), and (once a sweep has run) the background ceiling,
-        seed, and residual of the mode.
+        Make these filter settings (the I(V) pair, the dI/dV pair; and
+        background mode and quantity, each unchanged when None) the current
+        data context: data, anchor (none for the ratio), and (once a sweep
+        has run) the background ceiling, seed, and residual of the mode.
         """
         self.hampel_filter_params = None if hampel is None else dict(hampel)
         self.sgolay_filter_params = None if sgolay is None else dict(sgolay)
+        self.hampel_didv_params = None if hampel_didv is None else dict(hampel_didv)
+        self.sgolay_didv_params = None if sgolay_didv is None else dict(sgolay_didv)
         if background is not None:
             self.background = self._background_mode(background)
         if quantity is not None:
             self.quantity = self._quantity_mode(quantity)
-        data, areas_A, delta_I = self._build_data(hampel, sgolay)
+        data, areas_A, delta_I = self._build_data(hampel, sgolay, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
         self.data = data
         if areas_A is not None:
             self.areas_A = np.atleast_1d(np.asarray(areas_A, dtype=np.float64))
@@ -829,8 +858,7 @@ class Fit:
         st = self._edit_open()
         fc = getattr(self, '_filter_controls', None)
         if st is not None and st.get('filters') is not None and fc is not None:
-            hp, sp = st['filters'].params()
-            fc.set_params(hp, sp)
+            fc.set_params(*(st['filters'].params() + st['filters'].params_didv()))
         self._on_filter_change()
 
     def _color_setting_controls(self):
@@ -844,9 +872,11 @@ class Fit:
         b = self.shown_fit()
         if b is None:
             return
-        hp, sp = self._control_params()
-        c_h = 'red' if self._same_params(hp, b.get('hampel_filter_params')) else 'blue'
-        c_s = 'red' if self._same_params(sp, b.get('sgolay_filter_params')) else 'blue'
+        hp, sp, hd, sd = self._control_params()
+        c_h = ('red' if self._same_params(hp, b.get('hampel_filter_params'))
+               and self._same_params(hd, b.get('hampel_didv_params')) else 'blue')
+        c_s = ('red' if self._same_params(sp, b.get('sgolay_filter_params'))
+               and self._same_params(sd, b.get('sgolay_didv_params')) else 'blue')
         for fc in self._filter_widgets():
             fc.color_labels(c_h, c_s)
         c_zero = 'red' if bool(b.get('iv_zero_sub', False)) == bool(getattr(self, 'iv_zero_sub', False)) else 'blue'
@@ -907,7 +937,8 @@ class Fit:
                    units_lia=None, units_iv=None, vmod=None,
                    energy_raw=None, filter_stage=None,
                    quantity='didv', iv_broadening=0.0, raw_sets=None,
-                   resample=None, iv_zero_sub=False, norm_range=None):
+                   resample=None, iv_zero_sub=False, norm_range=None,
+                   hampel_didv_params=None, sgolay_didv_params=None, lia_ref=None, iv_ref=None):
         """
         Build an analyzer from an already processed curve (calibrated, unit-area
         normalized, averaged, and smoothed elsewhere, e.g. sent from the Line
@@ -932,13 +963,16 @@ class Fit:
                              iv_raw; None when not known)
           vmod             : the modulation amplitude RHK_CH1Drive_Amplitude (V; None when
                              not recorded)
+          hampel_didv_params, sgolay_didv_params : the filters on the LIA columns (None = off)
+          lia_ref, iv_ref  : with lia_raw / iv_raw, the forward-sweep reference columns of a
+                             reverse-sweep view (the calibration's `ref`); None otherwise
           energy_raw       : energy axis of the raw columns (any order; V when omitted)
           filter_stage     : kept for the record ('column' or 'average' with raw columns,
                              'sets' with raw_sets, 'post' without); the pipeline is the
                              same whatever the stage (the filters on each set's I(V)
                              columns, _raw_set_columns)
           raw_sets         : list of dicts {'energy', 'lia', 'iv', 'units_lia', 'units_iv',
-                             'vmod'} (STS.from_arrays), one per
+                             'vmod', 'V_bias', 'I_setpoint', 'lia_ref', 'iv_ref'} (STS.from_arrays), one per
                              file, each on its own full energy axis with the raw columns
                              of the sweeps that take part (the Browser's
                              averages); a refit rebuilds the curve from them on the
@@ -968,6 +1002,8 @@ class Fit:
         self.norm_range = None if norm_range is None else (float(norm_range[0]), float(norm_range[1]))
         self.hampel_filter_params = None if hampel_filter_params is None else dict(hampel_filter_params)
         self.sgolay_filter_params = None if sgolay_filter_params is None else dict(sgolay_filter_params)
+        self.hampel_didv_params = None if hampel_didv_params is None else dict(hampel_didv_params)
+        self.sgolay_didv_params = None if sgolay_didv_params is None else dict(sgolay_didv_params)
         self.resample = resample if resample in ('bin', 'interp') else None
         self.background = 'wkb'
         self._sweep_done = False
@@ -987,18 +1023,23 @@ class Fit:
         # Raw sets (what a refit with other filter settings reruns): raw_sets as given,
         # or one set from lia_raw / iv_raw; none for a curve sent without raw columns.
         self.lia = self.iv = None
+        self.lia_ref = self.iv_ref = None
         self.units_lia, self.units_iv = units_lia, units_iv
         self.vmod = None if vmod is None else float(vmod)
         self.energy = V.copy()
         if raw_sets:
             self.raw_sets = [sts.STS.from_arrays(rs['energy'], rs['lia'], rs['iv'], rs.get('units_lia'),
-                                                 rs.get('units_iv'), rs.get('vmod')) for rs in raw_sets]
+                                                 rs.get('units_iv'), rs.get('vmod'), V_bias=rs.get('V_bias'),
+                                                 I_setpoint=rs.get('I_setpoint'), lia_ref=rs.get('lia_ref'),
+                                                 iv_ref=rs.get('iv_ref')) for rs in raw_sets]
             self.filter_stage = 'sets'
         elif lia_raw is not None and iv_raw is not None:
             energy_raw = V if energy_raw is None else np.asarray(energy_raw, dtype=np.float64)
             if len(energy_raw) != len(V):
                 raise ValueError(f"energy_raw ({len(energy_raw)}) must have the {len(V)} points of V.")
-            self.raw_sets = [sts.STS.from_arrays(energy_raw, lia_raw, iv_raw, units_lia, units_iv, vmod)]
+            self.raw_sets = [sts.STS.from_arrays(energy_raw, lia_raw, iv_raw, units_lia, units_iv, vmod,
+                                                 V_bias=V_bias, I_setpoint=I_setpoint, lia_ref=lia_ref, iv_ref=iv_ref)]
+            self.lia_ref, self.iv_ref = self.raw_sets[0]['lia_ref'], self.raw_sets[0]['iv_ref']
             self.lia, self.iv = self.raw_sets[0]['lia'], self.raw_sets[0]['iv']
             self.energy = self.raw_sets[0]['energy'].copy()
             self.filter_stage = filter_stage if filter_stage in ('column', 'average') else 'sets'
@@ -1032,7 +1073,8 @@ class Fit:
         print(self._anchor_text())
         self._print_noise()
         if self.raw_sets:
-            rebuilt, _, _ = self._build_data(self.hampel_filter_params, self.sgolay_filter_params)
+            rebuilt, _, _ = self._build_data(self.hampel_filter_params, self.sgolay_filter_params,
+                                             hampel_didv=self.hampel_didv_params, sgolay_didv=self.sgolay_didv_params)
             dev = float(np.max(np.abs(rebuilt - self.data))) if len(rebuilt) == len(self.data) else np.inf
             print(f"Raw sets: {len(self.raw_sets)}, averaged as the plain mean"
                   + (f", sets off the axis {'binned' if self.resample == 'bin' else 'interpolated'} "
@@ -1068,7 +1110,8 @@ class Fit:
         """
         # One raw set: this file's acquired sweeps on its own axis.
         self.raw_sets = [sts.STS.from_arrays(self.energy, self.lia, self.iv, self.units_lia, self.units_iv,
-                                             self.vmod)]
+                                             self.vmod, V_bias=self.V_bias, I_setpoint=self.I_setpoint,
+                                             lia_ref=getattr(self, 'lia_ref', None), iv_ref=getattr(self, 'iv_ref', None))]
         order = np.argsort(self.energy)
         self._setup_axes(self.energy[order])
 
@@ -1079,15 +1122,24 @@ class Fit:
         # (areas in amps so that it is consistent with the currents; per sweep
         # I(V_bias) - I(V_ref) in amps).  No sweep has run yet, so no ceiling.
         self.envelope = None
-        self._rebuild(self.hampel_filter_params, self.sgolay_filter_params)
+        self._rebuild(self.hampel_filter_params, self.sgolay_filter_params,
+                      hampel_didv=self.hampel_didv_params, sgolay_didv=self.sgolay_didv_params)
         areas_A = self.areas_A
         self._set_noise()
 
         # Console report (the loader's amps): the calibration of the fitted curve before normalization
-        # (the raw LIA columns, never filtered, against the current through the fit's filters).
+        # (the LIA columns through the dI/dV filters against the current through the I(V) filters,
+        # anchored at the setpoint; a refused calibration leaves the columns as they are).
         pA = 1e12
         iv_f = filters.filter_lia(self.iv, self.hampel_filter_params, self.sgolay_filter_params)
-        calibrated, self.calib_fits = calibration.calibrate(self.energy, self.lia, iv_f, getattr(self, 'vmod', None))
+        lia_f = filters.filter_lia(self.lia, self.hampel_didv_params, self.sgolay_didv_params)
+        try:
+            calibrated, self.calib_fits = calibration.calibrate(
+                self.energy, lia_f, iv_f, getattr(self, 'vmod', None), V_bias=self.V_bias,
+                I_setpoint=self.I_setpoint, ref=(getattr(self, 'lia_ref', None), getattr(self, 'iv_ref', None)))
+        except ValueError as exc:
+            print(f"calibration not applied: {exc}")
+            calibrated, self.calib_fits = lia_f, []
         cal_avg = np.mean(calibrated, axis=1)[order]
         I_cal = cumulative_trapezoid(cal_avg, self.V, initial=0)
         I_cal = I_cal - I_cal[self.i_ref]
@@ -1107,7 +1159,8 @@ class Fit:
                   + (f" (1/V_mod = {1.0 / vmod:.4f} /V)" if vmod else "")
                   + f", c = {cf.c * pA:.3f} pA, "
                   f"rms residual = {cf.rms * pA:.3f} pA, area = {area * pA:.3f} pA")
-        print(f"Calibration reference V_ref = {self.V[self.i_ref]:.4f} V")
+        print(f"Calibration anchor: the setpoint, V_bias = {self.V_bias:.4f} V, I_setpoint = {self.I_setpoint * pA:.2f} pA"
+              f"; the fit's window reference V_ref = {self.V[self.i_ref]:.4f} V")
         print(f"Un-normalized averaged calibrated dI/dV integrated V_ref -> V_bias: "
               f"{I_cal[self.i_bias] * pA:.2f} pA  (measured I(V_bias) - I(V_ref) = "
               f"{(iv_avg[self.i_bias] - iv_avg[self.i_ref]) * pA:.2f} pA, "
@@ -1919,8 +1972,10 @@ class Fit:
         self._shown = len(self.fits) - 1
         path = self._write_cache()
         print(f"Fit {fit['number']} accepted (history: {len(self.fits)} fits; "
-              f"Hampel {self._params_text(fit['hampel_filter_params'])}, "
-              f"SG {self._params_text(fit['sgolay_filter_params'])}; "
+              f"Hampel {self._params_text(fit['hampel_filter_params'])} on I(V), "
+              f"{self._params_text(fit.get('hampel_didv_params'))} on dI/dV, "
+              f"SG {self._params_text(fit['sgolay_filter_params'])} on I(V), "
+              f"{self._params_text(fit.get('sgolay_didv_params'))} on dI/dV; "
               f"background {fit.get('background', 'wkb')}; quantity {self._qname(fit.get('quantity', self.quantity))}; "
               f"cache: {path})")
 
@@ -2094,13 +2149,14 @@ class Fit:
         (_CACHE_FORMAT) and 'loader_format' (sm4file.LOADER_FORMAT).
         norm_range (the sent curve's normalization range, or None) is among the fields.
         """
-        fields = ('ifile', 'hampel_filter_params', 'sgolay_filter_params',
+        fields = ('ifile', 'hampel_filter_params', 'sgolay_filter_params', 'hampel_didv_params', 'sgolay_didv_params',
                   'energy', 'V', 'data',
                   'data_unfiltered', 'V_bias', 'I_setpoint', 'n_sweeps', 'i_ref', 'i_bias',
                   'window_has_zero', 'V_anchor', 'anchor_mode', 'target', 'sigma_diff', 'sg_gain',
                   'noise_level', 'noise_z', 'max_width_ratio', 'known_features',
                   'envelope', 'bg_seed', 'env_bg', 'env_residual', 'candidates', 'results', 'fits',
-                  'lia', 'iv', 'units_lia', 'units_iv', 'vmod', 'filter_stage', 'areas_A', 'delta_I_window_A',
+                  'lia', 'iv', 'lia_ref', 'iv_ref', 'units_lia', 'units_iv', 'vmod', 'filter_stage', 'areas_A',
+                  'delta_I_window_A',
                   'quantity', 'iv_broadening', 'iv_zero_sub', 'raw_sets', 'resample', 'background', 'norm_range')
         state = {name: getattr(self, name, None) for name in fields}
         state['shown'] = self._shown
@@ -2170,7 +2226,10 @@ class Fit:
                 fit['iv_zero_sub'] = False
         if getattr(self, 'raw_sets', None) is None:      # caches written before the raw sets existed
             self.raw_sets = ([sts.STS.from_arrays(self.energy, self.lia, self.iv, getattr(self, 'units_lia', None),
-                                                  getattr(self, 'units_iv', None), getattr(self, 'vmod', None))]
+                                                  getattr(self, 'units_iv', None), getattr(self, 'vmod', None),
+                                                  V_bias=getattr(self, 'V_bias', None),
+                                                  I_setpoint=getattr(self, 'I_setpoint', None),
+                                                  lia_ref=getattr(self, 'lia_ref', None), iv_ref=getattr(self, 'iv_ref', None))]
                              if (getattr(self, 'lia', None) is not None and getattr(self, 'iv', None) is not None)
                              else None)
         self._shown = state['shown']
@@ -2236,7 +2295,8 @@ class Fit:
         return {
             'source': str(self.ifile),
             'quantity': self._qlabel(),
-            'filters': {'hampel': b.get('hampel_filter_params'), 'sgolay': b.get('sgolay_filter_params')},
+            'filters': {'hampel': b.get('hampel_filter_params'), 'sgolay': b.get('sgolay_filter_params'),
+                        'hampel_didv': b.get('hampel_didv_params'), 'sgolay_didv': b.get('sgolay_didv_params')},
             'iv_broadening_V': float(getattr(self, 'iv_broadening', 0.0)),
             'iv_zero_sub': bool(getattr(self, 'iv_zero_sub', False)),
             'fit_number': int(b['number']),
@@ -2609,7 +2669,8 @@ class Fit:
         b = self.shown_fit()
         if b is not None:
             for fc in self._filter_widgets():
-                fc.set_params(b.get('hampel_filter_params'), b.get('sgolay_filter_params'))
+                fc.set_params(b.get('hampel_filter_params'), b.get('sgolay_filter_params'),
+                              b.get('hampel_didv_params'), b.get('sgolay_didv_params'))
             if b.get('iv_zero_sub') is not None:
                 self.iv_zero_sub = bool(b['iv_zero_sub'])
             if b.get('iv_broadening') is not None:
@@ -2666,49 +2727,67 @@ class Fit:
     # --- left panel: the curve a refit would fit with the current control settings ---
 
     def _control_params(self):
-        """(hampel, sgolay) from the figure's controls, or the shown fit's settings without a figure."""
+        """(hampel, sgolay, hampel_didv, sgolay_didv) from the figure's controls, or the shown fit's settings without a figure."""
         fc = getattr(self, '_filter_controls', None)
         if fc is not None:
-            return fc.params()
+            return fc.params() + fc.params_didv()
         b = self.shown_fit()
         if b is not None:
-            return b.get('hampel_filter_params'), b.get('sgolay_filter_params')
-        return self.hampel_filter_params, self.sgolay_filter_params
+            return (b.get('hampel_filter_params'), b.get('sgolay_filter_params'),
+                    b.get('hampel_didv_params'), b.get('sgolay_didv_params'))
+        return (self.hampel_filter_params, self.sgolay_filter_params,
+                getattr(self, 'hampel_didv_params', None), getattr(self, 'sgolay_didv_params', None))
 
-    def _same_settings(self, hp, sp, source):
-        """True when (hp, sp) equal the settings of a fit dict or of the analyzer (source None)."""
+    def _same_settings(self, hp, sp, source, hd=None, sd=None):
+        """True when (hp, sp) and (hd, sd) equal the settings of a fit dict or of the analyzer (source None)."""
         if source is None:
             return (self._same_params(hp, self.hampel_filter_params)
-                    and self._same_params(sp, self.sgolay_filter_params))
+                    and self._same_params(sp, self.sgolay_filter_params)
+                    and self._same_params(hd, getattr(self, 'hampel_didv_params', None))
+                    and self._same_params(sd, getattr(self, 'sgolay_didv_params', None)))
         return (self._same_params(hp, source.get('hampel_filter_params'))
-                and self._same_params(sp, source.get('sgolay_filter_params')))
+                and self._same_params(sp, source.get('sgolay_filter_params'))
+                and self._same_params(hd, source.get('hampel_didv_params'))
+                and self._same_params(sd, source.get('sgolay_didv_params')))
 
-    def _settings_text(self, hp, sp):
-        """'Hampel <params or off>; SG <params or off>' for legends and console lines."""
-        return f"Hampel {self._params_text(hp)}; SG {self._params_text(sp)}"
+    def _settings_text(self, hp, sp, hd=None, sd=None):
+        """'Hampel <params or off> on <targets>; SG <params or off> on <targets>' for legends and console lines."""
+        def one(name, p_iv, p_d):
+            targets = [t for t, p in (('dI/dV', p_d), ('I(V)', p_iv)) if p is not None]
+            if not targets:
+                return f"{name} off"
+            return f"{name} {self._params_text(p_iv if p_iv is not None else p_d)} on " + " and ".join(targets)
+        return one('Hampel', hp, hd) + "; " + one('SG', sp, sd)
+
+    @staticmethod
+    def _fit_settings(b):
+        """The four filter settings of a fit dict (older histories: the dI/dV pair off)."""
+        return (b.get('hampel_filter_params'), b.get('sgolay_filter_params'),
+                b.get('hampel_didv_params'), b.get('sgolay_didv_params'))
 
     def _display_curve(self):
         """
         The left-panel curve: the shown fit's own data when the controls and
         the pending quantity match its settings, otherwise the curve rebuilt
         with the control settings as the pending quantity.
-        Returns (curve, hampel, sgolay, same_as_shown).
+        Returns (curve, (hampel, sgolay, hampel_didv, sgolay_didv), same_as_shown).
         """
-        hp, sp = self._control_params()
+        hp, sp, hd, sd = self._control_params()
+        settings = (hp, sp, hd, sd)
         b = self.shown_fit()
         q = self._q_pending_of()
         shown_q = b.get('quantity', self.quantity) if b is not None else self.quantity
         fs_differs = self._feenstra_differs(b, q)
-        if b is not None and self._same_settings(hp, sp, b) and q == shown_q and not fs_differs:
-            return self.data, hp, sp, True
-        if b is None and self._same_settings(hp, sp, None) and q == shown_q:
-            return self.data, hp, sp, True
+        if b is not None and self._same_settings(hp, sp, b, hd, sd) and q == shown_q and not fs_differs:
+            return self.data, settings, True
+        if b is None and self._same_settings(hp, sp, None, hd, sd) and q == shown_q:
+            return self.data, settings, True
         try:
-            curve, _, _ = self._build_data(hp, sp, q)
+            curve, _, _ = self._build_data(hp, sp, q, hd, sd)
         except ValueError as exc:
             print(f"Filter controls: {exc}")
-            return self.data, hp, sp, True
-        return curve, hp, sp, False
+            return self.data, settings, True
+        return curve, settings, False
 
     def _draw_left(self):
         """
@@ -2721,21 +2800,21 @@ class Fit:
             return
         ax = self._plot_axes[0]
         ax.clear()
-        curve, hp, sp, same = self._display_curve()
+        curve, (hp, sp, hd, sd), same = self._display_curve()
         b = self.shown_fit()
         q = self._q_pending_of()
         shown_q = b.get('quantity', self.quantity) if b is not None else self.quantity
         q_differs = q != shown_q
         ax.plot(self.V, curve, color='black', lw=1.5,
-                label=self._settings_text(hp, sp) + (f"; {self._qname(q)}" if q_differs else ""))
+                label=self._settings_text(hp, sp, hd, sd) + (f"; {self._qname(q)}" if q_differs else ""))
         if not same and b is not None:
             ax.plot(self.V, self.data, color='gray', ls='--', lw=1.0,
                     label=f"fit {b['number']} curve ("
-                          + self._settings_text(b.get('hampel_filter_params'), b.get('sgolay_filter_params'))
+                          + self._settings_text(*self._fit_settings(b))
                           + (f"; {self._qname(shown_q)}" if q_differs else "") + ")")
         shown_mode = b.get('background', 'wkb') if b is not None else self.background
         bg_differs = getattr(self, '_bg_pending', shown_mode) != shown_mode
-        settings_differ = not self._same_settings(hp, sp, b)
+        settings_differ = not self._same_settings(hp, sp, b, hd, sd)
         fs_differs = self._feenstra_differs(b, q)
         if same and not bg_differs:
             title = self._qlabel()
@@ -2749,13 +2828,13 @@ class Fit:
         ax.set_xlabel("Energy (eV)")
         ax.set_ylabel(f"{self._qname(q)} (arb. units)")
         ax.legend(loc='upper right', frameon=False, fontsize=8)
-        self._draw_stack(hp, sp)
+        self._draw_stack(hp, sp, hd, sd)
         self._color_setting_controls()
         self._plot_fig.canvas.draw_idle()
 
     # --- the stack panel beside the data panel ---
 
-    def _draw_stack(self, hp, sp):
+    def _draw_stack(self, hp, sp, hd=None, sd=None):
         """
         The stack beside the data panel: the raw sets' curves at the control
         settings (hp, sp) as the pending quantity, one colour per set (file), offset vertically
@@ -2775,7 +2854,7 @@ class Fit:
             self._place_data_stack(0.0)
             return
         try:
-            cols, _, _ = self._raw_set_columns(hp, sp, self._q_pending_of())
+            cols, _, _ = self._raw_set_columns(hp, sp, self._q_pending_of(), hd, sd)
         except ValueError as exc:
             print(f"Stack: {exc}")
             self._stack_share = 0.0
@@ -2824,8 +2903,7 @@ class Fit:
         st = self._edit_open()
         fc = getattr(self, '_filter_controls', None)
         if st is not None and st.get('filters') is not None and fc is not None:
-            hp, sp = fc.params()
-            st['filters'].set_params(hp, sp)
+            st['filters'].set_params(*(fc.params() + fc.params_didv()))
         try:
             self._draw_left()
         except Exception as exc:
@@ -2933,9 +3011,10 @@ class Fit:
         # Savitzky-Golay controls of the next Refit, in step with the fit window's (same colours).
         st['fs'] = widgets.FeenstraSettings(fig, 0.055, 0.14, self._fs_settings())
         st['fs'].on_change(self._on_fs_change)
-        hp0, sp0 = self._control_params()
-        st['filters'] = widgets.FilterControls(fig, [0.40, 0.11, 0.25, 0.11], hampel=hp0, sgolay=sp0,
-                                               hampel_on=hp0 is not None, sgolay_on=sp0 is not None)
+        hp0, sp0, hd0, sd0 = self._control_params()
+        st['filters'] = widgets.FilterControls(fig, [0.40, 0.11, 0.25, 0.11], hampel=hp0 or hd0, sgolay=sp0 or sd0,
+                                               hampel_on=hp0 is not None, sgolay_on=sp0 is not None,
+                                               hampel_didv_on=hd0 is not None, sgolay_didv_on=sd0 is not None)
         st['filters'].on_change(self._on_edit_filter_change)
         # Parameter panel: as many rows as the longest parameter list, the word
         # 'hold' once above the first toggle.
@@ -3287,24 +3366,24 @@ class Fit:
         # the pending quantity: when any differs from the shown fit's, the data
         # context (curve, anchor, ceiling, or none) is rebuilt for this refit.
         shown = self.shown_fit()
-        hp, sp = self._control_params()
+        hp, sp, hd, sd = self._control_params()
         mode = self._bg_pending
         q = self._q_pending_of()
         shown_q = shown.get('quantity', self.quantity)
-        changed = (not self._same_settings(hp, sp, shown) or mode != shown.get('background', 'wkb')
+        changed = (not self._same_settings(hp, sp, shown, hd, sd) or mode != shown.get('background', 'wkb')
                    or q != shown_q or self._feenstra_differs(shown, q))
         if changed:
             try:
-                self._rebuild(hp, sp, mode, q)
+                self._rebuild(hp, sp, mode, q, hd, sd)
             except Exception as exc:
                 print(f"Edit refit: could not rebuild the curve with the control settings ({exc}).")
                 self._restore_context(shown)
                 self._sync_feenstra_widgets()
                 return
-            print(f"Edit refit with {self._settings_text(hp, sp)}, background {mode}, {self._qname(q)}"
+            print(f"Edit refit with {self._settings_text(hp, sp, hd, sd)}, background {mode}, {self._qname(q)}"
                   + (f", {self._feenstra_text()}" if q == 'ratio' else "")
                   + f" (shown fit {shown['number']}: "
-                  + self._settings_text(shown.get('hampel_filter_params'), shown.get('sgolay_filter_params'))
+                  + self._settings_text(*self._fit_settings(shown))
                   + f", background {shown.get('background', 'wkb')}, {self._qname(shown_q)}); "
                   + ("ceiling recomputed." if mode == 'wkb' else "no ceiling."))
         held = [f"peak {i}: {', '.join(g['hold'])}" for i, g in enumerate(peaks) if g.get('hold')]
@@ -3362,12 +3441,14 @@ class Fit:
         # (a dict turns the filter on, None leaves it off); the background toggle at
         # the shown fit's mode.
         b = self.shown_fit()
-        hp0 = b.get('hampel_filter_params') if b is not None else self.hampel_filter_params
-        sp0 = b.get('sgolay_filter_params') if b is not None else self.sgolay_filter_params
+        hp0, sp0, hd0, sd0 = (self._fit_settings(b) if b is not None else
+                              (self.hampel_filter_params, self.sgolay_filter_params,
+                               getattr(self, 'hampel_didv_params', None), getattr(self, 'sgolay_didv_params', None)))
         self._bg_pending = b.get('background', 'wkb') if b is not None else self.background
         self._filter_controls = widgets.FilterControls(fig, [0.04, 0.02, 0.19, 0.15],
-                                               hampel=hp0, sgolay=sp0,
-                                               hampel_on=hp0 is not None, sgolay_on=sp0 is not None)
+                                               hampel=hp0 or hd0, sgolay=sp0 or sd0,
+                                               hampel_on=hp0 is not None, sgolay_on=sp0 is not None,
+                                               hampel_didv_on=hd0 is not None, sgolay_didv_on=sd0 is not None)
         self._filter_controls.on_change(self._on_filter_change)
         # The controls through widgets.py (the same specifications as every window's); placed by _layout.
         self._chk_bg = widgets.make(fig, 'WKB background', 0.25, 0.1, value=self._bg_pending == 'wkb')

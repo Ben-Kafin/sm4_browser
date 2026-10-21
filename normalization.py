@@ -102,7 +102,9 @@ if __name__ == '__main__':
     path = r'experiment_dir/file.sm4'
     f = sm4file.Sm4File(path)
     cols = np.flatnonzero(f.acquired)
-    cal, _ = calibration.calibrate(f.energy, f.lia[:, cols], f.iv[:, cols], f.vmod)
+    ref = None if f.lia_ref is None or f.iv_ref is None else (f.lia_ref[:, cols], f.iv_ref[:, cols])
+    cal, _ = calibration.calibrate(f.energy, f.lia[:, cols], f.iv[:, cols], f.vmod, V_bias=f.V_bias,
+                                   I_setpoint=f.I_setpoint, ref=ref)
     _, areas = normalize(f.energy, cal)
     for j, a in zip(cols, areas):
         print(f"column {j}: area {a:.4g} (A)")

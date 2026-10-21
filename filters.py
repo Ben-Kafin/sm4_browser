@@ -7,7 +7,8 @@ alone, once, wherever the pipeline uses it: the calibration against the
 current and the Feenstra division (sts.STS.process_arrays filters the
 current first and hands the same filtered current to both; the Feenstra
 windows' current panels filter through feenstra.iv_corrected); the
-channel's columns (dI/dV or IETS) are never filtered.
+channel's columns (dI/dV or IETS) go through the same two filters under
+their own toggles (the dI/dV pair of every filter box).
 """
 
 if __package__ in (None, ''):
@@ -77,9 +78,10 @@ def filter_lia(lia, hampel_filter_params, sgolay_filter_params):
     Savitzky-Golay: hampel(**hampel_filter_params), then
     sgolay(**sgolay_filter_params).  The name is historical: the pipeline
     (sts.STS.process_arrays, fit.Fit._raw_set_columns, feenstra.iv_corrected)
-    calls it on the recorded current I(V), never on the lock-in channel.
-    Returns a float64 copy (a plain copy when both are off); the input is
-    not changed.
+    calls it on the recorded current I(V) with the I(V) toggles' settings
+    and on the dI/dV (or IETS) columns with the dI/dV toggles' (the same
+    boxes, each target its own toggles).  Returns a float64 copy (a plain
+    copy when both are off); the input is not changed.
     """
     c = np.asarray(lia, dtype=np.float64).copy()
     if hampel_filter_params is not None:
@@ -90,9 +92,8 @@ def filter_lia(lia, hampel_filter_params, sgolay_filter_params):
 
 
 if __name__ == '__main__':
-    # The filters run on the dI/dV columns of one file as a demonstration of what they do
-    # (the pipeline itself filters the current only): the largest change per acquired
-    # column printed (nothing is drawn).
+    # The filters run on the dI/dV columns of one file as a demonstration of what they do:
+    # the largest change per acquired column printed (nothing is drawn).
     from sm4_Browser import sm4file
     path = r'experiment_dir/file.sm4'
     f = sm4file.Sm4File(path)

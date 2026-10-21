@@ -314,10 +314,16 @@ class SavedAveragesWindow:
                 'times': times, 'removed': removed}
 
     @staticmethod
-    def _filters_text(hp, sp, resample=None, channel='didv'):
-        """'IETS, ' when the channel is IETS, then 'Hampel window/n_sigma' or 'Hampel off', 'SG window/order' or 'SG off', and the resampling when set."""
-        h = f"Hampel {hp['window']}/{hp['n_sigma']}" if hp else "Hampel off"
-        s = f"SG {sp['window_length']}/{sp['polyorder']}" if sp else "SG off"
+    def _filters_text(hp, sp, resample=None, channel='didv', hd=None, sd=None):
+        """'IETS, ' when the channel is IETS, then 'Hampel window/n_sigma on <targets>' or 'Hampel off', 'SG window/order on <targets>' or 'SG off' (the targets: dI/dV, I(V), or both; hp / sp the I(V) settings, hd / sd the dI/dV ones), and the resampling when set."""
+        def one(name, p_iv, p_d, keys):
+            targets = [t for t, p in (('dI/dV', p_d), ('I(V)', p_iv)) if p]
+            if not targets:
+                return f"{name} off"
+            p = p_iv or p_d
+            return f"{name} {p[keys[0]]}/{p[keys[1]]} on " + "+".join(targets)
+        h = one('Hampel', hp, hd, ('window', 'n_sigma'))
+        s = one('SG', sp, sd, ('window_length', 'polyorder'))
         c = "IETS, " if channel == 'iets' else ""
         return c + h + ", " + s + (f", {resample}" if resample else "")
 
@@ -361,7 +367,7 @@ class SavedAveragesWindow:
                 else f"{len(files)} files")
         text = (f"{avg_name} | {what}, {n_sweeps} sweeps, {len(rec.get('removed', []))} removed | "
                 f"{self._times_text(times)} | "
-                f"{self._filters_text(rec.get('hampel'), rec.get('sgolay'), rec.get('resample'), rec.get('channel', 'didv'))} | "
+                f"{self._filters_text(rec.get('hampel'), rec.get('sgolay'), rec.get('resample'), rec.get('channel', 'didv'), rec.get('hampel_didv'), rec.get('sgolay_didv'))} | "
                 + (f"{n_fits} fits" if n_fits is not None
                    else "fit history out of date" if stale else "no fit history")
                 + f" | saved {rec.get('saved', '?')}")
@@ -400,12 +406,14 @@ class SavedAveragesWindow:
             return None
         n_fits = len(state.get('fits', []))
         hp, sp = state.get('hampel_filter_params'), state.get('sgolay_filter_params')
+        hd, sd = state.get('hampel_didv_params'), state.get('sgolay_didv_params')
         when = datetime.fromtimestamp(os.path.getmtime(cache)).isoformat(timespec='seconds')
         text = (f"old {stem} | {parsed['k']} files, {parsed['n']} sweeps, "
                 f"{len(parsed['removed'])} removed | {self._times_text(parsed['times'])} | "
-                f"{self._filters_text(hp, sp)} | {n_fits} fits | written {when}")
+                f"{self._filters_text(hp, sp, hd=hd, sd=sd)} | {n_fits} fits | written {when}")
         return {'kind': 'old', 'label': state.get('ifile'), 'parsed': parsed, 'cache': cache,
-                'n_fits': n_fits, 'hampel': hp, 'sgolay': sp, 'text': text, 'mtime': os.path.getmtime(cache)}
+                'n_fits': n_fits, 'hampel': hp, 'sgolay': sp, 'hampel_didv': hd, 'sgolay_didv': sd,
+                'text': text, 'mtime': os.path.getmtime(cache)}
 
     def _line_entry(self, name):
         """The entry of a Line window's marker record (file, line, groups and markers, channel, Feenstra, time of saving); None when unreadable."""

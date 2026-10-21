@@ -188,9 +188,12 @@ class FilePanel:
             print(f"{self.name}: no Current channel; the Feenstra division is not available.")
             divide = False
         calibrate = self.calibrate and iv is not None
+        ref = (None if self.sm4.lia_ref is None or self.sm4.iv_ref is None
+               else (self.sm4.lia_ref[:, cols], self.sm4.iv_ref[:, cols]))
         c = STS.process_arrays(self.energy, lia, iv, None, None, divide, float(self.s['iv_broadening']),
                                channel='didv', acquired=acquired, iv_zero_sub=bool(self.s['iv_zero_sub']),
-                               normalize=self.normalize, calibrate=calibrate, vmod=self.sm4.vmod)
+                               normalize=self.normalize, calibrate=calibrate, vmod=self.sm4.vmod,
+                               V_bias=self.sm4.V_bias, I_setpoint=self.sm4.I_setpoint, ref=ref)
         c = np.array(c, dtype=np.float64)
         c[:, ~np.asarray(acquired, dtype=bool)] = np.nan
         return c

@@ -1800,7 +1800,7 @@ def _line_flags_off(b, exp):
 def _console_strings(b, exp):
     import io, contextlib
     from sm4_Browser.drift import marker_pair_text
-    assert b.filters._title == 'filters (on the current)' and b.filters.qt.title() == 'filters (on the current)'
+    assert b.filters._title == 'filters' and b.filters.qt.title() == 'filters'
     # the site flag line names the settings file
     grid = goto_kind(b, 'grid')
     was = b.sites.flag(grid.path)
@@ -1848,14 +1848,20 @@ def _console_strings(b, exp):
     assert "(rows placed by the stripe matching alone)." in buf.getvalue(), buf.getvalue()
     b.drift.set_fast_state(f, setting, 'off')
     plt.close(w._int_fig)
-    # the averaging window's filter line names the recorded current
+    # the averaging window's filter line names each filter's targets (every toggle off at open)
     goto_kind(b, 'point')
     b._on_add_new_avg()
     aw = list(b.averages.open().values())[-1]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         aw._on_filter_change()
-    assert "on the recorded current" in buf.getvalue() and "on the dI/dV" not in buf.getvalue(), buf.getvalue()
+    assert "Hampel off; SG off" in buf.getvalue(), buf.getvalue()
+    aw.filters.set_params(None, None, {'window': 4, 'n_sigma': 3}, None)   # Hampel on dI/dV only
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        aw._on_filter_change()
+    assert "Hampel window 4, n_sigma 3 on dI/dV; SG off" in buf.getvalue(), buf.getvalue()
+    aw.filters.set_params(None, None)
     plt.close(aw.fig)
     b._goto(0)
 
@@ -2222,6 +2228,150 @@ def _rows(b, exp):
     w = b.drift_window
     _assert_row([w.ax_a, w.ax_b], 'drift window')
     plt.close(w.fig)
+    b._goto(0)
+
+
+@check("N3 calibration anchored at the setpoint: exact on every window and sweep direction, the forward reference, the refusals, the pipeline's note; the file's curves")
+def _calibration_anchor(b, exp):
+    import io
+    import contextlib
+    from scipy.integrate import cumulative_trapezoid
+    from sm4_Browser import calibration
+    from sm4_Browser.sts import STS
+    a_t, b_t, I_set = 2.0, 0.3, 1e-10
+
+    def synth(V, i_a):
+        lia = 0.8 + 0.5 * np.sin(3.0 * V) + 0.3 * V ** 2
+        X = cumulative_trapezoid(lia, V, initial=0)
+        X -= X[i_a]
+        return lia[:, None], (I_set + a_t * X + b_t * (V - V[i_a]))[:, None]
+
+    for V, Vb in ((np.linspace(-1, 1, 201), 1.0), (np.linspace(1, -1, 201), 1.0), (np.linspace(2, 5, 301), 2.0),
+                  (np.linspace(-2, -0.8, 121), -0.8), (np.linspace(-1, 1, 201), -1.0)):
+        order = np.argsort(V)
+        Vs = V[order]
+        i_a = calibration.anchor_index(Vs, Vb)
+        lia_s, I_s = synth(Vs, i_a)
+        inv = np.empty_like(order)
+        inv[order] = np.arange(len(order))
+        cal, fits = calibration.calibrate(V, lia_s[inv], I_s[inv], V_bias=Vb, I_setpoint=I_set)
+        assert abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and fits[0].c == I_set, (Vb, fits[0].a, fits[0].b)
+        assert np.allclose(cal[:, 0], a_t * lia_s[inv][:, 0] + b_t)
+    # the reference: a column of other values takes the reference's a, b, applied to its own LIA
+    V = np.linspace(-1, 1, 201)
+    i_a = calibration.anchor_index(V, 1.0)
+    lia_f, I_f = synth(V, i_a)
+    lia_r, I_r = lia_f * 3.0 + 0.1, I_f * 0.5
+    cal, fits = calibration.calibrate(V, lia_r, I_r, V_bias=1.0, I_setpoint=I_set, ref=(lia_f, I_f))
+    assert abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and np.allclose(cal[:, 0], a_t * lia_r[:, 0] + b_t)
+    ref_nan = (np.full_like(lia_f, np.nan), I_f)                      # no forward sweep: the column on its own
+    _, fits_own = calibration.calibrate(V, lia_f, I_f, V_bias=1.0, I_setpoint=I_set, ref=ref_nan)
+    assert abs(fits_own[0].a - a_t) < 1e-9
+    # the IETS counterpart on a window away from 0 V
+    Vq = np.linspace(2, 5, 301)
+    i_q = calibration.anchor_index(Vq, 2.0)
+    S = 0.4 + 0.3 * np.cos(2.0 * Vq)
+    Y = cumulative_trapezoid(S, Vq, initial=0)
+    Y -= Y[i_q]
+    Z = cumulative_trapezoid(Y, Vq, initial=0)
+    Z -= Z[i_q]
+    U = Vq - Vq[i_q]
+    Iq = I_set + a_t * Z + b_t * U ** 2 / 2 + 0.7 * U
+    _, fq = calibration.calibrate_iets(Vq, S[:, None], Iq[:, None], V_bias=2.0, I_setpoint=I_set)
+    assert abs(fq[0].a - a_t) < 1e-6 and abs(fq[0].b - b_t) < 1e-6 and abs(fq[0].c - 0.7) < 1e-6, (fq[0].a, fq[0].b, fq[0].c)
+    # the refusals: no sample at the setpoint bias, no setpoint recorded
+    for kw in (dict(V_bias=1.5, I_setpoint=I_set), dict(V_bias=None, I_setpoint=I_set), dict(V_bias=1.0, I_setpoint=None)):
+        try:
+            calibration.calibrate(V, lia_f, I_f, **kw)
+            raise AssertionError(f"not refused: {kw}")
+        except ValueError as exc:
+            assert 'setpoint' in str(exc), str(exc)
+    # the pipeline: a refused file is left in its units, said once
+    STS._notes_said.clear()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        c1 = STS.process_arrays(V, lia_f, I_f, normalize=False, calibrate=True, V_bias=1.5, I_setpoint=I_set)
+        c2 = STS.process_arrays(V, lia_f, I_f, normalize=False, calibrate=True, V_bias=1.5, I_setpoint=I_set)
+    assert np.allclose(c1, lia_f) and np.allclose(c2, lia_f)
+    assert buf.getvalue().count("calibration not applied") == 1, buf.getvalue()
+    # the file's curves: every acquired column a·LIA + b with the a, b of the anchored regression
+    g = goto_kind(b, 'grid')
+    cols = np.flatnonzero(np.asarray(g.acquired, dtype=bool))
+    _, fits = calibration.calibrate(g.energy, g.lia[:, cols], g.iv[:, cols], V_bias=g.V_bias, I_setpoint=g.I_setpoint)
+    c = g.curves(normalize=False, calibrate=True)
+    expect = np.column_stack([cf.a * g.lia[:, j] + cf.b for j, cf in zip(cols, fits)])
+    assert np.allclose(c[:, cols], expect, rtol=1e-9, atol=0), "the pipeline's calibration is the anchored regression"
+    assert all(cf.c == g.I_setpoint for cf in fits)
+    b._goto(0)
+
+
+@check("N4 the dI/dV filter toggles: the box's two toggle columns, the pipeline's two targets, the records of the Line and averaging windows")
+def _didv_filters(b, exp):
+    from sm4_Browser import widgets
+    from sm4_Browser.sts import STS
+    hp = {'window': 4, 'n_sigma': 3}
+    sp = {'window_length': 6, 'polyorder': 3}
+    # the figure box: four independent toggles, one set of boxes
+    fig = plt.figure(figsize=(4, 3))
+    fc = widgets.FilterControls(fig, [0.1, 0.1, 0.5, 0.3], hampel=hp, sgolay=sp)
+    assert fc.params() == (None, None) and fc.params_didv() == (None, None)
+    fc.set_params(hp, None, None, sp)
+    assert fc.params() == (hp, None) and fc.params_didv() == (None, sp)
+    assert fc.states() == (True, False) and fc.states_didv() == (False, True)
+    fc._toggle(2)
+    assert fc.params_didv() == (hp, sp) and fc.params() == (hp, None)
+    fc.set_params(None, None)
+    assert fc.params() == (None, None) and fc.params_didv() == (None, None)
+    assert widgets.filters_text(fc) == "Hampel off; SG off"
+    fc.set_params(hp, sp, hp, None)
+    assert widgets.filters_text(fc) == "Hampel window 4, n_sigma 3 on dI/dV and I(V); SG window_length 6, polyorder 3 on I(V)"
+    plt.close(fig)
+    # the browser's native box: the same four toggles
+    nb = b.filters
+    assert hasattr(nb, 'chk_hd') and hasattr(nb, 'chk_sd') and nb.params_didv() == (None, None)
+    nb.set_params(None, None, hp, None)
+    assert nb.params_didv() == (hp, None) and nb.params() == (None, None)
+    nb.set_params(None, None)
+    # the pipeline: the dI/dV toggles act on the channel's columns, the I(V) toggles on the current only
+    g = goto_kind(b, 'grid')
+    raw = g.curves(normalize=False, calibrate=False)
+    only_iv = g.curves(hp, sp, normalize=False, calibrate=False)
+    only_didv = g.curves(None, None, normalize=False, calibrate=False, hampel_didv=hp, sgolay_didv=sp)
+    assert np.allclose(only_iv, raw, rtol=1e-12, atol=0), "the I(V) filters leave the uncalibrated channel columns alone"
+    cols = np.flatnonzero(np.asarray(g.acquired, dtype=bool))
+    from sm4_Browser import filters
+    assert np.allclose(only_didv[:, cols], filters.filter_lia(g.lia[:, cols], hp, sp), rtol=1e-9, atol=0), \
+        "the dI/dV filters act on the channel columns"
+    # a spiked column through the pipeline: the dI/dV Hampel removes the spike, the I(V) one does not
+    V = np.asarray(g.energy, dtype=np.float64)
+    spiky = np.asarray(g.lia[:, cols[:1]], dtype=np.float64).copy()
+    spiky[len(V) // 2, 0] += 50.0 * (np.abs(spiky).max() + 1e-12)
+    iv1 = np.asarray(g.iv[:, cols[:1]], dtype=np.float64)
+    out_d = STS.process_arrays(V, spiky, iv1, None, None, normalize=False, calibrate=False, hampel_didv=hp)
+    out_i = STS.process_arrays(V, spiky, iv1, hp, None, normalize=False, calibrate=False)
+    assert np.array_equal(out_i, spiky) and np.abs(out_d - spiky).max() > 0.5 * np.abs(spiky).max(), "each toggle reaches its own target"
+    assert np.allclose(out_d, filters.filter_lia(spiky, hp, None), rtol=1e-9, atol=0)
+    # the Line window: the record keeps the dI/dV toggles, restore puts them back
+    w = open_line(b)
+    w._int_filters.set_params(None, None, hp, None)
+    w._int_on_filter_change()
+    assert w._int_hampel_didv == hp and w._int_sgolay_didv is None and w._int_hampel_params is None
+    rec = w.marker_record()
+    assert rec['hampel_didv_on'] is True and rec['sgolay_didv_on'] is False and rec['hampel_on'] is False
+    w._int_filters.set_params(None, None)
+    w._int_on_filter_change()
+    assert w._int_hampel_didv is None
+    w.restore_markers(rec)
+    assert w._int_filters.states_didv() == (True, False) and w._int_hampel_didv == hp
+    plt.close(w._int_fig)
+    # the averaging window: the record carries the dI/dV pair
+    goto_kind(b, 'point')
+    b._on_add_new_avg()
+    aw = list(b.averages.open().values())[-1]
+    aw.filters.set_params(None, sp, hp, None)
+    r = aw.record()
+    assert r['hampel'] is None and r['sgolay'] == sp and r['hampel_didv'] == hp and r['sgolay_didv'] is None, r
+    plt.close(aw.fig)
     b._goto(0)
 
 

@@ -195,6 +195,15 @@ class Selection:
         return self.spectra.V_bias
 
     @property
+    def lia_ref(self):
+        """A sweep view's forward-sweep reference of the dI/dV columns (the calibration's `ref`), or None."""
+        return getattr(self.spectra, 'lia_ref', None)
+
+    @property
+    def iv_ref(self):
+        return getattr(self.spectra, 'iv_ref', None)
+
+    @property
     def I_setpoint(self):
         return self.spectra.I_setpoint
 
@@ -222,10 +231,11 @@ class Selection:
         return self.spectra.channels()
 
     def curves(self, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0, channel='didv',
-               iv_zero_sub=False, normalize=True, calibrate=True):
+               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None):
         """The chosen columns through the pipeline (npts, n), original energy order (STS.process)."""
         return self.spectra.process(channel, hampel, sgolay, divide_iv, iv_broadening, iv_zero_sub=iv_zero_sub,
-                                    normalize=normalize, calibrate=calibrate)
+                                    normalize=normalize, calibrate=calibrate,
+                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
 
     @property
     def where_text(self):
@@ -428,7 +438,8 @@ def compare_with_cache(state, V, data_unfiltered):
 
 
 def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, divide_iv, iv_width,
-                        iv_zero_sub, resample, fit_settings, cache, tag, describe, removed_text='', norm_range=None):
+                        iv_zero_sub, resample, fit_settings, cache, tag, describe, removed_text='', norm_range=None,
+                        hampel_didv=None, sgolay_didv=None):
     """
     Send an average built from several files' raw columns to the
     single-point fit (Fit); the one send of the averaging and the
@@ -440,7 +451,8 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
       parts            : [{'file': the entry (energy, lia, iv, units_lia, units_iv, vmod, acquired,
                            V_bias, I_setpoint, name), 'cols': the kept columns of its lia / iv}] in added order; the
                          first part is the anchor file
-      hampel, sgolay   : the window's filter settings (None = off)
+      hampel, sgolay   : the window's I(V) filter settings (None = off)
+      hampel_didv, sgolay_didv : the window's dI/dV filter settings (None = off)
       divide_iv, iv_width, iv_zero_sub : the window's Feenstra state and settings
       resample         : 'bin', 'interp', or None (the refit brings a raw set of another step onto
                          the axis the way the run did)
@@ -498,8 +510,11 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
         cols = np.asarray(p['cols'], dtype=int)
         if cols.size == 0:
             continue
+        lia_ref, iv_ref = getattr(f, 'lia_ref', None), getattr(f, 'iv_ref', None)
         _, ar = STS.process_arrays(f.energy, f.lia, f.iv, hampel, sgolay, divide_iv, iv_width,
-                                   return_areas=True, acquired=f.acquired, iv_zero_sub=iv_zero_sub, vmod=f.vmod)
+                                   return_areas=True, acquired=f.acquired, iv_zero_sub=iv_zero_sub, vmod=f.vmod,
+                                   V_bias=f.V_bias, I_setpoint=f.I_setpoint, ref=(lia_ref, iv_ref),
+                                   hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
         order = np.argsort(f.energy)
         Vf = f.energy[order]
         iv_sorted = f.iv[order, :]
@@ -508,7 +523,9 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
         areas.extend(ar[cols])
         delta_I.extend(iv_sorted[i_bias, cols] - iv_sorted[i_ref, cols])
         raw_sets.append(STS.from_arrays(f.energy.copy(), f.lia[:, cols].copy(), f.iv[:, cols].copy(),
-                                        f.units_lia, f.units_iv, f.vmod))
+                                        f.units_lia, f.units_iv, f.vmod, V_bias=f.V_bias, I_setpoint=f.I_setpoint,
+                                        lia_ref=None if lia_ref is None else lia_ref[:, cols].copy(),
+                                        iv_ref=None if iv_ref is None else iv_ref[:, cols].copy()))
     areas = np.array(areas, dtype=np.float64)
     delta_I = np.array(delta_I, dtype=np.float64)
     if differing:
@@ -542,6 +559,7 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
             an = fit.Fit.from_curve(V0, data, data_unfiltered, V_bias, I_setpoint,
                                     areas, label,
                                     hampel_filter_params=hampel, sgolay_filter_params=sgolay,
+                                    hampel_didv_params=hampel_didv, sgolay_didv_params=sgolay_didv,
                                     delta_I_window_A=delta_I,
                                     quantity='ratio' if divide_iv else 'didv',
                                     iv_broadening=iv_width, iv_zero_sub=iv_zero_sub,
@@ -812,6 +830,7 @@ class MultiAverageWindow:
         """
         from sm4_Browser.normalization import normalize_abs
         hp, sp = self.filters.params()
+        hd, sd = self.filters.params_didv()
         colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
         active = self._active()
         run = self.average is not None
@@ -845,7 +864,8 @@ class MultiAverageWindow:
             label = e['label']
             per = {}
             per['didv'] = f.curves(hp, sp, False, width, channel=self.channel, iv_zero_sub=zs,
-                                   normalize=normalize, calibrate=calibrate)[order, :][:, f.acquired][:, kept]
+                                   normalize=normalize, calibrate=calibrate,
+                                   hampel_didv=hd, sgolay_didv=sd)[order, :][:, f.acquired][:, kept]
             if f.iv is not None:
                 iv_a = iv_corrected(f.energy, f.iv, zs, hp, sp)
                 ivv = iv_broadened(f.energy, f.iv, width, zs, hp, sp)
@@ -946,6 +966,7 @@ class MultiAverageWindow:
         last run, and the time of writing.
         """
         hp, sp = self.filters.params()
+        hd, sd = self.filters.params_didv()
         run = None
         if self.average is not None:
             V0 = self.average[0]
@@ -970,6 +991,8 @@ class MultiAverageWindow:
                 'channel': self.channel,
                 'hampel': hp,
                 'sgolay': sp,
+                'hampel_didv': hd,
+                'sgolay_didv': sd,
                 'resample': self.resample,
                 'divide_iv': self.divide_iv,
                 'iv_broadening_V': self.iv_broadening,
@@ -993,7 +1016,8 @@ class MultiAverageWindow:
             return
         print(f"{self.tag}: record written: {self.save()}")
 
-    def restore(self, files, removed, hampel, sgolay, resample=None, channel='didv', calibrate=True, normalize=True):
+    def restore(self, files, removed, hampel, sgolay, resample=None, channel='didv', calibrate=True, normalize=True,
+                hampel_didv=None, sgolay_didv=None):
         """
         Rebuild the window from a record: the channel, the calibrate /
         normalize flags, the files added in order, the sweeps removed in the
@@ -1006,14 +1030,14 @@ class MultiAverageWindow:
         self._set_channel(channel)
         self.calibrate, self.normalize = bool(calibrate), bool(normalize)
         self.pipeline.set_state(self.calibrate, self.normalize)
-        self.filters.set_params(hampel, sgolay)   # the sweeps are built with these settings
+        self.filters.set_params(hampel, sgolay, hampel_didv, sgolay_didv)   # the sweeps are built with these settings
         self._set_resample(resample)
         for f in files:
             self.add(f)
         self.removed = [(int(i), int(j)) for i, j in removed]
         print(f"{self.tag}: rebuilt from its record: {len(self.entries)} files, "
               f"{len(self.removed)} removed sweep(s), {STS.CHANNEL_NAMES[self.channel]}, "
-              f"Hampel {hampel}, SG {sgolay}, {self.resample or 'bin / interp off'}"
+              f"{widgets.filters_text(self.filters)}, {self.resample or 'bin / interp off'}"
               + ("" if self.calibrate else ", calibration off") + ("" if self.normalize else ", normalization off") + ".")
         self._on_run()
         self.draw()
@@ -1053,22 +1077,26 @@ class MultiAverageWindow:
         """Whether an entry with the same key is held (a file path; a selection's path and columns)."""
         return any(e['file'].key == point.key for e in self.entries)
 
-    def _sweeps_of(self, point, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None):
+    def _sweeps_of(self, point, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None,
+                   hampel_didv=None, sgolay_didv=None):
         """
         A file's acquired sweeps through the pipeline (point.curves: the
         window's channel, Feenstra state and settings; the window's Hampel /
-        SG settings, which the pipeline applies to the recorded current, or
-        the given ones when use_controls is False; the window's calibrate /
-        normalize flags unless given), rows in ascending energy order,
-        never-acquired sweeps left out: (npts, n_acquired).
+        SG settings, the I(V) pair on the recorded current and the dI/dV
+        pair on the columns, or the given ones when use_controls is False;
+        the window's calibrate / normalize flags unless given), rows in
+        ascending energy order, never-acquired sweeps left out: (npts,
+        n_acquired).
         """
         if use_controls:
             hampel, sgolay = self.filters.params()
+            hampel_didv, sgolay_didv = self.filters.params_didv()
         order = np.argsort(point.energy)
         c = point.curves(hampel, sgolay, self.divide_iv, self.iv_width(), channel=self.channel,
                          iv_zero_sub=self.iv_zero_sub,
                          normalize=self.normalize if normalize is None else normalize,
-                         calibrate=self.calibrate if calibrate is None else calibrate)
+                         calibrate=self.calibrate if calibrate is None else calibrate,
+                         hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
         return c[order, :][:, point.acquired]
 
     def _rebuild_sweeps(self, note):
@@ -1094,9 +1122,7 @@ class MultiAverageWindow:
 
     def _on_filter_change(self):
         """The filter controls changed: every file's sweeps rebuilt and the run repeated (_rebuild_sweeps)."""
-        hp, sp = self.filters.params()
-        self._rebuild_sweeps(f"Hampel {'on' if hp else 'off'}, "
-                             f"SG {'on' if sp else 'off'} on the recorded current")
+        self._rebuild_sweeps(widgets.filters_text(self.filters))
 
     def _on_pipeline_change(self, state):
         """The 'calibrate' / 'normalize' box: every file's sweeps rebuilt with the flags and the run repeated."""
@@ -1221,7 +1247,8 @@ class MultiAverageWindow:
             return np.zeros((len(self.average[0]), 0))
         return np.hstack([s for _, s in sets])
 
-    def _avg_sets(self, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None):
+    def _avg_sets(self, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None,
+                  hampel_didv=None, sgolay_didv=None):
         """
         The kept sweeps of the files that took part in the last run, one array
         (npts, n_kept) per file on the run's grid (brought there by the file's
@@ -1239,6 +1266,7 @@ class MultiAverageWindow:
             if mp is None or not kept:
                 continue
             sw = e['sweeps'] if use_controls else self._sweeps_of(e['file'], hampel, sgolay, use_controls=False,
+                                                                  hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
                                                                    calibrate=calibrate, normalize=normalize)
             sets.append((i, self._to_grid(sw[:, kept], mp)))
         return sets
@@ -1429,10 +1457,12 @@ class MultiAverageWindow:
         if switched:
             print("Send to fit: " + " and ".join(switched) + " switched on for the sent curves.")
         hp, sp = self.filters.params()
+        hd, sd = self.filters.params_didv()
         # The files taking part: those with a kept sweep (a file emptied by removals is as if never loaded).
         active = self._active()
         parts = [{'file': self.entries[i]['file'], 'cols': self.entries[i]['cols'][self._kept(i)]} for i in active]
-        data, _ = self._average_of(self._avg_sets(hp, sp, use_controls=False, calibrate=True, normalize=True))
+        data, _ = self._average_of(self._avg_sets(hp, sp, use_controls=False, calibrate=True, normalize=True,
+                                                  hampel_didv=hd, sgolay_didv=sd))
         data_unfiltered = self._unfiltered_average()
         describe = (f"{sweeps.shape[1]} sweeps from {len(active)} files "
                     + ", ".join(self.entries[i]['label'] for i in active)
@@ -1443,7 +1473,8 @@ class MultiAverageWindow:
         print(f"{self.tag}: record written: {self.save()}")
         an = send_sets_to_fit(self.label, self.average[0], data, data_unfiltered, parts, hp, sp,
                                  self.divide_iv, self.iv_width(), self.iv_zero_sub, self.resample,
-                                 self.fit_settings, self.cache_path(), self.tag, describe)
+                                 self.fit_settings, self.cache_path(), self.tag, describe,
+                                 hampel_didv=hd, sgolay_didv=sd)
         if an is not None:
             self._fits.append(an)
 

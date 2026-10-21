@@ -122,9 +122,10 @@ every filter off: for dI/dV spectra four panels, the dI/dV, the current, its I/V
 ratio; for a phase rotation the lock-in output against the phase with the fitted maximum and minimum
 and the set rotation; for a noise spectrum every channel against frequency. Unfinished sweeps are
 dashed. Under them: the Feenstra settings (`0Vsub`, `broadened`, `width (V)`), the filters box
-(`SG` with `window` and `polyorder`, `Hampel` with `window` and `nσ`, each toggle independent; the
-filters act on the recorded current only), and the `calibrate` / `normalize` box (both off at
-open). Then `< spectra` / `spectra >` and the `spectra` slider, which run over the spectra files
+(`SG` with `window` and `polyorder`, `Hampel` with `window` and `nσ`; each row has two toggles
+under `dI/dV` and `I(V)`, the filter on the spectra themselves and the filter on the recorded
+current, every toggle independent and the row's settings shared), and the `calibrate` /
+`normalize` box (both off at open). Then `< spectra` / `spectra >` and the `spectra` slider, which run over the spectra files
 only (`Ctrl+PgUp` / `Ctrl+PgDown` too), and `prev region` / `next region`, which go to the previous
 or next stop at another experiment region. The information panel lists the file's place, name,
 stamp, kind, site flag and region, the loaded count, and its measurement information (setpoint,
@@ -171,12 +172,17 @@ an average holds spectra alone and needs none. The timeline is kept in the setti
 
 Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this order:
 
-1. the filters on the recorded current I(V) alone (`filters.py`): Hampel (spikes), then
-   Savitzky-Golay (smoothing), each on or off on its own, every filter off by default; the lock-in
-   channel is never filtered;
-2. the calibration of the lock-in channel against that filtered current (`calibration.py`: a
-   gain-plus-offset regression per curve referenced at the sample nearest 0 V; `calibrate_iets`
-   for the second-harmonic channel);
+1. the filters (`filters.py`): Hampel (spikes), then Savitzky-Golay (smoothing), each with one
+   toggle for the lock-in channel's columns (`dI/dV`) and one for the recorded current I(V), the
+   same settings for both targets, every toggle off by default;
+2. the calibration of the lock-in channel against that current (`calibration.py`: a
+   gain-plus-offset regression per curve anchored at the setpoint, the sample at the setpoint bias
+   RHK_Bias whose current is the setpoint current RHK_Current, where the feedback loop was opened;
+   the relation is exact in V − V_bias, so no bias window and no sweep direction biases it and
+   nothing refers to 0 V; a pixel's reverse sweeps, which start at the far end, take the a and b
+   of its forward sweeps; a sweep without a sample at the setpoint bias, or a file without the
+   setpoint, is not calibrated, said once on the console; `calibrate_iets` for the
+   second-harmonic channel);
 3. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
    current (`feenstra.py`): Feenstra's normalized conductance (dI/dV)/(I/V), with `0Vsub` the
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
@@ -598,9 +604,11 @@ calibration, the Feenstra division and the normalization in that order on any se
 ### `filters.py`, `calibration.py`, `feenstra.py`, `normalization.py`
 
 The four pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
-current (`filter_lia` runs the two in order). `calibration.calibrate` fits each lock-in column to
-the derivative of its filtered current (`ColumnFit`: gain and offset, referenced at the sample
-nearest 0 V), `calibrate_iets` the second-harmonic channel. `feenstra.divide_by_iv` divides by the
+current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
+`calibration.calibrate` fits each lock-in column to the derivative of its filtered current
+(`ColumnFit`: gain and offset, anchored at the setpoint; `anchor_index` finds the sample at the
+setpoint bias and refuses a sweep without one; `ref` carries a reverse-sweep view's forward
+columns), `calibrate_iets` the second-harmonic channel. `feenstra.divide_by_iv` divides by the
 I/V (`iv_corrected` for the 0 V subtraction, `iv_broadened` for the exponential broadening),
 `feenstra_titles` names the four panels, `iv_zero_crossings` is the diagnostic, and
 `FeenstraWindow` is the companion window. `normalization.normalize` scales every curve to unit area
@@ -757,7 +765,8 @@ labels (I), the stores and the flags (J), the scale timeline (K), the section pa
 of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
 occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
 heatmap shear, the qtplot rules, the records helpers) and the layout (N: every spatial panel edge to
-edge around everything drawn; every row of panels at one height). The other
+edge around everything drawn; every row of panels at one height; the calibration anchored at the
+setpoint; the dI/dV filter toggles). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
 pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on

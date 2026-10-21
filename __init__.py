@@ -10,10 +10,11 @@ Modules
                  ('forward sweeps', 'reverse sweeps', 'all sweeps', 'sweep n') and their column choice
   sts            STS: dI/dV and IETS spectroscopy data and the pipeline driver (process_arrays)
   filters        the Hampel and Savitzky-Golay filters, applied by the pipeline to the recorded current
-                 once (the calibration and the Feenstra division both use that filtered current; the
-                 channel's columns are never filtered)
-  calibration    the calibration of dI/dV (and IETS) against the co-acquired I(V): the 0 V-referenced
-                 gain-plus-offset regression
+                 once (the calibration and the Feenstra division both use that filtered current) and to
+                 the channel's columns under their own toggles
+  calibration    the calibration of dI/dV (and IETS) against the co-acquired I(V): the gain-plus-offset
+                 regression anchored at the setpoint (the sample at the setpoint bias, whose current
+                 is the setpoint current)
   normalization  unit-area normalization (normalize, normalize_abs, over the whole axis or an energy range)
   feenstra       the Feenstra division (I/V broadening, 0 V subtraction) and the Feenstra companion window
   averaging      Averages (the averaging method and the registry), Selection, the resampling helpers,

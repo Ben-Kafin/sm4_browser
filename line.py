@@ -343,6 +343,9 @@ class Line:
         # --- Store bias / current setpoint from metadata ---
         self.V_bias = self.spectra.V_bias
         self.I_setpoint = self.spectra.I_setpoint
+        # A sweep view's forward-sweep reference (the calibration's `ref`, sliced like the chunk).
+        self._lia_ref_all = getattr(self.spectra, 'iets_ref' if self.channel == 'iets' else 'lia_ref', None)
+        self._iv_ref_all = getattr(self.spectra, 'iv_ref', None)
 
         # --- Chunk the LIA data (and I(V) in parallel) ---
         if self._user_scan_mode == 'single':
@@ -353,6 +356,7 @@ class Line:
                 self.chunk = self.LIAcurrent.copy()
                 self.iv_chunk = self.iv_raw.copy() if self.iv_raw is not None else None
                 self.kept = kept_all.copy()
+                self._ref_sl, self._ref_pairs = slice(None), False
             else:
                 if self.chunk_index < 0 or self.chunk_index >= n_chunks:
                     raise ValueError(f"chunk_index {self.chunk_index} out of range. Only {n_chunks} chunks available.")
@@ -360,6 +364,7 @@ class Line:
                 self.chunk = self.LIAcurrent[:, sl]
                 self.iv_chunk = self.iv_raw[:, sl] if self.iv_raw is not None else None
                 self.kept = kept_all[sl].copy()
+                self._ref_sl, self._ref_pairs = sl, False
             self.scan_mode = 'single'
         elif self._user_scan_mode == 'combined':
             expected_scans = 2 * size
@@ -373,6 +378,7 @@ class Line:
             iv_chunk_raw = self.iv_raw[:, sl] if self.iv_raw is not None else None
             kc = kept_all[sl]
             self.kept = kc[0::2] & kc[1::2]
+            self._ref_sl, self._ref_pairs = sl, True          # the reference averaged over the pair, as the line is
             if self.combine_scans:
                 self.chunk = (lia_chunk[:, 0::2] + lia_chunk[:, 1::2]) / 2.0
                 self.iv_chunk = ((iv_chunk_raw[:, 0::2] + iv_chunk_raw[:, 1::2]) / 2.0
@@ -402,14 +408,15 @@ class Line:
 
     def _pipeline(self, raw, iv, hampel_filter_params, sgolay_filter_params, apply_calibration,
                   divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False,
-                  norm_range=None):
+                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None):
         """
         The package's one pipeline (STS.process_arrays) on this line's
-        columns (npts, N), each step when switched on: the I(V) through the
-        Hampel and Savitzky-Golay filters once (the columns themselves are
-        never filtered), the calibration against that current
+        columns (npts, N), each step when switched on: the columns through
+        the dI/dV Hampel and Savitzky-Golay filters and the I(V) through the
+        I(V) ones, each once, the calibration against that current
         (calibration.calibrate for dI/dV, calibrate_iets for IETS: the
-        0 V-referenced gain-plus-offset regression), the
+        gain-plus-offset regression anchored at the file's setpoint; `ref`
+        the forward-sweep reference columns of a reverse-sweep view), the
         division by the broadened I/V of the same current (dI/dV only;
         iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
         value at 0 V, feenstra.iv_corrected), unit-area normalization (over
@@ -441,7 +448,10 @@ class Line:
                                            divide_iv, iv_broadening, return_areas=True, channel=self.channel,
                                            acquired=acquired, iv_zero_sub=iv_zero_sub,
                                            normalize=apply_normalize, calibrate=apply_calibration,
-                                           vmod=getattr(self, 'vmod', None), norm_range=norm_range)
+                                           vmod=getattr(self, 'vmod', None), norm_range=norm_range,
+                                           V_bias=getattr(self, 'V_bias', None),
+                                           I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
+                                           hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)
         curves[:, ~acquired] = np.nan
@@ -469,7 +479,7 @@ class Line:
     # ------------------------------------------------------------------ #
 
     def _int_load_source(self):
-        """The raw LIA and I(V) columns of the displayed line (the pipeline's input) from the current slicing."""
+        """The raw LIA and I(V) columns of the displayed line (the pipeline's input) from the current slicing, and the calibration's forward-sweep reference sliced the same way (None when the columns are their own reference)."""
         if self.scan_mode in ['single', 'combined']:
             self._int_raw = self.chunk.copy()
             self._int_iv = self.iv_chunk
@@ -479,6 +489,13 @@ class Line:
                             if self.iv_forward is not None and self.iv_backward is not None else None)
         else:
             raise ValueError("Unknown scan mode.")
+        self._int_ref = None
+        la, ia = getattr(self, '_lia_ref_all', None), getattr(self, '_iv_ref_all', None)
+        if la is not None and ia is not None:
+            la, ia = la[:, self._ref_sl], ia[:, self._ref_sl]
+            if self._ref_pairs:
+                la, ia = (la[:, 0::2] + la[:, 1::2]) / 2.0, (ia[:, 0::2] + ia[:, 1::2]) / 2.0
+            self._int_ref = (la, ia)
 
     def _int_orient(self, c):
         """Columns (npts, N) of the line oriented like the heatmap (row j = spectrum j at self.pos[j], energy ascending)."""
@@ -487,14 +504,14 @@ class Line:
             c = c[:, ::-1]
         return c
 
-    def _int_pipeline(self, hampel_filter_params, sgolay_filter_params):
+    def _int_pipeline(self, hampel_filter_params, sgolay_filter_params, hampel_didv=None, sgolay_didv=None):
         """
-        The displayed line's curves for given filter settings (None = off):
-        the pipeline (_pipeline) with the window's calibrate / normalize
-        flags, the division when the window's 'Feenstra' toggle is on, and
-        the Feenstra settings, the normalization over the energy crop's
-        range, oriented like the heatmap.  Returns an
-        (n_positions, n_energies) array.
+        The displayed line's curves for given filter settings (None = off;
+        the I(V) pair, then the dI/dV pair): the pipeline (_pipeline) with
+        the window's calibrate / normalize flags, the division when the
+        window's 'Feenstra' toggle is on, and the Feenstra settings, the
+        normalization over the energy crop's range, oriented like the
+        heatmap.  Returns an (n_positions, n_energies) array.
         """
         curves = self._pipeline(self._int_raw, self._int_iv, hampel_filter_params, sgolay_filter_params,
                                 self._int_apply_calibration, self._int_divide_iv, self._int_iv_width(),
@@ -560,7 +577,7 @@ class Line:
         cannot be processed (nothing changed).
         """
         try:
-            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params)
+            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
         except Exception as exc:
             print(f"{note} not applied: {exc}")
             return False
@@ -1298,7 +1315,7 @@ class Line:
             self.chunk_index = new
             self.extract_data()
             self._int_load_source()
-            self._int_curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params)
+            self._int_curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
         except Exception as exc:
             print(f"Line '{text}' not applied: {exc}")
             self.chunk_index = old
@@ -1355,13 +1372,16 @@ class Line:
     def _int_on_filter_change(self):
         """A filter toggle or edit: recompute the heatmap and the marker curves."""
         hp, sp = self._int_filters.params()
+        hd, sd = self._int_filters.params_didv()
         try:
-            curves = self._int_pipeline(hp, sp)
+            curves = self._int_pipeline(hp, sp, hd, sd)
         except Exception as exc:
             print(f"Filter controls: settings not applied ({exc}).")
             return
         self._int_hampel_params = hp
         self._int_sgolay_params = sp
+        self._int_hampel_didv = hd
+        self._int_sgolay_didv = sd
         self._int_curves = curves
         self._int_draw_heatmap()
         self._redraw_curves()
@@ -1389,7 +1409,7 @@ class Line:
             self.channel = channel
             self.extract_data()
             self._int_load_source()
-            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params)
+            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
         except Exception as exc:
             print(f"channel {label} not applied: {exc}")
             self.channel = old
@@ -1822,7 +1842,9 @@ class Line:
         return {k: dict(v) for k, v in versions.items()}, q
 
     def _int_feenstra_versions_compute(self, calibrate, normalize, hp, sp, raw, iv):
-        """The four versions of _int_feenstra_versions, computed (every normalization over the window's energy crop)."""
+        """The four versions of _int_feenstra_versions, computed (every normalization over the window's energy crop; the window's dI/dV filters and the forward-sweep reference as the heatmap's)."""
+        hd, sd = getattr(self, '_int_hampel_didv', None), getattr(self, '_int_sgolay_didv', None)
+        ref = getattr(self, '_int_ref', None)
         q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
         nn = "" if normalize else ", not normalized"
         zs, width = self._int_iv_zero_sub, self._int_iv_width()
@@ -1835,7 +1857,8 @@ class Line:
             'ratio': {'title': t['ratio'] + f" (division on){nn}", 'ylabel': "(dI/dV)/(I/V) (arb. units)"},
         }
         versions['didv']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize,
-                                                                  norm_range=self._int_e_range))
+                                                                  norm_range=self._int_e_range, hampel_didv=hd,
+                                                                  sgolay_didv=sd, ref=ref))
         if iv is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
@@ -1857,7 +1880,8 @@ class Line:
             else:
                 versions['ratio']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, True, width,
                                                                            normalize, iv_zero_sub=zs,
-                                                                           norm_range=self._int_e_range))
+                                                                           norm_range=self._int_e_range,
+                                                                           hampel_didv=hd, sgolay_didv=sd, ref=ref))
         return versions, q
 
     def feenstra_view(self, calibrate=True, normalize=True):
@@ -2103,7 +2127,7 @@ class Line:
             self.spectra = self.spectra_all.sweep_view(label)
             self.extract_data()
             self._int_load_source()
-            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params)
+            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
         except Exception as exc:
             print(f"sweeps {label} not applied: {exc}")
             self.sweep_mode = old
@@ -2327,6 +2351,7 @@ class Line:
         """
         hp, sp = self._int_filters.values()
         h_on, s_on = self._int_filters.states()
+        hd_on, sd_on = self._int_filters.states_didv()
         return {'format': records.LINE_RECORD_FORMAT,
                 'path': os.path.abspath(self.ifile),
                 'name': os.path.basename(self.ifile),
@@ -2336,6 +2361,7 @@ class Line:
                 'sweeps': self.sweep_mode,
                 'hampel': hp, 'sgolay': sp,
                 'hampel_on': bool(h_on), 'sgolay_on': bool(s_on),
+                'hampel_didv_on': bool(hd_on), 'sgolay_didv_on': bool(sd_on),
                 'calibrate': bool(self._int_apply_calibration),
                 'normalize': bool(self._int_apply_normalize),
                 'divide_iv': bool(self._int_divide_iv),
@@ -2383,14 +2409,17 @@ class Line:
         """
         hp, sp = rec.get('hampel'), rec.get('sgolay')
         try:
-            self._int_filters.set_params(hp if rec.get('hampel_on') else None, sp if rec.get('sgolay_on') else None)
-            if hp is not None and not rec.get('hampel_on'):
+            self._int_filters.set_params(hp if rec.get('hampel_on') else None, sp if rec.get('sgolay_on') else None,
+                                         hp if rec.get('hampel_didv_on') else None,
+                                         sp if rec.get('sgolay_didv_on') else None)
+            if hp is not None and not (rec.get('hampel_on') or rec.get('hampel_didv_on')):
                 self._int_filters._hp.update(hp)
-            if sp is not None and not rec.get('sgolay_on'):
+            if sp is not None and not (rec.get('sgolay_on') or rec.get('sgolay_didv_on')):
                 self._int_filters._sp.update(sp)
             self._int_box_hampel = dict(self._int_filters.values()[0])
             self._int_box_sgolay = dict(self._int_filters.values()[1])
             self._int_hampel_params, self._int_sgolay_params = self._int_filters.params()
+            self._int_hampel_didv, self._int_sgolay_didv = self._int_filters.params_didv()
         except Exception as exc:
             print(f"restore markers: filter settings not applied ({exc}).")
         self._int_iv_zero_sub = bool(rec.get('iv_zero_sub', self._int_iv_zero_sub))
@@ -2527,18 +2556,24 @@ class Line:
             raise ValueError("no I(V) current channel in this file; calibration is required.")
 
         hp, sp = self._int_hampel_params, self._int_sgolay_params
+        hd, sd = self._int_hampel_didv, self._int_sgolay_didv
+        ref = getattr(self, '_int_ref', None)
 
-        # As displayed, with calibration and normalization forced on: the I(V) through the filters once,
-        # the calibration against that current, (the division by its broadened I/V), the normalization.
+        # As displayed, with calibration and normalization forced on: the columns through the dI/dV
+        # filters and the I(V) through the I(V) ones, once; the calibration against that current (the
+        # forward-sweep reference as the heatmap's), (the division by its broadened I/V), the normalization.
         div = self._int_divide_iv
         quantity = 'ratio' if div else 'didv'
         width, zs = self._int_iv_width(), self._int_iv_zero_sub
         cf, norm_areas = self._pipeline(raw, iv, hp, sp, True, div, width, True, return_areas=True, iv_zero_sub=zs,
-                                        norm_range=self._int_e_range)
+                                        norm_range=self._int_e_range, hampel_didv=hd, sgolay_didv=sd, ref=ref)
         areas_f = np.array(norm_areas)                       # per column, amps (ratio: arb. units x V)
         # The same with every filter off (the 'unfiltered' curve of the record).
         cu = self._pipeline(raw.copy(), iv, None, None, True, div, width, True, iv_zero_sub=zs,
-                            norm_range=self._int_e_range)
+                            norm_range=self._int_e_range, ref=ref)
+
+        def refs_of(cols):
+            return None if ref is None else (ref[0][:, cols], ref[1][:, cols])
         suffix = " over I/V" if div else ""                       # separate fit histories for the ratio
 
         # Orient like the display: rows follow self.pos, energy ascending.
@@ -2582,7 +2617,7 @@ class Line:
                 label = (f"{self.ifile} | average of {len(cols)} markers at "
                          + ", ".join(f"{p:.1f}" for p in positions) + " A" + suffix)
                 sends.append((data, unf, areas_f[cols], delta_I_cols[cols], label,
-                              raw[:, cols], iv[:, cols], 'average'))
+                              raw[:, cols], iv[:, cols], 'average', refs_of(cols)))
         else:
             for pos_val in self._int_marker_pos:
                 j = self._int_col_of(pos_val)
@@ -2595,14 +2630,14 @@ class Line:
                 unf = cu_rows[r, :]           # same position, every filter off
                 sends.append((data, unf, areas_f[[j]], delta_I_cols[[j]],
                               f"{self.ifile} | marker at {pos_val:.1f} A" + suffix,
-                              raw[:, [j]], iv[:, [j]], 'column'))
+                              raw[:, [j]], iv[:, [j]], 'column', refs_of([j])))
 
         # Fit history cache per sent curve, as in the fit module's __main__: with use_cache on and an
         # up-to-date <file stamp>_<cleaned marker text>_fits.pkl (Fit._stem_of of the label; the newest
         # of its family) present in this file's folder, the figure opens from it; otherwise a fresh
         # model selection runs and writes the cache.
         use_cache = settings.pop('use_cache', True)
-        for data, data_unfiltered, areas, delta_I, label, lia_raw, iv_raw, stage in sends:
+        for data, data_unfiltered, areas, delta_I, label, lia_raw, iv_raw, stage, rf in sends:
             print("\n" + "=" * 70)
             if use_cache and fit.Fit.has_cache(label):
                 an = fit.Fit.from_cache(fit.Fit.cache_path(label))
@@ -2610,8 +2645,10 @@ class Line:
                 an = fit.Fit.from_curve(V, data, data_unfiltered, self.V_bias, self.I_setpoint,
                                         areas, label,
                                         hampel_filter_params=hp, sgolay_filter_params=sp,
+                                        hampel_didv_params=hd, sgolay_didv_params=sd,
                                         delta_I_window_A=delta_I,
                                         lia_raw=lia_raw, iv_raw=iv_raw,
+                                        lia_ref=None if rf is None else rf[0], iv_ref=None if rf is None else rf[1],
                                         units_lia=self.units_lia, units_iv=self.units_iv, vmod=self.vmod,
                                         energy_raw=self.energy,
                                         filter_stage=stage,
@@ -2942,9 +2979,9 @@ class Line:
         window.  The Savitzky-Golay and Hampel filters are in-window controls
         (widgets.FilterControls): every filter starts off, each switchable on
         its own, their boxes at hampel_filter_params / sgolay_filter_params
-        (or the control defaults when None); they act on the current alone
-        (Hampel, SG in that order; the channel's columns are never
-        filtered): the calibration regresses against the filtered current
+        (or the control defaults when None); each row has a toggle for the
+        current and one for the channel's columns (Hampel, SG in that
+        order; every toggle off at open): the calibration regresses against the filtered current
         and the Feenstra division divides by its broadened I/V (after the
         0 V subtraction), so with the calibration and the division both
         off they change nothing; every toggle or edit recomputes the
@@ -3073,9 +3110,11 @@ class Line:
                                 else dict(widgets.FilterControls.SGOLAY_DEFAULT))
         self._int_hampel_params = None
         self._int_sgolay_params = None
+        self._int_hampel_didv = None          # the dI/dV toggles' settings (None = off), as the two above
+        self._int_sgolay_didv = None
 
         # --- The curves (the pipeline of _int_pipeline with the starting settings) ---
-        self._int_curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params)
+        self._int_curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
         e_left = min(self.energy[0], self.energy[-1])
         e_right = max(self.energy[0], self.energy[-1])
         self._int_energy = np.linspace(e_left, e_right, self._int_curves.shape[1])

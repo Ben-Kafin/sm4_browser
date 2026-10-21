@@ -456,7 +456,7 @@ class LineAverage(Line):
         r = int(j)                                             # row j = common position j
         return bool(0 <= r < self._int_curves.shape[0] and np.any(np.isfinite(self._int_curves[r, :])))
 
-    def _int_pipeline(self, hampel_filter_params, sgolay_filter_params):
+    def _int_pipeline(self, hampel_filter_params, sgolay_filter_params, hampel_didv=None, sgolay_didv=None):
         """
         Before a run: the main member's own line through the pipeline (the
         display's source).  After a run the average stands until the next
@@ -465,7 +465,8 @@ class LineAverage(Line):
         if self.run_state is None:
             return self._int_orient(self._member_columns(self.members[self.reference], self._int_divide_iv,
                                                          self._int_apply_calibration, self._int_apply_normalize,
-                                                         hampel_filter_params, sgolay_filter_params))
+                                                         hampel_filter_params, sgolay_filter_params,
+                                                         hampel_didv=hampel_didv, sgolay_didv=sgolay_didv))
         return self._int_curves
 
     def _int_apply_feenstra(self, note):
@@ -483,6 +484,7 @@ class LineAverage(Line):
         """A filter toggle or edit: the settings kept; before a run the display recomputed, after one run needed."""
         hp, sp = self._int_filters.params()
         self._int_hampel_params, self._int_sgolay_params = hp, sp
+        self._int_hampel_didv, self._int_sgolay_didv = self._int_filters.params_didv()
         self._int_apply_feenstra("filters")
 
     def _int_on_channel(self, label):
@@ -512,10 +514,13 @@ class LineAverage(Line):
 
     # --- the pipeline per member ---
 
-    def _member_columns(self, m, divide_iv, calibrate, normalize, hampel, sgolay, channel=None):
-        """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings, the window's Feenstra settings, the channel, and the normalization over the window's energy crop; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
+    def _member_columns(self, m, divide_iv, calibrate, normalize, hampel, sgolay, channel=None,
+                        hampel_didv=None, sgolay_didv=None):
+        """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings (the I(V) pair, then the dI/dV pair; the window's dI/dV settings when the latter are not given), the member's setpoint and forward-sweep reference, the window's Feenstra settings, the channel, and the normalization over the window's energy crop; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
         sel = m['selection']
         channel = self.channel if channel is None else channel
+        if hampel_didv is None and sgolay_didv is None:
+            hampel_didv, sgolay_didv = getattr(self, '_int_hampel_didv', None), getattr(self, '_int_sgolay_didv', None)
         raw = np.asarray(sel.spectra.channel(channel), dtype=np.float64)
         acquired = np.asarray(sel.acquired, dtype=bool)
         if not acquired.any():
@@ -524,10 +529,13 @@ class LineAverage(Line):
             raise ValueError(f"{m['name']}: no I(V) current channel; the calibration cannot be applied.")
         if divide_iv and channel != 'iets' and sel.iv is None:
             raise ValueError(f"{m['name']}: no I(V) current channel; the division cannot be applied.")
+        ref = (getattr(sel.spectra, 'iets_ref' if channel == 'iets' else 'lia_ref', None),
+               getattr(sel.spectra, 'iv_ref', None))
         c = STS.process_arrays(sel.energy, raw, sel.iv, hampel, sgolay, divide_iv, self._int_iv_width(),
                                channel=channel, acquired=acquired, iv_zero_sub=self._int_iv_zero_sub,
                                normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
-                               norm_range=self._int_e_range)
+                               norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
+                               ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
         c = np.array(c, dtype=np.float64)
         c[:, ~acquired] = np.nan
         return c
@@ -674,6 +682,7 @@ class LineAverage(Line):
         """
         hp, sp = self._int_filters.params()
         self._int_hampel_params, self._int_sgolay_params = hp, sp
+        self._int_hampel_didv, self._int_sgolay_didv = self._int_filters.params_didv()
         try:
             grid_e = self._align(hp, sp)
             positions = [np.asarray(m['pos'], dtype=np.float64) for m in self.members]
@@ -891,7 +900,8 @@ class LineAverage(Line):
         div = self._int_divide_iv
         state = self.run_state
         cf = self._average_of([self._member_columns(m, div, True, True, hp, sp) for m in self.members], state)
-        cu = self._average_of([self._member_columns(m, div, True, True, None, None) for m in self.members], state)
+        cu = self._average_of([self._member_columns(m, div, True, True, None, None, hampel_didv=None, sgolay_didv=None)
+                               for m in self.members], state)
         cf_rows, cu_rows = cf.T, cu.T                          # row j = common position j
         suffix = " over I/V" if div else ""
         groups = self._int_groups() if self._int_avg_on else [[i] for i in range(len(self._int_marker_pos))]
@@ -955,6 +965,7 @@ class LineAverage(Line):
         """
         hp, sp = self._int_filters.values()
         h_on, s_on = self._int_filters.states()
+        hd_on, sd_on = self._int_filters.states_didv()
         members = [{'path': os.path.abspath(m['path']), 'name': m['name'], 'line': int(m['line']),
                     'topo_lines': [[int(r), md] for r, md in m['topo_lines']],
                     'markers': [float(p) for p in m.get('markers', [])],
@@ -977,6 +988,7 @@ class LineAverage(Line):
                 'pos_range': None if self._int_x_range is None else [float(v) for v in self._int_x_range],
                 'hampel': hp, 'sgolay': sp,
                 'hampel_on': bool(h_on), 'sgolay_on': bool(s_on),
+                'hampel_didv_on': bool(hd_on), 'sgolay_didv_on': bool(sd_on),
                 'calibrate': bool(self._int_apply_calibration),
                 'normalize': bool(self._int_apply_normalize),
                 'divide_iv': bool(self._int_divide_iv),

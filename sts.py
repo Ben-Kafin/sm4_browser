@@ -92,16 +92,19 @@ class STS:
     and are never drawn; their positions are still recorded.  The pipeline
     keeps a zero column in their place.
 
-    The pipeline (process / process_arrays): the recorded current through
-    the Hampel and Savitzky-Golay filters once (filters; the channel's
-    columns are never filtered), calibration against that current
-    (calibration.calibrate / calibrate_iets: the 0 V-referenced
-    gain-plus-offset regression of calibration.py), the division by the broadened
-    I/V of the same current when divide_iv is on (feenstra; dI/dV only),
-    and unit-area normalization (normalization).  Every step takes plain
-    arrays, so the Line window (one chunk), the fit (its raw sets), the
-    Map, and the averaging windows (their files) use the same code;
-    calibration and normalization are each switchable.
+    The pipeline (process / process_arrays): the channel's columns through
+    the dI/dV Hampel and Savitzky-Golay filters and the recorded current
+    through the I(V) ones, each pair once (filters; the two targets have
+    their own toggles, the same settings), calibration against that
+    current (calibration.calibrate / calibrate_iets: the gain-plus-offset
+    regression of calibration.py anchored at the setpoint; a view of
+    reverse sweeps regresses on the pixel's forward sweeps, lia_ref /
+    iv_ref), the division by the broadened I/V of the same current when
+    divide_iv is on (feenstra; dI/dV only), and unit-area normalization
+    (normalization).  Every step takes plain arrays, so the Line window
+    (one chunk), the fit (its raw sets), the Map, and the averaging windows
+    (their files) use the same code; calibration and normalization are
+    each switchable.
     """
 
     DIDV_LABELS = ('liacurrent', 'lia', 'didv')     # normalized label equal to one of these
@@ -405,6 +408,22 @@ class STS:
         s.view_mode = mode
         s.view_cols = chosen
         s.parent = self
+        # The calibration's reference (calibration.calibrate's `ref`) for a view that is not the
+        # forward one: per pixel the mean raw columns of its kept forward sweeps, the sweeps that left
+        # the setpoint; NaN for a pixel without one.  The forward view regresses on its own columns.
+        s.lia_ref = s.iets_ref = s.iv_ref = None
+        if mode != sw_mod.FORWARD:
+            fwd = sw_mod.chosen_columns(info, sw_mod.FORWARD)
+            for attr in ('lia', 'iets', 'iv'):
+                a = getattr(self, attr)
+                if a is None:
+                    continue
+                out = np.full((npts, n_pix), np.nan)
+                for p, c in enumerate(fwd):
+                    kc = c[self.acquired[c]] if len(c) else c
+                    if len(kc):
+                        out[:, p] = a[:, kc].mean(axis=1)
+                setattr(s, attr + '_ref', out)
         return s
 
     @classmethod
@@ -503,6 +522,7 @@ class STS:
                 self.iv_dropped = iv.shape
         # The modulation amplitude (V) and the recorded grid size, None when not recorded.
         self.vmod = cls._float_attr(ref.attrs, 'RHK_CH1Drive_Amplitude')
+        self.lia_ref = self.iets_ref = self.iv_ref = None     # a sweep view's forward-sweep reference (sweep_view)
         self.grid_x = cls._int_attr(ref.attrs, 'RHK_GridXsize')
         self.grid_y = cls._int_attr(ref.attrs, 'RHK_GridYsize')
         self.V_bias = float(ref.attrs['RHK_Bias'])
@@ -667,11 +687,15 @@ class STS:
         return cls.from_pages(f.pages, page_type, name=os.path.basename(path))
 
     @staticmethod
-    def from_arrays(energy, lia, iv, units_lia=None, units_iv=None, vmod=None):
+    def from_arrays(energy, lia, iv, units_lia=None, units_iv=None, vmod=None, V_bias=None, I_setpoint=None,
+                    lia_ref=None, iv_ref=None):
         """
         A raw set dict: energy (npts,), lia and iv (npts, n) in physical units
         (the loader's data), the units of each (RHK_Zunits; None when not
-        known), and the modulation amplitude vmod (V; None when not recorded).
+        known), the modulation amplitude vmod (V; None when not recorded),
+        the setpoint V_bias (V) and I_setpoint (A) the calibration anchors
+        at, and the forward-sweep reference columns lia_ref / iv_ref (npts,
+        n; None when the columns are their own reference).
         """
         energy = np.asarray(energy, dtype=np.float64)
         lia = np.asarray(lia, dtype=np.float64)
@@ -683,7 +707,11 @@ class STS:
         if lia.shape != iv.shape or lia.shape[0] != len(energy):
             raise ValueError(f"raw set: lia {lia.shape}, iv {iv.shape} and energy ({len(energy)}) must agree.")
         return {'energy': energy, 'lia': lia, 'iv': iv, 'units_lia': units_lia, 'units_iv': units_iv,
-                'vmod': None if vmod is None else float(vmod)}
+                'vmod': None if vmod is None else float(vmod),
+                'V_bias': None if V_bias is None else float(V_bias),
+                'I_setpoint': None if I_setpoint is None else float(I_setpoint),
+                'lia_ref': None if lia_ref is None else np.asarray(lia_ref, dtype=np.float64),
+                'iv_ref': None if iv_ref is None else np.asarray(iv_ref, dtype=np.float64)}
 
     def unset_value(self, name):
         """
@@ -727,6 +755,9 @@ class STS:
         s.lia = None if self.lia is None else self.lia[:, cols].copy()
         s.iets = None if self.iets is None else self.iets[:, cols].copy()
         s.iv = None if self.iv is None else self.iv[:, cols].copy()
+        for attr in ('lia_ref', 'iets_ref', 'iv_ref'):           # the forward-sweep reference, the same columns
+            a = getattr(self, attr, None)
+            setattr(s, attr, None if a is None else a[:, cols].copy())
         s.zscale_iv = self.zscale_iv
         s.zoffset_iv = getattr(self, 'zoffset_iv', None)
         s.zoffset_lia = getattr(self, 'zoffset_lia', None)
@@ -760,18 +791,32 @@ class STS:
 
     # --- the pipeline (the steps live in filters, calibration, feenstra, normalization) ---
 
+    _notes_said = set()        # the console lines of a refused calibration, each said once
+
+    @classmethod
+    def _note_once(cls, text):
+        if text not in cls._notes_said:
+            cls._notes_said.add(text)
+            print(text)
+
     @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
-                       calibrate=True, vmod=None, norm_range=None):
+                       calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
+                       hampel_didv=None, sgolay_didv=None):
         """
-        Per column: the recorded current through the Hampel and
-        Savitzky-Golay filters once (hampel, sgolay: the windows' settings,
-        None = off; filters.filter_lia; the channel's columns are never
-        filtered), calibration of the channel's columns against that
-        current (when present and `calibrate` is on; calibration.calibrate
-        for dI/dV, calibrate_iets for IETS; off, the columns stay in the
-        channel page's units), the division by the broadened I/V of the same current when
+        Per column: the channel's columns through the dI/dV Hampel and
+        Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
+        the recorded current through the I(V) ones (hampel, sgolay), each
+        once (filters.filter_lia), calibration of the channel's columns
+        against that current (when present and `calibrate` is on;
+        calibration.calibrate for dI/dV, calibrate_iets for IETS, anchored
+        at the setpoint V_bias / I_setpoint; `ref` = (lia_ref, iv_ref) the
+        forward-sweep reference columns of a reverse-sweep view, through
+        the same filters; off, the columns stay in the channel page's
+        units; a file without a sample at its setpoint bias, or without the
+        setpoint, is not calibrated: calibration.anchor_index, said once on
+        the console), the division by the broadened I/V of the same current when
         divide_iv is on (dI/dV only; needs I(V); iv_broadening is the
         broadening width in volts, 0 the plain I/V; iv_zero_sub subtracts
         each column's current at 0 V before I/V is formed, see
@@ -796,17 +841,24 @@ class STS:
         # The division runs on the array's full width (a never-acquired column holds its page's offset),
         # because its matrix products give the last bits of a column differently for another
         # width; only the regression, column by column, leaves the never-acquired columns out.
-        c = lia.copy()
+        # The channel's columns through the dI/dV filters once (a plain copy when both are off).
+        c = filters.filter_lia(lia, hampel_didv, sgolay_didv)
         if iv is not None:
-            # The recorded current through the filters once (a copy when both are off): the
+            # The recorded current through the I(V) filters once (a copy when both are off): the
             # calibration and the division both work on this current.
             iv = filters.filter_lia(np.asarray(iv, dtype=np.float64), hampel, sgolay)
         if calibrate and iv is not None:
-            if channel == 'iets':
-                cal, _ = calibration.calibrate_iets(energy, c[:, cols], iv[:, cols], vmod)
-            else:
-                cal, _ = calibration.calibrate(energy, c[:, cols], iv[:, cols], vmod)
-            c[:, cols] = cal
+            ref_f = None
+            if ref is not None and ref[0] is not None and ref[1] is not None:
+                # The reference columns through the same filters as the columns they stand for.
+                ref_f = (filters.filter_lia(np.asarray(ref[0], dtype=np.float64), hampel_didv, sgolay_didv)[:, cols],
+                         filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
+            fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
+            try:
+                cal, _ = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f)
+                c[:, cols] = cal
+            except ValueError as exc:
+                cls._note_once(f"calibration not applied: {exc}")
         if divide_iv and channel != 'iets':
             if iv is None:
                 raise ValueError("Feenstra needs the 'Current' channel, which this file does not have.")
@@ -822,12 +874,16 @@ class STS:
         return (c, areas) if return_areas else c
 
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
-                return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True):
-        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays)."""
+                return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,
+                hampel_didv=None, sgolay_didv=None):
+        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint and a sweep view's forward reference from the file)."""
+        ref = (getattr(self, 'iets_ref' if channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
         return self.process_arrays(self.energy, self.channel(channel), self.iv, hampel, sgolay, divide_iv,
                                    iv_broadening, return_areas=return_areas, channel=channel,
                                    acquired=self.acquired, iv_zero_sub=iv_zero_sub, normalize=normalize,
-                                   calibrate=calibrate, vmod=getattr(self, 'vmod', None))
+                                   calibrate=calibrate, vmod=getattr(self, 'vmod', None),
+                                   V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None),
+                                   ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
 
 
 if __name__ == '__main__':

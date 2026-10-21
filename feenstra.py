@@ -15,7 +15,7 @@ and calls divide_by_iv with the filters off, so the calibration and the
 division use the same filtered current; the Feenstra windows' current and
 I/V panels, and the __main__ demonstrations, call iv_corrected /
 iv_broadened with the windows' filter settings and filter here.  The
-dI/dV columns are never filtered.  The method follows Feenstra's
+dI/dV columns have their own filter toggles in the pipeline.  The method follows Feenstra's
 normalization (the code names no citation; see the README).
 """
 
@@ -111,7 +111,7 @@ def divide_by_iv(energy, curves, iv, broadening=0.0, zero_sub=False, hampel=None
     divided point by point by the same column's broadened I/V, a
     dimensionless ratio.  I(V) is taken as recorded, through the Hampel
     and Savitzky-Golay filters when their settings are given (hampel,
-    sgolay; the dI/dV columns are never filtered) and, with zero_sub, with
+    sgolay; the dI/dV columns have their own filters in the pipeline) and, with zero_sub, with
     its own value at 0 V subtracted first (iv_corrected, a vertical shift
     of the current only; the bias axis is never touched), V =
     energy in volts, and the broadened denominator at V_i is the
@@ -620,7 +620,9 @@ if __name__ == '__main__':
     path = r'experiment_dir/file.sm4'
     f = sm4file.Sm4File(path)
     cols = np.flatnonzero(f.acquired)
-    cal, _ = calibration.calibrate(f.energy, f.lia[:, cols], f.iv[:, cols], f.vmod)
+    ref = None if f.lia_ref is None or f.iv_ref is None else (f.lia_ref[:, cols], f.iv_ref[:, cols])
+    cal, _ = calibration.calibrate(f.energy, f.lia[:, cols], f.iv[:, cols], f.vmod, V_bias=f.V_bias,
+                                   I_setpoint=f.I_setpoint, ref=ref)
     for broadening, zero_sub in ((0.0, True), (0.2, True), (0.0, False)):
         r = divide_by_iv(f.energy, cal, f.iv[:, cols], broadening, zero_sub)
         t = feenstra_titles(zero_sub, broadening > 0, broadening, energy_has_zero(f.energy))['ratio']

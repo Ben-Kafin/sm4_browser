@@ -288,7 +288,7 @@ IETS by the 'channel' choice of the browser and of the windows) are never
 filtered.
 Order per curve (STS.process_arrays): calibration against the filtered
 I(V) (calibration.calibrate for dI/dV, calibration.calibrate_iets for
-IETS: the 0 V-referenced gain-plus-offset regression); the division by the
+IETS: the gain-plus-offset regression anchored at the setpoint); the division by the
 filtered, broadened I/V when the window's 'Feenstra' toggle is on (on by
 default; the browser has no toggle: its spectra panels always show the
 Feenstra set; Feenstra's normalized conductance: each calibrated dI/dV
@@ -1579,10 +1579,13 @@ class _BrowserCore:
             channel = self.channel if self.channel in f.channels() else f.channels()[0]
             zs, width = self.iv_zero_sub, self.iv_width()
             hp, sp = self.filters.params()
+            hd, sd = self.filters.params_didv()
             cal, norm = self.pipeline.calibrate, self.pipeline.normalize
             try:
-                c = f.curves(hp, sp, False, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal)
-                c_ratio = (f.curves(hp, sp, True, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal)
+                c = f.curves(hp, sp, False, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal,
+                             hampel_didv=hd, sgolay_didv=sd)
+                c_ratio = (f.curves(hp, sp, True, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal,
+                                    hampel_didv=hd, sgolay_didv=sd)
                            if four else None)
             except Exception as exc:
                 ax.text(0.5, 0.5, f"spectra not processed: {exc}", ha='center', va='center',
@@ -1595,7 +1598,7 @@ class _BrowserCore:
                 # dashed, through the same pipeline (sweeps.py); the other panels show the default view.
                 try:
                     ca = f.spectra_all.process(channel, hp, sp, False, width, iv_zero_sub=zs, normalize=norm,
-                                               calibrate=cal and f.iv is not None)
+                                               calibrate=cal and f.iv is not None, hampel_didv=hd, sgolay_didv=sd)
                     keep = np.asarray(f.spectra_all.acquired, dtype=bool)
                     dirs = f.sweep_info['dir']
                     for sgn, ls in ((1, '-'), (-1, '--')):
@@ -1609,7 +1612,7 @@ class _BrowserCore:
                 ax.plot(V, c[order, :][:, f.acquired], lw=0.5, alpha=0.6)
             # Sweeps stopped before their end (left out of every average and fit) are shown here too,
             # dashed, over the points they recorded, through the same pipeline.
-            unf = self._unfinished_curves(f, channel, hp, sp, width, zs, norm, cal, four)
+            unf = self._unfinished_curves(f, channel, hp, sp, width, zs, norm, cal, four, hd, sd)
             for key, a in (('main', ax), ('ratio', self.ax_spec_ratio), ('iv', self.ax_spec_iv),
                            ('ivv', self.ax_spec_ivv)):
                 if key != 'main' and not four:
@@ -1672,7 +1675,7 @@ class _BrowserCore:
             ax.set_xticks([])
             ax.set_yticks([])
 
-    def _unfinished_curves(self, f, channel, hp, sp, width, zs, norm, cal, four):
+    def _unfinished_curves(self, f, channel, hp, sp, width, zs, norm, cal, four, hd=None, sd=None):
         """
         The sweeps of the file stopped before their end (written, but ending in never-written
         samples, so not kept): each through the same pipeline as the kept ones over the points
@@ -1699,12 +1702,15 @@ class _BrowserCore:
             lia = cols[:p, j:j + 1]
             iv = f.iv[:p, j:j + 1] if f.iv is not None else None
             try:
+                setpoint = dict(V_bias=getattr(sp_, 'V_bias', None), I_setpoint=getattr(sp_, 'I_setpoint', None))
                 c = STS.process_arrays(e, lia, iv, hp, sp, False, width, channel=channel, iv_zero_sub=zs,
-                                       normalize=norm, calibrate=cal and iv is not None, vmod=getattr(sp_, 'vmod', None))
+                                       normalize=norm, calibrate=cal and iv is not None, vmod=getattr(sp_, 'vmod', None),
+                                       hampel_didv=hd, sgolay_didv=sd, **setpoint)
                 out['main'].append((e[o], c[o, 0]))
                 if four and iv is not None:
                     r = STS.process_arrays(e, lia, iv, hp, sp, True, width, channel=channel, iv_zero_sub=zs,
-                                           normalize=norm, calibrate=cal, vmod=getattr(sp_, 'vmod', None))
+                                           normalize=norm, calibrate=cal, vmod=getattr(sp_, 'vmod', None),
+                                           hampel_didv=hd, sgolay_didv=sd, **setpoint)
                     out['ratio'].append((e[o], r[o, 0]))
                     a = iv_corrected(e, iv, zs, hp, sp)
                     b = iv_broadened(e, iv, width, zs, hp, sp)
@@ -1808,10 +1814,8 @@ class _BrowserCore:
         self._draw_all()
 
     def _on_filter_change(self):
-        """A Hampel / Savitzky-Golay toggle or edit: the spectra panels redrawn (the filters act on the division's current)."""
-        hp, sp = self.filters.params()
-        print("filters: " + ("Hampel " + str(hp) if hp else "Hampel off") + ", " + ("SG " + str(sp) if sp else "SG off")
-              + " (on the current of the Feenstra division; the dI/dV columns are never filtered).")
+        """A Hampel / Savitzky-Golay toggle or edit: the spectra panels redrawn (each filter on the dI/dV columns and / or on the recorded current, as its two toggles say)."""
+        print("filters: " + widgets.filters_text(self.filters) + ".")
         self._draw_spectra()
         self.fig.canvas.draw_idle()
 
@@ -2280,6 +2284,7 @@ class _BrowserCore:
             removed = [(int(i), int(j)) for i, j in rec.get('removed', [])]
             all_columns = int(rec.get('format', 1)) < 2      # format 1: indexed among all the file's sweeps
             hp, sp = rec.get('hampel'), rec.get('sgolay')   # a 'notch' entry of an older record is ignored
+            hd, sd = rec.get('hampel_didv'), rec.get('sgolay_didv')   # absent before the dI/dV toggles: off
             rs = rec.get('resample')                       # absent before the resampling: bin / interp off
             ch = rec.get('channel', 'didv')                # absent in records written before the IETS: dI/dV
             div = bool(rec.get('divide_iv', False))        # ('weighted' / 'weight_c' of older records are ignored)
@@ -2305,6 +2310,7 @@ class _BrowserCore:
             removed = list(entry['parsed']['removed'])
             all_columns = True                             # an old fit history's label: the same
             hp, sp = entry.get('hampel'), entry.get('sgolay')
+            hd, sd = entry.get('hampel_didv'), entry.get('sgolay_didv')
             rs, ch = None, 'didv'                          # old fit histories: no resampling, dI/dV
             div = False                                    # old fit histories hold dI/dV
             bro = self.iv_broadening
@@ -2346,7 +2352,7 @@ class _BrowserCore:
         try:
             w = self._new_avg_window(index, divide_iv=div, iv_broadening=bro if div else self.iv_broadening,
                                      channel=ch, name=name, iv_zero_sub=zs, iv_broadened=brd)
-            w.restore(files, removed, hp, sp, rs, ch, calibrate=cal, normalize=nrm)
+            w.restore(files, removed, hp, sp, rs, ch, calibrate=cal, normalize=nrm, hampel_didv=hd, sgolay_didv=sd)
         except Exception as exc:
             print(f"avg{index} load: {exc}")
             return
@@ -2971,29 +2977,45 @@ class QFeenstraSettings(widgets.FeenstraSettings):
 
 
 class QFilterControls(widgets.FilterControls):
-    """The Hampel / Savitzky-Golay box: widgets.FilterControls' parsing and state, Qt widgets."""
+    """The Hampel / Savitzky-Golay box: widgets.FilterControls' parsing and state, Qt widgets (two toggle columns, 'dI/dV' and 'I(V)', the row name and its boxes shared)."""
 
-    def __init__(self, hampel=None, sgolay=None, hampel_on=False, sgolay_on=False):
+    def __init__(self, hampel=None, sgolay=None, hampel_on=False, sgolay_on=False,
+                 hampel_didv_on=False, sgolay_didv_on=False):
         self._hp = dict(self.HAMPEL_DEFAULT if hampel is None else hampel)
         self._sp = dict(self.SGOLAY_DEFAULT if sgolay is None else sgolay)
         self._on = [bool(hampel_on), bool(sgolay_on)]
+        self._on_d = [bool(hampel_didv_on), bool(sgolay_didv_on)]
         self._callback = None
         self._quiet = False
-        self._title = 'filters (on the current)'
+        self._title = 'filters'
         self.qt = QtWidgets.QGroupBox(self._title)
         grid = QtWidgets.QGridLayout(self.qt)
         grid.setContentsMargins(6, 4, 6, 4)
-        self.chk_s = QCheck('sg', self._on[1], label='SG')
-        self.chk_h = QCheck('hampel', self._on[0], label='Hampel')
+        self._hdr_d = QtWidgets.QLabel('dI/dV')
+        self._hdr_i = QtWidgets.QLabel('I(V)')
+        for lab in (self._hdr_d, self._hdr_i):
+            lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        self.chk_sd = QCheck('sgolay_didv', self._on_d[1], label='')
+        self.chk_s = QCheck('sg', self._on[1], label='')
+        self.chk_hd = QCheck('hampel_didv', self._on_d[0], label='')
+        self.chk_h = QCheck('hampel', self._on[0], label='')
+        self._name_s = QtWidgets.QLabel('SG')
+        self._name_h = QtWidgets.QLabel('Hampel')
         self.box_wl = QText('window_length', self._fmt(self._sp['window_length']), label='window', width=45)
         self.box_po = QText('polyorder', self._fmt(self._sp['polyorder']), label='polyorder', width=45)
         self.box_win = QText('window', self._fmt(self._hp['window']), label='window', width=45)
         self.box_nsig = QText('n_sigma', self._fmt(self._hp['n_sigma']), label='nσ', width=45)
-        for r, items in enumerate([(self.chk_s, self.box_wl, self.box_po), (self.chk_h, self.box_win, self.box_nsig)]):
+        grid.addWidget(self._hdr_d, 0, 0)
+        grid.addWidget(self._hdr_i, 0, 1)
+        rows = [(self.chk_sd, self.chk_s, self._name_s, self.box_wl, self.box_po),
+                (self.chk_hd, self.chk_h, self._name_h, self.box_win, self.box_nsig)]
+        for r, items in enumerate(rows, start=1):
             for c, it in enumerate(items):
-                grid.addWidget(it.qt, r, c)
+                grid.addWidget(it.qt if hasattr(it, 'qt') else it, r, c)
         self.chk_h.on_change(lambda flag: self._toggle(0))
         self.chk_s.on_change(lambda flag: self._toggle(1))
+        self.chk_hd.on_change(lambda flag: self._toggle(2))
+        self.chk_sd.on_change(lambda flag: self._toggle(3))
         for name in ('window', 'n_sigma', 'window_length', 'polyorder'):
             self._box(name).on_change(lambda text, name=name: self._submit(name, text))
 
@@ -3011,28 +3033,19 @@ class QFilterControls(widgets.FilterControls):
         self._box(name).set(self._fmt(value))
 
     def _set_toggle(self, i, state):
-        (self.chk_h, self.chk_s)[i].set(bool(state))
-        self._on[i] = bool(state)
+        (self.chk_h, self.chk_s, self.chk_hd, self.chk_sd)[i].set(bool(state))
+        if i < 2:
+            self._on[i] = bool(state)
+        else:
+            self._on_d[i - 2] = bool(state)
 
     def _fire(self):
         if self._callback is not None:
             self._callback()
 
     def color_labels(self, hampel_color, sgolay_color=None):
-        self.chk_h.set_label_color(hampel_color)
-        self.chk_s.set_label_color(hampel_color if sgolay_color is None else sgolay_color)
-
-    def set_params(self, hampel, sgolay):
-        if hampel is not None:
-            for k in ('window', 'n_sigma'):
-                self._hp[k] = hampel[k]
-                self._set_box(k, hampel[k])
-        if sgolay is not None:
-            for k in ('window_length', 'polyorder'):
-                self._sp[k] = sgolay[k]
-                self._set_box(k, sgolay[k])
-        self._set_toggle(0, hampel is not None)
-        self._set_toggle(1, sgolay is not None)
+        self._name_h.setStyleSheet(f"color: {hampel_color};")
+        self._name_s.setStyleSheet(f"color: {hampel_color if sgolay_color is None else sgolay_color};")
 
 
 class QAveragePicker:

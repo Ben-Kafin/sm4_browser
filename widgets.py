@@ -206,7 +206,7 @@ SHORT_LABELS = {
     'anchor to topo': 'anchor', 'broadened': 'broad', 'substack': 'sub', 'Average': 'Avg',
     'Feenstra': 'Feen', 'Feenstra (refit)': 'Feen refit', 'cmap norm': 'cmap', 'WKB background': 'WKB',
     'overlapping': 'overlap',
-    'step through': 'step', 'topo processing': 'topo proc', 'filters (on the current)': 'filters',
+    'step through': 'step', 'topo processing': 'topo proc', 'filters': 'filters',
     'polyorder': 'order', 'Savitzky-Golay': 'SG',
     # radio options
     'forward': 'fwd', 'reverse': 'rev', 'average': 'avg', 'experiment': 'exp', 'pulsing': 'pulse',
@@ -993,25 +993,47 @@ def size_of(fig, name):
 #  Composite controllers                                                  #
 # ---------------------------------------------------------------------- #
 
+def filters_text(fc):
+    """
+    One console phrase of a filter box's state, per filter its settings and
+    targets: 'Hampel window 4, n_sigma 3 on dI/dV and I(V); SG off'.
+    """
+    hp, sp = fc.params()
+    hd, sd = fc.params_didv()
+
+    def one(name, p_iv, p_d):
+        targets = [t for t, p in (('dI/dV', p_d), ('I(V)', p_iv)) if p is not None]
+        if not targets:
+            return f"{name} off"
+        p = p_iv if p_iv is not None else p_d
+        return f"{name} " + ", ".join(f"{k} {v:g}" for k, v in p.items()) + " on " + " and ".join(targets)
+
+    return one('Hampel', hp, hd) + "; " + one('SG', sp, sd)
+
+
 class FilterControls:
     """
     One framed box of Savitzky-Golay and Hampel controls inside a
     figure (`rect` = figure fraction [left, bottom, width, height]): two
-    rows, Savitzky-Golay
-    above Hampel, each with an unlabeled on/off toggle, the row name, and two
-    short parameter boxes (window and polyorder for Savitzky-Golay, window and
-    nσ for Hampel).  The two toggles are independent.
+    rows, Savitzky-Golay above Hampel, each with two unlabeled on/off
+    toggles under the headers 'dI/dV' and 'I(V)' (the filter on the
+    channel's columns, the filter on the recorded current: the same
+    settings, each target its own toggle), the row name, and two short
+    parameter boxes (window and polyorder for Savitzky-Golay, window and
+    nσ for Hampel).  The four toggles are independent.
 
       hampel, sgolay : the parameter dicts the boxes start at
                        ({'window', 'n_sigma'}, {'window_length', 'polyorder'});
                        None uses HAMPEL_DEFAULT / SGOLAY_DEFAULT
-      hampel_on, sgolay_on : initial toggle states (the spectra windows start
-                       with every filter off)
+      hampel_on, sgolay_on : initial states of the I(V) toggles (the spectra
+                       windows start with every filter off)
+      hampel_didv_on, sgolay_didv_on : initial states of the dI/dV toggles
 
     params() returns (hampel_filter_params or None, sgolay_filter_params or None)
-    in the form filters.hampel / filters.sgolay take (None = off).  set_params(hampel,
-    sgolay) sets the boxes and toggles from stored settings without firing the
-    callback.  on_change(callback) registers a
+    of the I(V) toggles in the form filters.hampel / filters.sgolay take (None =
+    off); params_didv() the same for the dI/dV toggles.  set_params(hampel,
+    sgolay, hampel_didv, sgolay_didv) sets the boxes and toggles from stored
+    settings without firing the callback.  on_change(callback) registers a
     no-argument callback run after every toggle and every accepted edit.  An
     edit that does not parse (or breaks the filter's own rules) is reported
     on the console and the box is reset to its previous value.  set_rect(rect)
@@ -1025,7 +1047,7 @@ class FilterControls:
     # Row bottoms (fraction of the box height) and widget columns (x, width as
     # fractions of the box width); the widget height is 0.26 of the box height.
     _ROWS = {'sg': 0.57, 'hampel': 0.12}
-    _COLS = {'chk': (0.03, 0.09), 'box1': (0.45, 0.12), 'box2': (0.86, 0.12)}
+    _COLS = {'chk_d': (0.02, 0.08), 'chk': (0.11, 0.08), 'box1': (0.45, 0.12), 'box2': (0.86, 0.12)}
     FS = 7
 
     @classmethod
@@ -1034,11 +1056,13 @@ class FilterControls:
         x, w = cls._COLS[col]
         return [left + x * width, bottom + cls._ROWS[row] * height, w * width, 0.26 * height]
 
-    def __init__(self, fig, rect, hampel=None, sgolay=None, hampel_on=False, sgolay_on=False):
+    def __init__(self, fig, rect, hampel=None, sgolay=None, hampel_on=False, sgolay_on=False,
+                 hampel_didv_on=False, sgolay_didv_on=False):
         self.fig = fig
         self._hp = dict(self.HAMPEL_DEFAULT if hampel is None else hampel)
         self._sp = dict(self.SGOLAY_DEFAULT if sgolay is None else sgolay)
-        self._on = [bool(hampel_on), bool(sgolay_on)]
+        self._on = [bool(hampel_on), bool(sgolay_on)]            # the I(V) toggles (Hampel, SG)
+        self._on_d = [bool(hampel_didv_on), bool(sgolay_didv_on)]   # the dI/dV toggles (Hampel, SG)
         self._callback = None
         self._quiet = False
         self._rect = [float(v) for v in rect]
@@ -1080,9 +1104,13 @@ class FilterControls:
         self._txt_h_w = label('Hampel')
         self._txt_sg = _LabelProxy(self._txt_sg_w)
         self._txt_h = _LabelProxy(self._txt_h_w)
+        self._txt_didv_w = label('dI/dV', Qt.AlignmentFlag.AlignHCenter)     # the headers of the toggle columns
+        self._txt_iv_w = label('I(V)', Qt.AlignmentFlag.AlignHCenter)
+        self.chk_sd = check(self._on_d[1], 3)
         self.chk_s = check(self._on[1], 1)
         self.box_wl = box(self._sp['window_length'], 'window_length')
         self.box_po = box(self._sp['polyorder'], 'polyorder')
+        self.chk_hd = check(self._on_d[0], 2)
         self.chk_h = check(self._on[0], 0)
         self.box_win = box(self._hp['window'], 'window')
         self.box_nsig = box(self._hp['n_sigma'], 'n_sigma')
@@ -1090,14 +1118,15 @@ class FilterControls:
                                 'n_sigma': 'nσ'}
         self._box_labels = {k: label(t, Qt.AlignmentFlag.AlignRight) for k, t in self._box_label_text.items()}
         self._short = False
-        self._placed = [(self.chk_s, 'chk', 'sg'), (self.box_wl, 'box1', 'sg'), (self.box_po, 'box2', 'sg'),
-                        (self.chk_h, 'chk', 'hampel'), (self.box_win, 'box1', 'hampel'),
-                        (self.box_nsig, 'box2', 'hampel')]
+        self._placed = [(self.chk_sd, 'chk_d', 'sg'), (self.chk_s, 'chk', 'sg'),
+                        (self.box_wl, 'box1', 'sg'), (self.box_po, 'box2', 'sg'),
+                        (self.chk_hd, 'chk_d', 'hampel'), (self.chk_h, 'chk', 'hampel'),
+                        (self.box_win, 'box1', 'hampel'), (self.box_nsig, 'box2', 'hampel')]
         fig._register_control(self)
 
     def _all(self):
-        return ([self.frame, self._txt_sg_w, self._txt_h_w] + [w for w, _, _ in self._placed]
-                + list(self._box_labels.values()))
+        return ([self.frame, self._txt_sg_w, self._txt_h_w, self._txt_didv_w, self._txt_iv_w]
+                + [w for w, _, _ in self._placed] + list(self._box_labels.values()))
 
     def _place(self, W, H):
         z = getattr(self.fig, 'font_zoom', 1.0)
@@ -1105,7 +1134,7 @@ class FilterControls:
         # does not (never cut, never overlapping).
         fw = self._rect[2] * W
         fm = QtGui.QFontMetricsF(_font(self.FS, z))
-        need = (28 + fm.horizontalAdvance('Hampel') + 8 + fm.horizontalAdvance('polyorder') + 8
+        need = (2 * 28 + fm.horizontalAdvance('Hampel') + 8 + fm.horizontalAdvance('polyorder') + 8
                 + fm.horizontalAdvance('window') + 8 + 2 * 0.12 * fw + 2 * fm.horizontalAdvance('88') + 24)
         f = max(0.6, min(1.0, fw / need)) if need > 0 else 1.0
         if abs(z * f - getattr(self, '_zoom', 1.0)) > 1e-6:
@@ -1119,13 +1148,18 @@ class FilterControls:
         self.frame.setGeometry(*px(self._rect))
         left, bottom, width, height = self._rect
         for (txt, fy) in ((self._txt_sg_w, 0.70), (self._txt_h_w, 0.25)):
-            x, y, w, h = px([left + 0.14 * width, bottom + (fy - 0.13) * height, 0.3 * width, 0.26 * height])
+            x, y, w, h = px([left + 0.21 * width, bottom + (fy - 0.13) * height, 0.24 * width, 0.26 * height])
+            txt.setGeometry(x, y, w, h)
+        # The headers of the two toggle columns, in the strip above the rows.
+        for txt, col in ((self._txt_didv_w, 'chk_d'), (self._txt_iv_w, 'chk')):
+            cx = left + (self._COLS[col][0] + 0.5 * self._COLS[col][1]) * width
+            x, y, w, h = px([cx - 0.07 * width, bottom + 0.84 * height, 0.14 * width, 0.15 * height])
             txt.setGeometry(x, y, w, h)
         names = {id(self.box_wl): 'window_length', id(self.box_po): 'polyorder', id(self.box_win): 'window',
                  id(self.box_nsig): 'n_sigma'}
         for w, col, row in self._placed:
             x, y, ww, hh = px(self._widget_rect(self._rect, col, row))
-            if col == 'chk':
+            if col in ('chk', 'chk_d'):
                 s = min(ww, hh, 18)
                 w.setGeometry(x, y + (hh - s) // 2, max(s, 16), s)
                 continue
@@ -1224,13 +1258,17 @@ class FilterControls:
             self._quiet = False
 
     def _toggle(self, i):
+        """Toggle i flipped: 0 Hampel on I(V), 1 SG on I(V), 2 Hampel on dI/dV, 3 SG on dI/dV."""
         if self._quiet:
             return
-        self._on[i] = not self._on[i]
+        if i < 2:
+            self._on[i] = not self._on[i]
+        else:
+            self._on_d[i - 2] = not self._on_d[i - 2]
         self._fire()
 
     def _set_toggle(self, i, state):
-        chk = (self.chk_h, self.chk_s)[i]
+        chk = (self.chk_h, self.chk_s, self.chk_hd, self.chk_sd)[i]
         if bool(chk.isChecked()) != bool(state):
             self._quiet = True
             chk.blockSignals(True)
@@ -1239,7 +1277,10 @@ class FilterControls:
             finally:
                 chk.blockSignals(False)
                 self._quiet = False
-        self._on[i] = bool(state)
+        if i < 2:
+            self._on[i] = bool(state)
+        else:
+            self._on_d[i - 2] = bool(state)
 
     def _fire(self):
         if self._callback is not None:
@@ -1249,35 +1290,52 @@ class FilterControls:
         self._callback = callback
 
     def params(self):
-        """(hampel_filter_params or None, sgolay_filter_params or None) as currently set."""
+        """(hampel_filter_params or None, sgolay_filter_params or None) of the I(V) toggles as currently set."""
         return (dict(self._hp) if self._on[0] else None,
                 dict(self._sp) if self._on[1] else None)
+
+    def params_didv(self):
+        """(hampel_filter_params or None, sgolay_filter_params or None) of the dI/dV toggles: the same boxes."""
+        return (dict(self._hp) if self._on_d[0] else None,
+                dict(self._sp) if self._on_d[1] else None)
 
     def values(self):
         """(hampel dict, sgolay dict) of the boxes whatever the toggles say (the Line window's record)."""
         return dict(self._hp), dict(self._sp)
 
     def states(self):
-        """(hampel_on, sgolay_on)."""
+        """(hampel_on, sgolay_on) of the I(V) toggles."""
         return bool(self._on[0]), bool(self._on[1])
+
+    def states_didv(self):
+        """(hampel_on, sgolay_on) of the dI/dV toggles."""
+        return bool(self._on_d[0]), bool(self._on_d[1])
 
     def color_labels(self, hampel_color, sgolay_color=None):
         """The row names' colours (the fit windows: blue while a setting differs from the shown fit's, red once run with)."""
         self._txt_h.set_color(hampel_color)
         self._txt_sg.set_color(hampel_color if sgolay_color is None else sgolay_color)
 
-    def set_params(self, hampel, sgolay):
-        """Show stored settings: a dict sets the boxes and turns the filter on, None turns it off."""
-        if hampel is not None:
-            for k in ('window', 'n_sigma'):
-                self._hp[k] = hampel[k]
-                self._set_box(k, hampel[k])
-        if sgolay is not None:
-            for k in ('window_length', 'polyorder'):
-                self._sp[k] = sgolay[k]
-                self._set_box(k, sgolay[k])
+    def set_params(self, hampel, sgolay, hampel_didv=None, sgolay_didv=None):
+        """
+        Show stored settings: a dict sets the boxes and turns the target's filter on, None turns it
+        off (hampel, sgolay: the I(V) toggles; hampel_didv, sgolay_didv: the dI/dV toggles, the
+        same boxes, so the I(V) dict sets them when both are given).
+        """
+        for d in (hampel_didv, hampel):
+            if d is not None:
+                for k in ('window', 'n_sigma'):
+                    self._hp[k] = d[k]
+                    self._set_box(k, d[k])
+        for d in (sgolay_didv, sgolay):
+            if d is not None:
+                for k in ('window_length', 'polyorder'):
+                    self._sp[k] = d[k]
+                    self._set_box(k, d[k])
         self._set_toggle(0, hampel is not None)
         self._set_toggle(1, sgolay is not None)
+        self._set_toggle(2, hampel_didv is not None)
+        self._set_toggle(3, sgolay_didv is not None)
 
 
 class PipelineBox:

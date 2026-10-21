@@ -809,9 +809,11 @@ class Map:
         """
         g = self.grid
         hp, sp = self.filters.params()
+        hd, sd = self.filters.params_didv()
         c = g.curves(hp, sp, divide_iv, self.iv_width(), channel=self.channel, iv_zero_sub=self.iv_zero_sub,
                      normalize=self.normalize if normalize is None else normalize,
-                     calibrate=self.calibrate if calibrate is None else calibrate)[self.order, :]
+                     calibrate=self.calibrate if calibrate is None else calibrate,
+                     hampel_didv=hd, sgolay_didv=sd)[self.order, :]
         n = g.n_lines * g.n_fast
         c = c[:, :n].copy()
         c[:, ~g.acquired[:n]] = np.nan
@@ -882,7 +884,8 @@ class Map:
         }
         # The cubes depend on these settings only, never on the markers: computed once per setting.
         hp, sp = self.filters.params()
-        memo_key = (bool(calibrate), bool(normalize), repr(hp), repr(sp), zs, width, self.channel)
+        hd, sd = self.filters.params_didv()
+        memo_key = (bool(calibrate), bool(normalize), repr(hp), repr(sp), repr(hd), repr(sd), zs, width, self.channel)
         memo = getattr(self, '_cube_memo', None)
         if memo is not None and memo[0] == memo_key:
             cubes = memo[1]
@@ -945,9 +948,10 @@ class Map:
         test `self.maps is before` to put their control back.
         """
         hp, sp = self.filters.params()
+        hd, sd = self.filters.params_didv()
         g = self.grid
         try:
-            c = g.curves(hp, sp, self.divide_iv, self.iv_width(), channel=self.channel,
+            c = g.curves(hp, sp, self.divide_iv, self.iv_width(), channel=self.channel, hampel_didv=hd, sgolay_didv=sd,
                          iv_zero_sub=self.iv_zero_sub, normalize=self.normalize,
                          calibrate=self.calibrate)[self.order, :]                                  # (n_e, N)
         except Exception as exc:
@@ -1707,6 +1711,7 @@ class Map:
         if switched:
             print("Send to fit: " + " and ".join(switched) + " switched on for the sent curves.")
         hp, sp = self.filters.params()
+        hd, sd = self.filters.params_didv()
         div = self.divide_iv
         quantity = 'ratio' if div else 'didv'
         suffix = " over I/V" if div else ""
@@ -1717,14 +1722,21 @@ class Map:
         i_ref = int(np.argmin(np.abs(V)))
         i_bias = int(np.argmin(np.abs(V - g.V_bias)))
 
-        def processed(cols, hampel, sgolay):
+        def refs(cols):
+            # The forward-sweep reference of these pixels (a reverse-sweep view), None otherwise.
+            if g.lia_ref is None or g.iv_ref is None:
+                return None, None
+            return g.lia_ref[:, cols], g.iv_ref[:, cols]
+
+        def processed(cols, hampel, sgolay, hampel_didv, sgolay_didv):
             # The pipeline on the raw columns with calibrate and normalize at their defaults (both on: the
             # fit's pipeline), energy ascending; areas: the normalization areas per column (amps).
             lia = g.lia[:, cols]
             iv = g.iv[:, cols]
             c, areas = STS.process_arrays(energy, lia, iv, hampel, sgolay, div, self.iv_width(),
                                           return_areas=True, channel='didv', iv_zero_sub=self.iv_zero_sub,
-                                          vmod=g.vmod)
+                                          vmod=g.vmod, V_bias=g.V_bias, I_setpoint=g.I_setpoint, ref=refs(cols),
+                                          hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
             return c[e_order, :], areas
 
         sends = []
@@ -1744,8 +1756,8 @@ class Map:
                       + " nm sit on never-acquired spectra and are left out.")
             if not cols:
                 continue
-            cf, areas = processed(cols, hp, sp)
-            cu, _ = processed(cols, None, None)
+            cf, areas = processed(cols, hp, sp, hd, sd)
+            cu, _ = processed(cols, None, None, None, None)
             areas_A = np.asarray(areas, dtype=np.float64)
             delta_I = iv_sorted[i_bias, cols] - iv_sorted[i_ref, cols]
             where = ", ".join(f"({x:.2f}, {y:.2f})" for x, y in places)
@@ -1758,19 +1770,20 @@ class Map:
                 data, unf = cf[:, 0], cu[:, 0]
                 label = f"{g.path} | marker at {where} nm{suffix}"
                 stage = 'column'
-            sends.append((data, unf, areas_A, delta_I, label, g.lia[:, cols], g.iv[:, cols], stage))
+            sends.append((data, unf, areas_A, delta_I, label, g.lia[:, cols], g.iv[:, cols], stage, refs(cols)))
 
         settings = dict(self.fit_settings)
         use_cache = settings.pop('use_cache', True)
-        for data, unf, areas_A, delta_I, label, lia_raw, iv_raw, stage in sends:
+        for data, unf, areas_A, delta_I, label, lia_raw, iv_raw, stage, (lia_ref, iv_ref) in sends:
             print("\n" + "=" * 70)
             if use_cache and fit.Fit.has_cache(label):
                 an = fit.Fit.from_cache(fit.Fit.cache_path(label))
             else:
                 an = fit.Fit.from_curve(V, data, unf, g.V_bias, g.I_setpoint, areas_A, label,
                                         hampel_filter_params=hp, sgolay_filter_params=sp,
+                                        hampel_didv_params=hd, sgolay_didv_params=sd,
                                         delta_I_window_A=delta_I,
-                                        lia_raw=lia_raw, iv_raw=iv_raw,
+                                        lia_raw=lia_raw, iv_raw=iv_raw, lia_ref=lia_ref, iv_ref=iv_ref,
                                         units_lia=g.units_lia, units_iv=g.units_iv, vmod=g.vmod,
                                         energy_raw=energy,
                                         filter_stage=stage,
