@@ -2519,6 +2519,25 @@ class Axes:
         W, H = self.figure._canvas_size()
         return Bbox(x0, H - (y0 + h), w, h)
 
+    def on_placed(self, callback):
+        """Run callback() after every placement of the axes (_place: a resize, a subplots_adjust, a text zoom, an axis re-measured); a window's controls that sit relative to the panel follow it this way."""
+        self.__dict__.setdefault('_placed_cbs', []).append(callback)
+
+    def xlabel_row(self):
+        """
+        The band of the x label at the foot of the bottom axis item, under
+        the tick marks and their values: (centre, height) in figure
+        fractions from the bottom; None without a shown label.
+        """
+        xa = self.xaxis_item
+        if not (xa.isVisible() and xa.label.isVisible()):
+            return None
+        W, H = self.figure._canvas_size()
+        x0, y0, w, h = self._px_rect()
+        lh = float(xa.label.boundingRect().height()) * 0.8          # pyqtgraph's share of the label in the axis height
+        yc = y0 + h + float(xa.maximumHeight()) - 0.5 * lh
+        return 1.0 - yc / float(H), lh / float(H)
+
     def _request_place(self):
         if not self._place_pending:
             self._place_pending = True
@@ -2572,6 +2591,11 @@ class Axes:
         if getattr(self, '_legend_clear', False) and getattr(self, '_last_h', None) != round(h):
             self._last_h = round(h)
             QtCore.QTimer.singleShot(0, self.keep_legend_clear)
+        for cb in list(getattr(self, '_placed_cbs', [])):
+            try:
+                cb()
+            except Exception:
+                traceback.print_exc()
 
     def _view_range(self):
         if self.vb.state['autoRange'][0] or self.vb.state['autoRange'][1]:

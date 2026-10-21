@@ -479,6 +479,25 @@ class Control:
         self._rect[2], self._rect[3] = ww, hh
         self.place(float(np.clip(cx - 0.5 * ww, 0.0, 1.0 - ww)), float(np.clip(cy - 0.5 * hh, 0.0, 1.0 - hh)))
 
+    def on_xlabel_row(self, ax, right_in=0.0):
+        """
+        Place the widget on the row of the axes' x label, clear of the
+        tick marks and their values: its right edge at the axes' right edge
+        (shifted right by right_in inches), its top at the top of the
+        label's band (qtplot.Axes.xlabel_row), so it hangs beside the label
+        under the tick values.  Without a shown label, just below the
+        axes' bottom-right corner (below_corner).
+        """
+        row = ax.xlabel_row() if hasattr(ax, 'xlabel_row') else None
+        if row is None:
+            self.below_corner(ax, right_in=right_in)
+            return
+        fw, fh = self.fig.get_size_inches()
+        x0, y0, w, h = ax.get_position().bounds
+        ww, hh = self._size()
+        self._rect[2], self._rect[3] = ww, hh
+        self.place(x0 + w - ww + right_in / float(fw), row[0] + 0.5 * row[1] - hh)
+
     def below_corner(self, ax, gap_in=0.05, right_in=0.0):
         """
         Place the widget just below the bottom-right corner of `ax`, outside
@@ -1696,6 +1715,10 @@ class GammaBox:
 
     def attach(self, ax, gap_in=0.05):
         self.box.below_corner(ax, gap_in=gap_in)
+
+    def attach_label_row(self, ax):
+        """The box on the row of the heatmap's x label, right-aligned with the axes and clear of the tick values (Control.on_xlabel_row; the Line window)."""
+        self.box.on_xlabel_row(ax)
 
     def show(self, flag):
         self.box.show(flag)

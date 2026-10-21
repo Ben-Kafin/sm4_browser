@@ -734,6 +734,15 @@ def _line_ranges(b, exp):
     r_x = w._int_cursor_boxes[('x', 1)]._rect
     assert r_e[1] >= by + bh - 1e-9 and abs(r_e[0] + 0.5 * r_e[2] - bx) < 1e-6, (r_e, bx, by, bh)
     assert r_x[0] >= bx + bw - 1e-9 and abs(r_x[1] + 0.5 * r_x[3] - (by + bh)) < 1e-6, (r_x, bx, by, bh)
+    # the 'γ' box hangs from the top of the x label's band, right-aligned with the heatmap: under the
+    # tick marks and their values (the panel's placements re-place it, qtplot.Axes.on_placed)
+    plt._app().processEvents()
+    row = w._int_ax_didv.xlabel_row()
+    g = w._int_gamma_box.box._rect
+    assert row is not None, "the heatmap has no x label"
+    assert abs((g[1] + g[3]) - (row[0] + 0.5 * row[1])) < 1e-9, (g, row)
+    assert abs(g[0] + g[2] - (bx + bw)) < 1e-9, (g, bx, bw)
+    assert g[1] + g[3] < by - 1e-9, (g, by)
     # the record carries both; 'uncrop' restores the full ranges and the cursors; the record restores them
     rec = w.marker_record()
     assert rec['energy_range'] == [lo, hi] and rec['pos_range'] == [q0, q1], (rec['energy_range'], rec['pos_range'])

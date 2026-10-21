@@ -1215,8 +1215,7 @@ class Line:
         if abs(bottom - getattr(self, '_int_panel_bottom', self.PANEL_BOTTOM_MIN)) > 1e-9:
             self._int_panel_bottom = bottom
             self._int_fig.subplots_adjust(bottom=bottom)
-            self._int_gamma_box.attach(self._int_ax_didv)
-            self._int_place_cursor_boxes()
+            self._int_follow_heatmap()
 
     def _int_n_chunks(self):
         """Number of lines (chunks) in the file for the current scan mode."""
@@ -2638,7 +2637,7 @@ class Line:
         # The heatmap's 'γ' box, just below the heatmap's bottom-right corner.
         self._int_gamma_box = widgets.GammaBox(fig, gamma=self._int_gamma0)
         self._int_gamma_box.on_change(self._int_on_gamma)
-        self._int_gamma_box.attach(self._int_ax_didv)
+        self._int_gamma_box.attach_label_row(self._int_ax_didv)
         # Topo stripe source: one row of controls per averaged profile (a 'rows' box, an 'f' / 'r'
         # button and a 'profile' button), TOPO_ROWS_IN_FIGURE of them in two columns filled from the
         # bottom, hidden until used (_int_refresh_topo_rows); '+' / '-' add and remove rows.
@@ -2674,8 +2673,15 @@ class Line:
         self._int_line_steps = widgets.StepButtons(fig, '< line', 'line >', 0.865, 0.01)
         self._int_line_steps.on_change(self._int_on_line_step)
 
+    def _int_follow_heatmap(self):
+        """The heatmap's panel placed anew (a resize, a panel move, a text zoom, its axis re-measured; qtplot.Axes.on_placed): the 'γ' box back on the x-label row, the cursor boxes on their cursors."""
+        gb = getattr(self, '_int_gamma_box', None)
+        if gb is not None:
+            gb.attach_label_row(self._int_ax_didv)
+        self._int_place_cursor_boxes()
+
     def _int_connect(self):
-        """The figure's events: pick, motion and release (the drags), key presses (the E-markers), and the Drift subscription."""
+        """The figure's events: pick, motion and release (the drags), key presses (the E-markers), the heatmap panel's placements, and the Drift subscription."""
         fig = self._int_fig
         fig.canvas.mpl_connect('pick_event', self._int_on_pick)
         fig.canvas.mpl_connect('motion_notify_event', self._int_on_motion)
@@ -2686,6 +2692,8 @@ class Line:
             self._int_ax_didv.vb.sigRangeChanged.connect(lambda *args: self._int_place_cursor_boxes())
         except Exception:
             pass
+        # The heatmap's panel placed anew: the 'γ' box and the cursor boxes follow (_int_follow_heatmap).
+        self._int_ax_didv.on_placed(self._int_follow_heatmap)
         # Every manual change of the drift (a span applied or cleared in a drift window), made
         # in any drift window, re-shears this window's rows (Drift.subscribe); the subscription
         # ends with the window.
