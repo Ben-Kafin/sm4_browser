@@ -4127,10 +4127,15 @@ class Figure:
             self._info_pending = True
             QtCore.QTimer.singleShot(50, self._push_info)
 
+    def set_info_line(self, key, text):
+        """A window's own line in the information panel, under the panels' lines (the Line window's E-marker readout), by a name of its own; '' removes it."""
+        self._set_info(('line', str(key)), text)
+
     def info_text(self):
-        """The details of every panel's title, one line each (panels in their order on the figure)."""
+        """The details of every panel's title, one line each (panels in their order on the figure), then the window's own lines (set_info_line) in the order they were first set."""
         info = getattr(self, '_info', {})
-        order = (['suptitle'] if 'suptitle' in info else []) + [ax for ax in self._axes if ax in info]
+        order = ((['suptitle'] if 'suptitle' in info else []) + [ax for ax in self._axes if ax in info]
+                 + [k for k in info if isinstance(k, tuple) and k[0] == 'line'])
         return "\n".join(" ".join(info[k].split()) for k in order)
 
     def _push_info(self):

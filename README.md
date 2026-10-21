@@ -282,9 +282,10 @@ A grid line's dI/dV or IETS against position (`line.py`): the topography stripe 
 (forward row at open; the row controls add rows, `+` / `−`, the line-index box and the `f` / `r`
 pass button, more rows in the `topo rows` pop-up), the heatmap with its `γ` box, the marker curve
 panel, the energy slice, the marker groups (`avgs` slider, one `Markers` slider per group with `add
-new` / `add existing` beside it), the E-markers (`E-markers` slider, `clear E-markers`, the readout
-with ΔE; drag them on the heatmap or the curve panel, Left/Right step the selected one by one
-energy, Tab selects the next), the crop cursors (two per axis on the heatmap, starting at its ends;
+new` / `add existing` beside it), the E-markers (`E-markers` slider under the `Markers` stack, 0
+clears them; their energies and ΔE in the information panel; the energy slice's legend names each
+curve by its energy beside the curves; drag them on the heatmap or the curve panel, Left/Right step
+the selected one by one energy, Tab selects the next), the crop cursors (two per axis on the heatmap, starting at its ends;
 drag one, or type into the box riding with it, and the shade covers what lies outside each pair),
 `crop` (what lies between the cursors is kept, moved or not: the shown ranges of every panel, and
 for the energy pair the normalization range and the colour scale) and `uncrop` (the full ranges

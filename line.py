@@ -8,7 +8,8 @@ The Line tool: a grid line's dI/dV or IETS against position.  Data
 extraction from the file (the channel's columns and the I(V) of one line,
 the topography rows of the stripe), and the Line window: the topo stripe,
 the heatmap with its 'γ' box, the energy slice with its E-markers (the
-'E-markers' slider, 'clear E-markers', the readout; Left / Right / Tab),
+'E-markers' slider under the 'Markers' stack, the readout in the
+information panel, the energy slice's legend; Left / Right / Tab),
 the marker curve panel, the marker groups (widgets.MarkerGroupControls),
 the window's own 'Feenstra' toggle with its Feenstra companion
 (feenstra.FeenstraWindow), the 'calibrate' / 'normalize' box
@@ -226,8 +227,11 @@ class Line:
     MAX_GROUPS = 10
     # The 'Markers' slider stack (widgets.MarkerGroupControls): slider k from the bottom at
     # SLIDER_Y0 + k * SLIDER_PITCH; the panels' bottom stays at PANEL_BOTTOM_MIN until the
-    # stack's top plus PANEL_CLEARANCE would reach it, then follows the stack.
-    SLIDER_X, SLIDER_Y0, SLIDER_PITCH = 0.255, 0.02, 0.025
+    # stack's top plus PANEL_CLEARANCE would reach it, then follows the stack.  The 'E-markers'
+    # slider sits one pitch under the stack's first slider (E_SLIDER_XY), so new 'Markers'
+    # sliders appear above it.
+    SLIDER_X, SLIDER_Y0, SLIDER_PITCH = 0.255, 0.045, 0.025
+    E_SLIDER_XY = (0.255, 0.02)
     AVGS_XY = (0.60, 0.02)
     PANEL_BOTTOM_MIN = 0.20
     PANEL_CLEARANCE = 0.06
@@ -1545,7 +1549,7 @@ class Line:
 
     def _int_on_e_count(self, n):
         """
-        The 'E-markers' slider (0 to 8; 'clear E-markers' sets 0): growing adds each new E-marker at the
+        The 'E-markers' slider (0 to 8; 0 clears them): growing adds each new E-marker at the
         free slot of an even layout over the energy range farthest from the others; shrinking drops the
         last ones.
         """
@@ -1581,20 +1585,43 @@ class Line:
         self._int_redraw_e_markers()
 
     def _int_e_readout(self):
+        """The information panel's E-marker line: every E-marker's energy (the selected one starred), then the differences between neighbours."""
         if not self._int_e_markers:
             return "E-markers: none"
-        parts = [f"E{k + 1} {e:+.3f} V" + (" *" if k == self._int_e_selected else "")
+        parts = [f"{e:+.3f} V" + (" *" if k == self._int_e_selected else "")
                  for k, e in enumerate(self._int_e_markers)]
-        d = [f"ΔE{k + 1}{k} {self._int_e_markers[k] - self._int_e_markers[k - 1]:+.3f} V"
+        d = [f"{self._int_e_markers[k] - self._int_e_markers[k - 1]:+.3f} V"
              for k in range(1, len(self._int_e_markers))]
-        return "   ".join(parts) + (("     " + "   ".join(d)) if d else "")
+        return "E-markers: " + ", ".join(parts) + (("; ΔE: " + ", ".join(d)) if d else "")
+
+    def _int_slice_legend(self, ax_s, x_lo, x_hi):
+        """
+        The energy slice's legend (one entry per E-marker: the curve's
+        colour and line style, the energy), upper right, with the panel's
+        x range widened to the right by the legend's width so that no curve
+        runs under it: the curves keep the left part of the panel, the
+        legend the column beside them.
+        """
+        leg = ax_s.legend(loc='upper right', fontsize=7)
+        if leg is None or not (np.isfinite(x_lo) and np.isfinite(x_hi)):
+            return
+        try:
+            f = (float(leg.boundingRect().width()) + 8.0) / float(ax_s.vb.width())
+        except Exception:
+            f = 0.45
+        f = float(np.clip(f, 0.0, 0.6)) if np.isfinite(f) else 0.45
+        span = x_hi - x_lo if x_hi > x_lo else (abs(x_hi) if x_hi else 1.0)
+        pad = 0.05 * span
+        ax_s.set_xlim(x_lo - pad, x_lo - pad + (span + 2.0 * pad) / (1.0 - f))
 
     def _int_redraw_e_markers(self, draw=True):
         """
-        The E-markers as vertical dash-dot lines on the heatmap and the curve panel (their own colours,
-        labelled E1, E2, ...; the selected one thicker), and the energy slice: for every E-marker the
-        heatmap's quantity against position (the kept rows at their recorded positions), with the
-        position markers as horizontal ticks in their colours.
+        The E-markers as vertical dash-dot lines on the heatmap and the curve panel (their own colours;
+        the selected one thicker), and the energy slice: for every E-marker the heatmap's quantity
+        against position (the kept rows at their recorded positions) in the marker's colour and line
+        style, with the position markers as horizontal ticks in their colours, the legend naming
+        each curve by its energy beside the curves (_int_slice_legend); the readout goes to the
+        information panel (_int_e_readout).
         """
         for a in self._int_e_artists:
             try:
@@ -1616,20 +1643,21 @@ class Line:
             for ax in (self._int_ax_didv, self._int_ax_curve):
                 h = ax.axvline(x=e, color=col, ls='-.', lw=lw, alpha=0.95, label=f'_emarker_{k}', picker=5)
                 self._int_e_artists.append(h)
-            y0, y1 = self._int_ax_didv.get_ylim()
-            t = self._int_ax_didv.text(e, max(y0, y1), f"E{k + 1}", color=col, fontsize=8, ha='center', va='bottom')
-            self._int_e_artists.append(t)
         pos = np.asarray(self._int_pos, dtype=np.float64)
         kept = self._int_kept_mask()
         if rows.shape[0] == len(pos) and self._int_e_markers:
+            x_lo, x_hi = np.inf, -np.inf
             for k, e in enumerate(self._int_e_markers):
                 j = int(np.argmin(np.abs(e_axis - e)))
                 prof = np.array(rows[:, j], dtype=np.float64)
                 prof[~kept] = np.nan
-                ax_s.plot(prof, pos, color=plots.e_marker_color(k), lw=1.3, marker='o', ms=2.5,
-                          label=f"E{k + 1} {e:+.3f} V")
+                if np.isfinite(prof).any():
+                    x_lo, x_hi = min(x_lo, float(np.nanmin(prof))), max(x_hi, float(np.nanmax(prof)))
+                ax_s.plot(prof, pos, color=plots.e_marker_color(k), ls='-.', lw=1.3, marker='o', ms=2.5,
+                          label=f"{e:+.3f} V")
             for i, p in enumerate(self._int_marker_pos):
                 ax_s.axhline(y=p, color=self._int_marker_color(i), ls='--', lw=0.8, alpha=0.8)
+            self._int_slice_legend(ax_s, x_lo, x_hi)
             ax_s.set_title("Energy slice: " + self._int_quantity(), fontsize=9)
             ax_s.set_xlabel(f"{self._int_quantity()}", fontsize=8)
         else:
@@ -1637,7 +1665,7 @@ class Line:
                       transform=ax_s.transAxes, fontsize=8)
             ax_s.set_title("Energy slice", fontsize=9)
         ax_s.tick_params(labelsize=7)
-        self._int_txt_e.set_text(self._int_e_readout())
+        self._int_fig.set_info_line('E-markers', self._int_e_readout())
         if draw:
             self._int_fig.canvas.draw_idle()
 
@@ -2558,15 +2586,13 @@ class Line:
         self._int_btn_drift_win.on_change(self._int_on_drift_window)
         self._int_rad_channel = widgets.make(fig, 'channel', 0.12, 0.005, value=STS.CHANNEL_NAMES[self.channel])
         # The E-markers (energy markers, vertical lines at an energy; the position markers are unchanged):
-        # their own row above the panels: the count, 'clear E-markers', the readout.
-        self._int_sld_e = widgets.make(fig, 'E-markers', 0.17, 0.925, value=len(self._int_e_markers))
+        # their count slider under the 'Markers' stack (0 clears them); the readout goes to the
+        # information panel (_int_redraw_e_markers).
+        self._int_sld_e = widgets.make(fig, 'E-markers', *self.E_SLIDER_XY, value=len(self._int_e_markers))
         self._int_sld_e.on_change(lambda val: self._int_on_e_count(int(round(float(val)))))
-        self._int_btn_e_clear = widgets.make(fig, 'clear E-markers', 0.30, 0.918)
-        self._int_btn_e_clear.on_change(lambda: self._int_on_e_count(0))
-        self._int_txt_e = fig.text(0.375, 0.932, '', fontsize=8, ha='left', va='center')
         # The crop cursors' boxes (one per cursor, riding with it: _int_place_cursor_boxes, placed with
-        # the first heatmap) and the 'crop' / 'uncrop' buttons right of the readout (_int_on_crop,
-        # _int_on_uncrop).
+        # the first heatmap) and the 'crop' / 'uncrop' buttons in the row above the panels
+        # (_int_on_crop, _int_on_uncrop).
         self._int_cursor_boxes = {}
         for axis in ('e', 'x'):
             for k, part in enumerate(('lo', 'hi')):
@@ -2733,8 +2759,9 @@ class Line:
         its bottom-right corner: the colour map's exponent, plots.heat_norm)
         + the energy slice.  Interactive: draggable position markers whose
         1D spectra are shown in a fourth panel.  The E-markers (the
-        'E-markers' slider, 0 to E_MAX; 'clear E-markers'; the readout
-        above the panels) are vertical lines at recorded energies on the
+        'E-markers' slider, 0 to E_MAX, under the 'Markers' stack; the
+        readout in the information panel; the energy slice's legend naming
+        each by its energy) are vertical lines at recorded energies on the
         heatmap and the curve panel, draggable along the energy axis, the
         selected one moved by Left / Right and chosen by Tab; the energy
         slice shows the heatmap's quantity against position at every

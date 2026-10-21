@@ -607,9 +607,18 @@ def _e_markers(b, exp):
     assert w._int_e_markers == [] and w._int_sld_e.value == 0
     w._int_on_e_count(2)
     assert w._int_marker_pos == pos_before
-    # the slice: one curve per E-marker, against position, the value at the marker's energy
+    # the readout in the information panel (energies and ΔE, no E numbers); the slider under the 'Markers' stack
+    info = w._int_fig.info_text()
+    assert "E-markers: " in info and "ΔE: " in info and "E1" not in info, info
+    assert w._int_sld_e._rect[1] < w._int_groups_ctl.y0, (w._int_sld_e._rect, w._int_groups_ctl.y0)
+    # the slice: one curve per E-marker, against position, the value at the marker's energy; its legend
+    # names each by its energy, in a column right of the curves (the x range widened for it)
     lines = [a for a in w._int_ax_slice._children if hasattr(a, '_y') and len(getattr(a, '_y', [])) == len(w._int_pos)]
     assert len(lines) == 2, len(lines)
+    assert w._int_ax_slice.get_legend() is not None
+    xmin = min(float(np.nanmin(l._x)) for l in lines)
+    xmax = max(float(np.nanmax(l._x)) for l in lines)
+    assert w._int_ax_slice.get_xlim()[1] >= xmax + 0.2 * (xmax - xmin), (w._int_ax_slice.get_xlim(), xmin, xmax)
     j = w._int_e_index(w._int_e_markers[0])
     kept = w._int_kept_mask()
     assert np.allclose(lines[0]._x[kept], w._int_curves[kept, j], equal_nan=True)
