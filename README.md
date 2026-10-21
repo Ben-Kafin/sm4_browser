@@ -720,7 +720,10 @@ Qt's offscreen platform with a screen large enough for every window at twice its
 built-in screen is 800 × 800). The families: the view (D), markers down to zero (E), the scan
 layer and the drift transform (A), the step filter (B), the point colours (C), the drift window and
 the stripe matching (G, H), the E-markers and ranges (F), the title rule (T), text size and short
-labels (I), the stores and the flags (J), the scale timeline (K) and the section path (L). The other
+labels (I), the stores and the flags (J), the scale timeline (K), the section path (L) and the fixes
+of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
+occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
+heatmap shear, the qtplot rules, the records helpers). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
 pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on
