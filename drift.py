@@ -234,12 +234,16 @@ never pixel j for spectrum j; the reverse page has no spectroscopy.
 Alignment of topo to spectra and of topo to topo is done in those recorded,
 drift-uncorrected positions; the drift correction is applied afterwards.
 
-Cache: drift_cache_<date_time of the first file>.json in the experiment
-directory (format 5) holds every tracked pair (its displacement, time
-separation, keypoint, match, and cluster counts, note), every loaded topo's
-times, so a later startup tracks only pairs not in it, and the manual
-section (the applied spans with their markers, kind, and velocity).
-A cache of another format belongs to another tracker and is discarded.
+Stores (caches.py): the tracked pairs (their displacement, time separation,
+keypoint, match, and cluster counts, note) and every loaded topo's times are
+the 'pairs' section of the computed store (computed_<stamp>.json, format
+PAIRS_FORMAT), written once at the end of a build, so a later startup
+tracks only pairs not in it; a section of another format or loader is
+rebuilt.  The manual drift (the applied spans with their markers, kind,
+and velocity, and the stripe states and points) is the 'drift' section of
+the settings store (settings_<stamp>.json), written on every change and
+never discarded.  The tracking never touches the settings, and no setting
+enters the computed section.
 """
 
 if __package__ in (None, ''):
@@ -654,83 +658,32 @@ class PairDrift:
                 f"from {self.source}")
 
 
-class DriftCache:
+PAIRS_FORMAT = 5          # the 'pairs' section of the computed store: the tracked pairs and the topo times
+
+
+class TrackedPairs:
     """
-    The drift cache of one experiment: drift_cache_<stamp>.json in the
-    experiment directory (stamp: the date and time of the directory's first
-    file), beside the .sm4 files and the 'averages' subfolder.  Format 5
-    holds the write time and
+    The tracked topo pairs and the topo times of one experiment, the 'pairs'
+    section of the computed store (caches.Computed, format PAIRS_FORMAT):
       pairs : every tracked topo pair (track_pair's result) by
               '<earlier name>|<later name>', so a later startup tracks only
               pairs not in it
       topos : every topo loaded during a build: its start, end, and mid
               times (seconds since the epoch), so TopoRef has the times
               without loading the file again
-      manual: the manual drift (Drift.manual_record): 'spans', one per
-              applied span: the two topo names, its kind ('confirmed',
-              'adjusted', 'typed'), its markers, and its velocity 'v' (m/s;
-              a typed span's source of truth, the others refit from their
-              markers); never touched by tracking.  An older cache's global
-              'typed' entry is read and ignored.
-    and 'loader_format' (sm4file.LOADER_FORMAT), the loader it was built
-    from.  A format-5 file from another loader is out of date: it is left
-    as it is and a new cache goes beside it with the next number,
-    drift_cache_<stamp>_2.json (sm4file.cache_family), the manual spans
-    carried over from it; the newest up-to-date file of the family is the
-    one read and rewritten.  A file of another format belongs to another
-    tracker: it is renamed <name>.format<N>.bak (kept for the saved
-    drift_overcomplicated package) and the cache starts empty.
+    Computed from the files alone: no setting enters here (the manual spans
+    and the stripe states live in the settings store, Drift.manual_record).
+    record() is the section's content as stored; Drift.build writes it once
+    at the end of the tracking.
     """
 
-    FORMAT = 5
+    def __init__(self, content=None):
+        content = content or {}
+        self.pairs = dict(content.get('pairs') or {})
+        self.topos = dict(content.get('topos') or {})
 
-    def __init__(self, directory, stamp):
-        self.base_path = os.path.join(directory, f"drift_cache_{stamp}.json")
-        self.path = self.base_path       # the file read and written: the newest up-to-date one, or a new one
-        self.pairs = {}
-        self.topos = {}
-        self.manual = {'spans': []}
-        self.loaded_from_disk = False
-        stale = None                     # (path, data) of the newest format-5 file from another loader
-        for _, path in reversed(sm4file.cache_family(self.base_path)):
-            try:
-                with open(path) as fh:
-                    data = json.load(fh)
-            except (OSError, ValueError) as exc:
-                print(f"drift cache {path}: not readable ({exc}).")
-                continue
-            if int(data.get('format', 0)) == self.FORMAT:
-                if data.get('loader_format') == sm4file.LOADER_FORMAT:
-                    self.path = path
-                    self.pairs = dict(data.get('pairs', {}))
-                    self.topos = dict(data.get('topos', {}))
-                    man = data.get('manual') or {}
-                    self.manual = {'spans': list(man.get('spans', []))}      # an older 'typed' entry is ignored
-                    self.loaded_from_disk = True
-                    return
-                if stale is None:
-                    stale = (path, data)
-            elif path == self.base_path:
-                # Another tracker's cache: kept beside the new one under its format's name, so the
-                # saved drift_overcomplicated package still finds its pairs and segments.
-                keep = f"{path}.format{data.get('format', 'none')}.bak"
-                if not os.path.isfile(keep):
-                    try:
-                        os.replace(path, keep)
-                    except OSError:
-                        keep = None
-                print(f"drift cache {os.path.basename(path)}: format {data.get('format', 'none')} is not "
-                      f"format {self.FORMAT} (another tracker); starting empty"
-                      + (f"; the old file kept as {os.path.basename(keep)}" if keep else "") + ".")
-        self.path = sm4file.cache_new_path(self.base_path)
-        if stale is not None:
-            path, data = stale
-            man = data.get('manual') or {}
-            self.manual = {'spans': list(man.get('spans', []))}
-            print(f"drift cache {os.path.basename(path)}: built from another loader (loader format "
-                  f"{data.get('loader_format', 1)}, this loader {sm4file.LOADER_FORMAT}); left as it is. The "
-                  f"pairs are tracked again into {os.path.basename(self.path)}, with its "
-                  f"{len(self.manual['spans'])} manual span(s) carried over.")
+    def record(self):
+        return {'pairs': self.pairs, 'topos': self.topos}
 
     @staticmethod
     def pair_key(a_name, b_name):
@@ -758,18 +711,6 @@ class DriftCache:
             'n_match': int(est.get('n_match', 0)), 'k': int(est.get('k', 0)), 'n_major': int(est.get('n_major', 0)),
             'spread_px': None if est.get('spread_px') is None else float(est['spread_px']),
             'd_px': None if est.get('d_px') is None else float(est['d_px']), 'note': est.get('note', '')}
-
-    def save(self):
-        data = {'format': self.FORMAT, 'loader_format': sm4file.LOADER_FORMAT,
-                'written': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'pairs': self.pairs, 'topos': self.topos, 'manual': self.manual}
-        tmp = self.path + '.tmp'
-        try:
-            with open(tmp, 'w') as fh:
-                json.dump(data, fh, indent=1)
-            os.replace(tmp, self.path)
-        except OSError as exc:
-            print(f"drift cache {self.path}: not written ({exc}).")
 
 
 # ---------------------------------------------------------------------- #
@@ -1901,7 +1842,7 @@ class Drift:
 
     LRU = 3               # topos kept loaded during a build
 
-    def __init__(self, directory, files, kinds, head_geoms, params, loader):
+    def __init__(self, directory, files, kinds, head_geoms, params, loader, settings=None, computed=None):
         self.directory = directory
         self.files = list(files)
         self.kinds = kinds
@@ -1917,22 +1858,28 @@ class Drift:
         self._listeners = []       # (fn, alive) pairs told of every manual change (subscribe / notify)
         self.built = False
         self.index_segments()
-        y, mo, d, h, mi, sec, _ = sm4file.filename_stamp(self.files[0])
-        self.drift_cache = DriftCache(directory, f"{y:04d}_{mo:02d}_{d:02d}_{h:02d}_{mi:02d}_{sec:02d}")
+        # The two stores (caches.py): the tracked pairs and topo times in the computed one, the
+        # manual spans and stripe states in the settings; opened here when the caller has none.
+        if settings is None or computed is None:
+            from sm4_Browser.caches import open_stores
+            s, c = open_stores(directory, self.files)
+            settings, computed = settings or s, computed or c
+        self.settings, self.computed = settings, computed
+        self.tracked = TrackedPairs(self.computed.section('pairs', PAIRS_FORMAT))
         self.refs = {}
         for p in self.topo_seq:
             g = self.head_geoms.get(p)
             if g is not None:
-                self.refs[p] = TopoRef(p, g, self.drift_cache.topos.get(os.path.basename(p)))
+                self.refs[p] = TopoRef(p, g, self.tracked.topos.get(os.path.basename(p)))
         self.manual_spans = []     # [{'a', 'b': paths, 'markers': (n, 6), 'v': (2,) or None, 'pairs': [...], 'kind'}]
         # The stripe matching's state per grid and per slow-axis setting ('off', 'auto', 'manual'): the
         # fast-axis state ('off': the velocity alone; 'auto': the extrema matching; 'manual': the matching
         # with the dragged points) and the points, {'E:i' | 'R:i': metres along the fast axis}.
         self.stripe_sets = {}      # grid path -> {setting -> {'fast': str, 'points': {key: s}}}
         self._load_manual()
-        if self.drift_cache.loaded_from_disk:
-            print(f"drift cache loaded: {os.path.basename(self.drift_cache.path)}: "
-                  f"{len(self.drift_cache.pairs)} tracked pair(s), {len(self.manual_spans)} manual span(s)")
+        if self.tracked.pairs or self.manual_spans:
+            print(f"drift: {len(self.tracked.pairs)} tracked pair(s) from {self.computed.name}, "
+                  f"{len(self.manual_spans)} manual span(s) from {self.settings.name}")
 
     # --- the manual drift (the spans applied in the drift window) ---
 
@@ -1941,16 +1888,23 @@ class Drift:
 
     def _load_manual(self):
         """
-        The cache's manual section into manual_spans: a confirmed or
+        The settings' 'drift' section into manual_spans: a confirmed or
         adjusted span's velocity refitted from its markers, a typed span's
         taken from its stored 'v'.  An older cache's global 'typed' entry is
-        no longer a source and is ignored.
+        no longer a source and is ignored.  A span or a stripe set naming a
+        file that is not in the directory is reported and left out of the
+        session, but stays in the file (a setting is never dropped).
         """
+        manual = self.settings.get('drift') or {}
         self.manual_spans = []
-        for rec in self.drift_cache.manual.get('spans', []):
+        self._orphan_spans = []        # spans of files not in the directory: kept in the file, unused
+        self._orphan_stripe = {}       # stripe sets of such files
+        for rec in manual.get('spans', []):
             a, b = self._topo_by_name(rec.get('a', '')), self._topo_by_name(rec.get('b', ''))
             if a is None or b is None:
-                print(f"drift cache: a manual span's topos ({rec.get('a')}, {rec.get('b')}) are not in the directory; dropped.")
+                print(f"{self.settings.name}: a manual span's topos ({rec.get('a')}, {rec.get('b')}) are not in the "
+                      "directory; left out of this session (kept in the file).")
+                self._orphan_spans.append(rec)
                 continue
             v = rec.get('v')
             self._put_span(a, b, np.asarray(rec.get('markers', []), dtype=np.float64).reshape(-1, 6),
@@ -1959,10 +1913,12 @@ class Drift:
         # The stripe matching's sets (format: {grid name: {setting: {'fast', 'points'}}}).
         self.stripe_sets = {}
         by_name = {os.path.basename(p): p for p in self.files}
-        for name, sets in (self.drift_cache.manual.get('stripe') or {}).items():
+        for name, sets in (manual.get('stripe') or {}).items():
             path = by_name.get(name)
             if path is None:
-                print(f"drift cache: the stripe sets of {name} belong to no file in the directory; dropped.")
+                print(f"{self.settings.name}: the stripe sets of {name} belong to no file in the directory; "
+                      "left out of this session (kept in the file).")
+                self._orphan_stripe[name] = sets
                 continue
             self.stripe_sets[path] = {}
             for setting, st in (sets or {}).items():
@@ -1974,15 +1930,17 @@ class Drift:
                     'points': {str(k): float(v) for k, v in (st.get('points') or {}).items()}}
 
     def manual_record(self):
-        """The cache's manual section from manual_spans (each span's topo names, kind, markers, and velocity) and stripe_sets."""
+        """The settings' 'drift' section from manual_spans (each span's topo names, kind, markers, and velocity) and stripe_sets, the entries of files not in the directory kept as they were."""
+        stripe = {os.path.basename(path): {setting: {'fast': st['fast'],
+                                                      'points': {k: float(v) for k, v in st['points'].items()}}
+                                            for setting, st in sets.items()}
+                  for path, sets in self.stripe_sets.items() if sets}
+        stripe.update(getattr(self, '_orphan_stripe', {}))
         return {'spans': [{'a': os.path.basename(sp['a']), 'b': os.path.basename(sp['b']), 'kind': sp['kind'],
                            'markers': [[float(x) for x in row] for row in np.asarray(sp['markers']).reshape(-1, 6)],
                            'v': None if sp.get('v') is None else [float(x) for x in np.asarray(sp['v']).reshape(2)]}
-                          for sp in self.manual_spans],
-                'stripe': {os.path.basename(path): {setting: {'fast': st['fast'],
-                                                               'points': {k: float(v) for k, v in st['points'].items()}}
-                                                     for setting, st in sets.items()}
-                           for path, sets in self.stripe_sets.items() if sets}}
+                          for sp in self.manual_spans] + list(getattr(self, '_orphan_spans', [])),
+                'stripe': stripe}
 
     # --- the stripe matching's state (the stripe window) ---
 
@@ -2083,8 +2041,8 @@ class Drift:
         self.notify()
 
     def _save_manual(self):
-        self.drift_cache.manual = self.manual_record()
-        self.drift_cache.save()
+        """Every manual change written to the settings store at once (the 'drift' section)."""
+        self.settings.put('drift', self.manual_record())
 
     def _invalidate(self):
         """Every per-file result, model, and corrected image dropped (a manual change or a cleared span)."""
@@ -2317,7 +2275,7 @@ class Drift:
         ref = self.refs.get(path)
         if ref is not None:
             ref.set_times(f.start_time, f.end_time)
-            self.drift_cache.topos[f.name] = ref.times_record()
+            self.tracked.topos[f.name] = ref.times_record()
         return f
 
     def pair(self, A, B):
@@ -2329,11 +2287,11 @@ class Drift:
         key = (A.path, B.path)
         if key in self.pair_cache:
             return self.pair_cache[key]
-        est = self.drift_cache.get_pair(A.name, B.name)
+        est = self.tracked.get_pair(A.name, B.name)
         if est is None:
             fa, fb = self._topo_file(A.path), self._topo_file(B.path)
             est = track_pair(fa, fb, self.drift_params)
-            self.drift_cache.put_pair(A.name, B.name, est)
+            self.tracked.put_pair(A.name, B.name, est)
             print("drift: " + pair_text(est))
         self.pair_cache[key] = est
         return est
@@ -2348,7 +2306,7 @@ class Drift:
             print("drift: the directory has no topography; nothing to build.")
             self.built = True
             return
-        n_pairs0 = len(self.drift_cache.pairs)
+        n_pairs0 = len(self.tracked.pairs)
         n_ok = 0
         n_all = 0
         for n, key in enumerate(self.segment_keys, 1):
@@ -2360,11 +2318,13 @@ class Drift:
                 n_all += 1
                 if est.get('v') is not None:
                     n_ok += 1
-        self.drift_cache.save()
+        # The tracked pairs and the topo times into the computed store, written once here.
+        self.computed.put('pairs', PAIRS_FORMAT, self.tracked.record())
+        self.computed.write()
         self._lru.clear()
         self.built = True
         print(f"\ndrift build done: {len(self.segment_keys)} segment(s), {n_all} consecutive pair(s), {n_ok} tracked, "
-              f"{len(self.drift_cache.pairs) - n_pairs0} new; cache written: {os.path.basename(self.drift_cache.path)}")
+              f"{len(self.tracked.pairs) - n_pairs0} new; written: {self.computed.name}")
 
     # --- the velocity of a file ---
 

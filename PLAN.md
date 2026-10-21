@@ -40,7 +40,13 @@ the owner and is final. When all three items are done, item 3 removes this file.
   layout needs about 1990 px at zoom 1 on the test platform, more than its 1700 px design width, so
   at the design size its font is fitted to about 0.86x (browser._WindowZoom._fit); the figure
   windows' controls keep their sizes in inches and crowd in a canvas far below 0.5x its design width.
-* Item 2: not started.
+* Item 2: in progress, in three commits. (a) done: the two stores by origin (`caches.py`:
+  `settings_<stamp>.json`, `computed_<stamp>.json`, the carry-over, the rules), the drift tracker, the
+  sites and the header scan on them, the hand-set flags feeding the whole chain, checks J1 to J3. Found
+  on the way and fixed: the browser made its file loader's cache after the sites ran, so the sites'
+  once-over failed on every file and no metrics were ever computed. (b) next: the scale timeline
+  (`scales.py`) applied per file everywhere, the drift readouts calibrated with the nominal beside. (c)
+  last: the path editing with its three features.
 * Item 3: not started.
 
 ## Item 1: text size and short labels

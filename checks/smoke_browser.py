@@ -1140,6 +1140,149 @@ def _browser_text(b, exp):
         assert now == text, (text, now)
 
 
+# ---------------------------------------------------------------------- #
+#  Item 2: the two stores by origin, the carry-over, the rules; the flags   #
+# ---------------------------------------------------------------------- #
+
+def _store_files(directory):
+    from sm4_Browser.caches import stamp_of
+    from sm4_Browser.sm4file import list_sm4_files
+    stamp = stamp_of(list_sm4_files(directory))
+    return (os.path.join(directory, f"settings_{stamp}.json"), os.path.join(directory, f"computed_{stamp}.json"), stamp)
+
+
+def _json(path):
+    import json
+    with open(path, encoding='utf-8') as fh:
+        return json.load(fh)
+
+
+@check("J1 stores: settings and computed files by origin; a setting never changes the computed file; deleted, it is rebuilt the same")
+def _stores(b, exp):
+    import json
+    s_path, c_path, stamp = _store_files(b.directory)
+    assert os.path.isfile(s_path) and os.path.isfile(c_path), (s_path, c_path)
+    assert not any(n.startswith(('drift_cache_', 'sites_', 'headers_')) for n in os.listdir(b.directory)), os.listdir(b.directory)
+    comp = _json(c_path)
+    for sec in ('headers', 'metrics', 'pairs'):
+        assert sec in comp and comp[sec]['loader_format'] == 2 and comp[sec]['content'], sec
+    assert len(comp['pairs']['content']['pairs']) == 2 and len(comp['headers']['content']['files']) == 5
+    bytes0 = open(c_path, 'rb').read()
+    # settings: a manual span, a stripe state, a flag: the settings file holds them at once, the computed file is untouched
+    topos = [p for p in b.files if b.kinds[p] == 'topo']
+    grid = next(p for p in b.files if b.kinds[p] == 'grid')
+    point = next(p for p in b.files if b.kinds[p] == 'point')
+    b.drift.set_manual_span(topos[0], topos[-1], np.zeros((0, 6)), kind='typed', v=np.array([2e-12, -1e-12]))
+    b.drift.set_fast_state(b.loaded.get(grid) or b._load(grid), 'auto', 'auto')
+    b.sites.set_flag(point, 'pulsing')
+    st = _json(s_path)
+    assert len(st['drift']['spans']) == 1 and st['drift']['spans'][0]['kind'] == 'typed'
+    assert st['drift']['stripe'][os.path.basename(grid)]['auto']['fast'] == 'auto'
+    assert st['flags'] == {os.path.basename(point): 'pulsing'}
+    assert open(c_path, 'rb').read() == bytes0, "a setting changed the computed file"
+    # back to the automatic state: the overrides go, the files follow
+    b.drift.clear_manual_span(topos[0], topos[-1])
+    b.drift.set_fast_state(b.loaded.get(grid) or b._load(grid), 'auto', 'off')
+    b.sites.set_flag(point, 'experiment')
+    st = _json(s_path)
+    assert st['drift']['spans'] == [] and st['flags'] == {}
+    assert open(c_path, 'rb').read() == bytes0
+    # the computed file deleted: a second browser rebuilds it with the same content
+    os.remove(c_path)
+    b2 = make_browser(b.directory)
+    try:
+        comp2 = _json(c_path)
+        for sec in ('headers', 'metrics', 'pairs'):
+            assert comp2[sec]['content'] == comp[sec]['content'], sec
+        assert _json(s_path) == st
+    finally:
+        b2._bg_shutdown()
+        b2.win.close()
+        plt._app().processEvents()
+
+
+@check("J2 stores: the earlier caches are carried over once into the two files and renamed .old")
+def _carry_over(b, exp):
+    import json
+    from sm4_Browser.checks import synth
+    s_path, c_path, stamp = _store_files(b.directory)
+    comp, sett = _json(c_path), _json(s_path)
+    tmp = tempfile.mkdtemp(prefix='sm4synth_old_')
+    exp2 = synth.standard(tmp)
+    synth.install(exp2)
+    try:
+        topos = [os.path.basename(p) for p in b.files if b.kinds[p] == 'topo']
+        point = os.path.basename(next(p for p in b.files if b.kinds[p] == 'point'))
+        old_drift = {'format': 5, 'loader_format': 2, 'written': 'x', 'pairs': comp['pairs']['content']['pairs'],
+                     'topos': comp['pairs']['content']['topos'],
+                     'manual': {'spans': [{'a': topos[0], 'b': topos[-1], 'kind': 'typed', 'markers': [], 'v': [2e-12, -1e-12]}],
+                                'stripe': {}}}
+        old_sites = {'format': 1, 'loader_format': 2, 'written': 'x', 'topos': comp['metrics']['content']['topos'],
+                     'spectra': comp['metrics']['content']['spectra'], 'flags': {point: 'pulsing'}}
+        old_heads = {'format': 1, 'loader_format': 2, 'files': comp['headers']['content']['files']}
+        for name, data in ((f"drift_cache_{stamp}.json", old_drift), (f"sites_{stamp}.json", old_sites),
+                           (f"headers_{stamp}.json", old_heads)):
+            with open(os.path.join(tmp, name), 'w') as fh:
+                json.dump(data, fh)
+        b2 = make_browser(tmp)
+        try:
+            names = set(os.listdir(tmp))
+            for name in (f"drift_cache_{stamp}.json", f"sites_{stamp}.json", f"headers_{stamp}.json"):
+                assert name + '.old' in names and name not in names, (name, names)
+            s2, c2 = _json(os.path.join(tmp, f"settings_{stamp}.json")), _json(os.path.join(tmp, f"computed_{stamp}.json"))
+            assert s2['drift']['spans'][0]['v'] == [2e-12, -1e-12] and s2['flags'] == {point: 'pulsing'}
+            assert c2['pairs']['content']['pairs'] == comp['pairs']['content']['pairs']
+            # the files of the new directory have other modification times: the header scan and the
+            # once-over read them again, keeping the same names
+            assert set(c2['headers']['content']['files']) == set(comp['headers']['content']['files'])
+            assert set(c2['metrics']['content']['topos']) == set(comp['metrics']['content']['topos'])
+            # the carried-over settings are in force: the span governs the files between, the flag shows
+            assert len(b2.drift.manual_spans) == 1 and b2.sites.flag(os.path.join(tmp, point)) == 'pulsing'
+        finally:
+            b2._bg_shutdown()
+            b2.win.close()
+            plt._app().processEvents()
+    finally:
+        synth.install(exp)
+
+
+@check("J3 flags: a hand-set flag feeds the region, the spectra on it, the clean rule and the navigation; back to automatic drops the override")
+def _flag_chain(b, exp):
+    topos = [p for p in b.files if b.kinds[p] == 'topo']
+    point = next(p for p in b.files if b.kinds[p] == 'point')
+    grid = next(p for p in b.files if b.kinds[p] == 'grid')
+    s = b.sites
+    auto0 = dict(s.auto)
+    assert all(v == 'experiment' for v in s.flags.values()), s.flags
+    k = s.region_of(topos[0])
+    assert k is not None and s.region_of(grid) == k and s.region_of(point) == k
+    # a topo set to pulsing by hand: its region, every topo of it and the spectra on it are pulsing
+    s.set_flag(topos[0], 'pulsing')
+    assert s.region(k)['flag'] == 'pulsing' and s.region(k)['auto_flag'] == 'experiment'
+    assert all(s.flag(p) == 'pulsing' for p in topos + [grid, point]), s.flags
+    assert s.auto == auto0, "the automatic flags never change"
+    assert s.neighbour_region(topos[0], +1) is None and s.neighbour_region(point, -1) is None
+    assert 'pulsing' in s.region_text(grid)
+    # a grid set to experiment by hand within the pulsing region: that file alone, and the clean rule runs on the final flags
+    s.set_flag(grid, 'experiment')
+    assert s.flag(grid) == 'experiment' and s.flag(point) == 'pulsing' and s.flag(topos[0]) == 'pulsing'
+    files_before_grid = [p for p in b.files if b.files.index(p) < b.files.index(grid) and b.kinds[p] in ('grid', 'point')]
+    assert not files_before_grid or all(s.flag(p) != 'clean' for p in files_before_grid)
+    # the settings file carries exactly the overrides
+    st = _json(_store_files(b.directory)[0])
+    assert st['flags'] == {os.path.basename(topos[0]): 'pulsing', os.path.basename(grid): 'experiment'}
+    s.set_flag(grid, 'pulsing')            # the chain's value without an override of its own: no override
+    assert os.path.basename(grid) not in s.overrides and s.flag(grid) == 'pulsing'
+    s.set_flag(grid, 'experiment')         # differs from it: stored again
+    assert s.overrides == {os.path.basename(topos[0]): 'pulsing', os.path.basename(grid): 'experiment'}
+    s.set_flag(topos[0], 'experiment')     # the topo's automatic value: dropped, the region back to experiment
+    assert os.path.basename(topos[0]) not in s.overrides and s.region(k)['flag'] == 'experiment'
+    s.set_flag(grid, 'experiment')         # now the chain's own value: dropped
+    assert s.overrides == {}, s.overrides
+    assert all(v == 'experiment' for v in s.flags.values())
+    assert _json(_store_files(b.directory)[0])['flags'] == {}
+
+
 def widgets_text(lo, hi):
     from sm4_Browser.widgets import RangeBox
     return RangeBox.text_of((lo, hi))

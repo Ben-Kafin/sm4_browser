@@ -46,10 +46,10 @@ import numpy as np
 from spym.io.rhksm4._sm4 import RHKsm4, RHKFileHeader, RHKPageIndexHeader, RHKPage, RHKPageHeader
 from sm4_Browser import sts, phase, fft, sweeps
 
-# The loader's format, recorded in every cache the package writes (the fit histories, the sites
-# cache, the drift cache): 2 is the loader that converts every page to physical units on load
-# (data = stored x RHK_Zscale + RHK_Zoffset); a cache without it, or with another number, was
-# written from the stored values (1) and is out of date.
+# The loader's format, recorded in everything the package computes from the files and keeps (the
+# fit histories, every section of the computed store): 2 is the loader that converts every page to
+# physical units on load (data = stored x RHK_Zscale + RHK_Zoffset); a record without it, or with
+# another number, was written from the stored values (1) and is out of date.
 LOADER_FORMAT = 2
 
 
@@ -349,12 +349,6 @@ def header_info_from_attrs(attrs_list):
 HEADER_CACHE_FORMAT = 1
 
 
-def header_cache_path(directory, files):
-    """The header cache of a directory: headers_<date_time of the first file>.json beside the drift and sites caches."""
-    stamp = '_'.join(f"{v:02d}" for v in filename_stamp(files[0])) if files else 'empty'
-    return os.path.join(directory, f"headers_{stamp}.json")
-
-
 def _file_sig(path):
     """(size, mtime) of a file, the key of its header-cache entry; None when it cannot be read."""
     try:
@@ -364,31 +358,25 @@ def _file_sig(path):
     return [int(st.st_size), float(st.st_mtime)]
 
 
-def header_cache(directory, files, progress=True):
+def header_cache(directory, files, progress=True, computed=None):
     """
-    The header scan of every file (sm4_header_info) through an on-disk cache:
+    The header scan of every file (sm4_header_info) through the 'headers'
+    section of the experiment's computed store (caches.Computed; opened
+    here when the caller gives none):
     {path: {'types', 'geom', 'line_types', 'start_time', 'end_time'}}.  The
-    cache (header_cache_path) holds one entry per file name with the file's
-    size and modification time and the loader format; an entry whose file
-    changed (size or time) or that is missing is read anew, the rest are taken
-    as stored, so a later startup reads only new or changed files.  start_time
-    is RHK_DateTime of the first page (seconds since the epoch, None when
-    unreadable), end_time the file-name stamp; their difference is the
-    file's duration (the browser's step filter).  The cache is rewritten
-    atomically when anything was read.  A cache of another format or loader
-    is ignored (rebuilt).
+    section holds one entry per file name with the file's size and
+    modification time; an entry whose file changed (size or time) or that is
+    missing is read anew, the rest are taken as stored, so a later startup
+    reads only new or changed files.  start_time is RHK_DateTime of the first
+    page (seconds since the epoch, None when unreadable), end_time the
+    file-name stamp; their difference is the file's duration (the browser's
+    step filter).  The store is written once when anything was read.  A
+    section of another format or loader is ignored (rebuilt).
     """
-    import json
-    import tempfile
-    path = header_cache_path(directory, files)
-    stored = {}
-    try:
-        with open(path, 'r', encoding='utf-8') as fh:
-            data = json.load(fh)
-        if data.get('format') == HEADER_CACHE_FORMAT and data.get('loader_format') == LOADER_FORMAT:
-            stored = data.get('files', {})
-    except (OSError, ValueError):
-        stored = {}
+    if computed is None:
+        from sm4_Browser.caches import open_stores
+        _, computed = open_stores(directory, files)
+    stored = computed.section('headers', HEADER_CACHE_FORMAT).get('files', {})
     out, new_entries, n_read = {}, {}, 0
     for k, p in enumerate(files):
         name = os.path.basename(p)
@@ -418,17 +406,11 @@ def header_cache(directory, files, progress=True):
     if progress and n_read >= 50:
         print()
     if n_read or set(new_entries) != set(stored):
-        try:
-            fd, tmp = tempfile.mkstemp(dir=directory, prefix='.headers_', suffix='.json')
-            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
-                json.dump({'format': HEADER_CACHE_FORMAT, 'loader_format': LOADER_FORMAT,
-                           'files': new_entries}, fh)
-            os.replace(tmp, path)
-        except OSError as exc:
-            print(f"header cache not written ({exc}).")
+        computed.put('headers', HEADER_CACHE_FORMAT, {'files': new_entries})
+        computed.write()
     if progress:
-        print(f"header scan: {len(files)} files, {n_read} read from disk, {len(files) - n_read} from the cache "
-              f"({os.path.basename(path)}).")
+        print(f"header scan: {len(files)} files, {n_read} read from disk, {len(files) - n_read} from the store "
+              f"({computed.name}).")
     return out
 
 

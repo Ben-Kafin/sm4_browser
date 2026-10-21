@@ -31,8 +31,13 @@ Every file of the directory is placed on the scan area once and kept
 the files up to the current one, all of them, or the loaded set ('last 25');
 stepping only shows and hides images.  Files not read yet are read in the
 background (worker processes) and placed as they arrive; their processed
-images are cached on disk (scan_cache_<stamp>/), the header scan too
-(headers_<stamp>.json).  The drift is applied to each image as an exact
+images are cached on disk (scan_cache_<stamp>/).  Everything else the
+browser keeps between sessions lives in two files beside the .sm4 files
+(caches.py): settings_<stamp>.json holds what was set by hand (the manual
+drift spans and stripe points, the scale timeline, the site flags) and is
+written on every change; computed_<stamp>.json holds what was computed
+from the files (the header scan, the sites' metrics, the tracked drift
+pairs) and can be deleted and rebuilt.  The drift is applied to each image as an exact
 affine transform of its frame (scanlayer.affine_matrix), never baked into
 its pixels.  Other spectra files are drawn grey before the current topo and
 blue after it.  The 'step through' box limits Prev / Next and the sliders to
@@ -259,9 +264,9 @@ Sites and regions
 -----------------
 At the first startup every topography and spectra file of the directory is
 loaded once for its height metrics and its position (console progress
-line), cached in sites_<stamp>.json beside the drift cache (per file with
-its modification time; later startups read the cache and compute only
-files not in it).  Within every segment (the topos between long-range
+line), kept in the computed store (computed_<stamp>.json, per file with
+its modification time; later startups read it and compute only files not
+in it).  Within every segment (the topos between long-range
 moves) the topos are grouped into regions by footprint overlap at their
 recorded absolute positions, before any drift correction (a correction
 never changes a region or a flag): any topo overlapping a member joins
@@ -359,9 +364,10 @@ window' (see "Manual drift"), the Topo window 'stripe match'.
 Segments: a jump of the recorded scan centre above move_min_m (1 um)
 between consecutive topos is a long-range move; the topos between two
 moves are a segment; pairs are tracked and before/after topos looked up
-within a segment only.  Cache: drift_cache_<date_time of the first
-file>.json in the experiment directory (format 5: the tracked pairs, the
-topo times, the applied spans with their kind and velocity).
+within a segment only.  Stores: the tracked pairs and the topo times are
+the 'pairs' section of computed_<stamp>.json; the applied spans with their
+kind and velocity and the stripe states are the 'drift' section of
+settings_<stamp>.json (caches.py).
 
 Manual drift
 ------------
@@ -494,6 +500,7 @@ from sm4_Browser.lineavg import LineAverages, member_from_file
 from sm4_Browser.map import Map
 from sm4_Browser.scanlayer import (ScanLayer, display_record, record_corners, SHOW_MODES, DEFAULT_SHOW_MODE, cache_dir,
                                    cache_load, cache_store, read_record)
+from sm4_Browser.caches import open_stores
 from collections import OrderedDict
 from types import SimpleNamespace
 
@@ -550,21 +557,30 @@ class _BrowserCore:
         # Every file's type and every topo's scan centre from a header-only read at startup
         # (sm4_header_info), so that the spectra slider knows the spectra files and the
         # long-range moves are known from the recorded locations before any file is loaded.
-        # The header scan goes through the on-disk header cache (sm4file.header_cache): only new or
-        # changed files are opened; the rest come from headers_<stamp>.json in the directory.
+        # The header scan goes through the computed store (sm4file.header_cache): only new or
+        # changed files are opened; the rest come from its 'headers' section.
         self.kinds = {}
         self.head_geoms = {}       # topo path -> header geometry (center_m, scales, sizes), see sm4_header_info
-        self.headers = header_cache(directory, self.files)   # path -> types, geom, start/end time
+        # The experiment's two stores (caches.py): settings_<stamp>.json for everything set by hand
+        # and computed_<stamp>.json for everything computed from the files; opened once here and
+        # handed to the header scan, the drift tracker and the sites (the earlier caches are carried
+        # over the first time).
+        self.settings, self.computed = open_stores(directory, self.files)
+        self.headers = header_cache(directory, self.files, computed=self.computed)   # path -> types, geom, start/end time
         for p in self.files:
             h = self.headers[p]
             self.kinds[p] = kind_from_types(h['types'], h['line_types'])
             if self.kinds[p] == 'topo' and h['geom'] is not None:
                 self.head_geoms[p] = h['geom']
         self.geoms = {}            # path -> topo footprint record, learned on first load
+        # The loader's cache (_load) is made before the drift tracker and the sites, which load files
+        # through _load at startup (the sites' once-over failed on every file while it came later).
+        self._lru = OrderedDict()  # path -> Sm4File: the most recently used full files beyond the window
         self.loaded = {}           # path -> Sm4File (the window, plus the extra topos described in _ensure_window)
         # The drift correction: the segments of the directory, the pair cache, the per-file
         # results and the on-disk drift cache (Drift; its results are read with self.drift.result).
-        self.drift = Drift(directory, self.files, self.kinds, self.head_geoms, self.drift_params, self._load)
+        self.drift = Drift(directory, self.files, self.kinds, self.head_geoms, self.drift_params, self._load,
+                           settings=self.settings, computed=self.computed)
         # Every consecutive topo pair of every segment tracked (Drift.build; cached).
         self.drift.build()
         # Every manual change of the drift (a span applied or cleared in a drift window), made in
@@ -573,7 +589,7 @@ class _BrowserCore:
         self.drift.subscribe(self._on_manual_changed)
         # The sites and regions (sites.Sites: the once-over metrics cache, the regions, the flags).
         self.sites = Sites(directory, self.files, self.kinds, self.head_geoms, self.drift.seg_first, self._load,
-                           tip_params)
+                           tip_params, settings=self.settings, computed=self.computed)
         self.sites.describe()
         self.spectra_files = [i for i, p in enumerate(self.files) if self.kinds[p] in ('grid', 'point', 'phase', 'fft')]
         self.spectra_pos = 0       # index into spectra_files of the spectra file last shown
@@ -611,7 +627,6 @@ class _BrowserCore:
         self._bg_pool = None               # the worker processes (made at the first need; False: not available)
         self._bg_futures = {}              # path -> future of a record being read by a worker
         self._scan_cache = cache_dir(directory, self.files)
-        self._lru = OrderedDict()          # path -> Sm4File: the most recently used full files beyond the window
         self._layer_reported = set()
         self._point_artists = []
         # The step filter (the 'step through' box): the kinds Prev / Next and the sliders stop at, and the

@@ -4,18 +4,17 @@ set, which files were taken while pulsing the tip (a silver mound, high
 absolute Z relief), which spectra file ends such a run with a clean tip, and
 the navigation by experiment region.
 
-Metrics (once over the directory at the first startup, cached in
-sites_<stamp>.json beside the drift cache, per file with its modification
-time; later startups read the cache and compute only files not in it).  The
-cache records the loader format it was computed from
-(sm4file.LOADER_FORMAT); one from another loader is out of date and left as
-it is, and the metrics go into a new file beside it, sites_<stamp>_2.json
-(the next number, sm4file.cache_family), with the flags set by hand carried
-over from it; the newest up-to-date file is the one read and rewritten:
+Metrics (once over the directory at the first startup, kept as the
+'metrics' section of the computed store, computed_<stamp>.json, caches.py,
+per file with its modification time; later startups read the section and
+compute only files not in it or changed since; a section of another format
+or loader is computed again).  No setting enters the metrics:
   topo    : the 2nd and 98th percentiles and the median of the absolute
             forward topography (metres)
   spectra : the first spectrum's absolute position and the ohmic test
             (grid and point files)
+The flags set by hand are the 'flags' section of the settings store,
+settings_<stamp>.json, written at once on every change and never discarded.
 
 Regions (Sites.build_regions): within every segment (the topos between two
 long-range moves, the drift index's segments) the topos are grouped by
@@ -51,8 +50,18 @@ Classification (Sites.classify; TIP_PARAMS holds the ohmic settings):
     by experiment files gets that last spectra file flagged clean.
   - phase rotations and noise spectra take the preceding file's flag and
     region.
-  - every flag is the auto value until it is changed in the browser (the
-    'site' radio); a change is written to the sites file.
+  - every flag is the automatic value until it is changed in the browser
+    (the 'site' radio), and a hand-set flag feeds the whole chain, not just
+    its own file: a topo set to pulsing or experiment by hand sets its
+    region's class (the region is the model: a zoomed image takes its
+    region's class), so every topo of the region and every spectra file on
+    them follow; a grid or point file set by hand changes that file alone;
+    the clean rule then runs on the flags with the hand-set ones applied;
+    'next region' / 'prev region' use the regions' final classes.  The
+    purely automatic flags are kept beside the final ones (Sites.auto); a
+    flag set to the value the chain gives the file without an override of
+    its own is no override and is dropped.  A change is written to the
+    settings store at once.
 Navigation (Sites.neighbour_region): 'next region' from a file is the
 first spectra file ahead whose region is an experiment region other than
 the file's own (a pulsing file has no region, so from it the first
@@ -206,7 +215,7 @@ class Sites:
         their metrics are released at once)
     """
 
-    def __init__(self, directory, files, kinds, head_geoms, seg_first, loader, params=None):
+    def __init__(self, directory, files, kinds, head_geoms, seg_first, loader, params=None, settings=None, computed=None):
         self.directory = directory
         self.files = list(files)
         self.kinds = dict(kinds)
@@ -215,9 +224,13 @@ class Sites:
         self._load = loader
         self.params = dict(TIP_PARAMS)
         self.params.update(params or {})
-        y, mo, d, h, mi, sec, _ = sm4file.filename_stamp(self.files[0])
-        self.base_path = os.path.join(directory, f"sites_{y:04d}_{mo:02d}_{d:02d}_{h:02d}_{mi:02d}_{sec:02d}.json")
-        self.path = self.base_path   # the file read and written (_read: the newest up-to-date one, or a new one)
+        # The two stores (caches.py): the metrics in the computed one, the hand-set flags in the
+        # settings; opened here when the caller has none.
+        if settings is None or computed is None:
+            from sm4_Browser.caches import open_stores
+            s, c = open_stores(directory, self.files)
+            settings, computed = settings or s, computed or c
+        self.settings, self.computed = settings, computed
         self.topos = {}          # file name -> {'z2', 'z98', 'median', 'mtime'}
         self.spectra = {}        # file name -> {'xy_m': [x, y] or None, 'ohmic', 'r2', 'flat', 'mtime'}
         self.overrides = {}      # file name -> flag set by the user
@@ -231,54 +244,33 @@ class Sites:
         self.separability = 0.0
         self.classify()
 
-    # --- the cache ---
+    # --- the stores ---
+
+    SITES_FORMAT = SITES_FORMAT
 
     def _read(self):
-        """
-        The newest up-to-date file of the cache's family (its loader format
-        this loader's) is read and becomes self.path.  Without one, self.path
-        is a new file beside the others (sm4file.cache_new_path; an
-        out-of-date file is left as it is) and the flags set by hand are
-        carried over from the newest readable out-of-date file.
-        """
-        stale = None
-        for _, path in reversed(sm4file.cache_family(self.base_path)):
-            try:
-                with open(path) as fh:
-                    data = json.load(fh)
-            except (OSError, ValueError) as exc:
-                print(f"sites cache {path}: not readable ({exc}).")
-                continue
-            if data.get('loader_format') == sm4file.LOADER_FORMAT:
-                self.path = path
-                self.topos = dict(data.get('topos', {}))
-                self.spectra = dict(data.get('spectra', {}))
-                self.overrides = {k: v for k, v in data.get('flags', {}).items() if v in FLAGS}
-                print(f"sites cache loaded: {os.path.basename(self.path)} ({len(self.topos)} topos, "
-                      f"{len(self.spectra)} spectra files, {len(self.overrides)} flags set by hand)")
-                return
-            if stale is None:
-                stale = (path, data)
-        self.path = sm4file.cache_new_path(self.base_path)
-        if stale is not None:
-            path, data = stale
-            self.overrides = {k: v for k, v in data.get('flags', {}).items() if v in FLAGS}
-            print(f"sites cache {os.path.basename(path)}: written from another loader (loader format "
-                  f"{data.get('loader_format', 1)}, this loader {sm4file.LOADER_FORMAT}); left as it is. The "
-                  f"metrics are computed again into {os.path.basename(self.path)}, with its "
-                  f"{len(self.overrides)} flag(s) set by hand carried over.")
+        """The metrics from the computed store's 'metrics' section (empty when absent or of another format or loader) and the hand-set flags from the settings' 'flags' section."""
+        content = self.computed.section('metrics', SITES_FORMAT)
+        self.topos = dict(content.get('topos', {}))
+        self.spectra = dict(content.get('spectra', {}))
+        flags = self.settings.get('flags') or {}
+        self.overrides = {k: v for k, v in flags.items() if v in FLAGS}
+        if self.topos or self.spectra or self.overrides:
+            print(f"sites: {len(self.topos)} topos and {len(self.spectra)} spectra files from {self.computed.name}, "
+                  f"{len(self.overrides)} flag(s) set by hand from {self.settings.name}")
+        names = {os.path.basename(p) for p in self.files}
+        for name in sorted(self.overrides):
+            if name not in names:
+                print(f"{self.settings.name}: the flag of {name} belongs to no file in the directory; kept in the file.")
 
-    def save(self):
-        data = {'format': SITES_FORMAT, 'loader_format': sm4file.LOADER_FORMAT,
-                'written': datetime.now().isoformat(timespec='seconds'),
-                'topos': self.topos, 'spectra': self.spectra, 'flags': self.overrides}
-        tmp = self.path + '.tmp'
-        try:
-            with open(tmp, 'w') as fh:
-                json.dump(data, fh, indent=1)
-            os.replace(tmp, self.path)
-        except OSError as exc:
-            print(f"sites cache {self.path}: not written ({exc}).")
+    def _save_metrics(self):
+        """The metrics into the computed store, written once (after the once-over)."""
+        self.computed.put('metrics', SITES_FORMAT, {'topos': self.topos, 'spectra': self.spectra})
+        self.computed.write()
+
+    def _save_flags(self):
+        """The hand-set flags into the settings store, written at once."""
+        self.settings.put('flags', dict(self.overrides))
 
     def _once_over(self):
         """Compute the metrics of every file not in the cache (or changed since), loading each once."""
@@ -300,8 +292,8 @@ class Sites:
                     todo.append((p, name, kind, mtime))
         if not todo:
             return
-        print(f"sites: once over {len(todo)} file(s) for their height metrics and positions (cached in "
-              f"{os.path.basename(self.path)})")
+        print(f"sites: once over {len(todo)} file(s) for their height metrics and positions (kept in "
+              f"{self.computed.name})")
         for n, (p, name, kind, mtime) in enumerate(todo, 1):
             try:
                 f = self._load(p)
@@ -319,7 +311,7 @@ class Sites:
             (self.topos if kind == 'topo' else self.spectra)[name] = rec
             if n % 10 == 0 or n == len(todo):
                 print(f"sites: {n} / {len(todo)}")
-        self.save()
+        self._save_metrics()
 
     # --- the regions ---
 
@@ -426,7 +418,12 @@ class Sites:
     # --- classification ---
 
     def classify(self):
-        """The regions, their ranges and the threshold, every file's auto flag and region, the overrides."""
+        """
+        The regions, their ranges and the threshold, then the flags twice through the same chain
+        (_chain): once purely automatic (self.auto, what a file is without any hand-set flag) and
+        once with the hand-set flags feeding it (self.flags, the final ones, the regions' final
+        classes in their 'flag').
+        """
         topo_seq = [p for p in self.files if self.kinds.get(p) == 'topo']
         footprints = {p: head_footprint(self.head_geoms.get(p)) for p in topo_seq}
         self.build_regions(topo_seq, footprints)
@@ -434,14 +431,39 @@ class Sites:
         thr_log, sep = otsu_threshold(np.log(spans)) if len(spans) >= 2 else (None, 0.0)
         self.threshold_m = None if thr_log is None else float(np.exp(thr_log))
         self.separability = sep
-        auto = {}
         for r in self.regions:
             pulsing = self.threshold_m is not None and r['span_m'] is not None and r['span_m'] > self.threshold_m
-            r['flag'] = 'pulsing' if pulsing else 'experiment'
+            r['auto_flag'] = 'pulsing' if pulsing else 'experiment'
+        self._topo_seq, self._footprints = topo_seq, footprints
+        self.auto = self._chain(topo_seq, footprints, {})
+        self.flags = self._chain(topo_seq, footprints, self.overrides)
+
+    def _chain(self, topo_seq, footprints, overrides):
+        """
+        Every file's flag from the regions' classes, with `overrides` ({file name: flag}) feeding
+        the chain: a topo set to pulsing or experiment sets its region's class (stored in the
+        region's 'flag'; the last such topo in time order wins), every topo of a region takes the
+        region's class (a topo set to clean by hand is clean itself), a grid or point takes the
+        flag of the most recent preceding topo whose footprint contains it, else the ohmic test,
+        a hand-set flag on a grid or point replaces that file's, phase and noise files take the
+        preceding file's, and the clean rule runs last on the flags so far, never over a hand-set
+        flag.  Returns {path: flag}.
+        """
+        over = {p: overrides[os.path.basename(p)] for p in self.files if os.path.basename(p) in overrides}
+        for r in self.regions:
+            r['flag'] = r['auto_flag']
+            for p in r['topos']:                              # time order: the last hand-set topo decides
+                if over.get(p) in ('pulsing', 'experiment'):
+                    r['flag'] = over[p]
+        auto = {}
+        for r in self.regions:
             for p in r['topos']:
                 auto[p] = r['flag']
         for p in topo_seq:                                   # a topo without a footprint (no geometry): experiment
             auto.setdefault(p, 'experiment')
+        for p in topo_seq:
+            if over.get(p) == 'clean':
+                auto[p] = 'clean'
         # Spectra: the most recent preceding topo whose footprint contains the position; else the ohmic test.
         prev_flag, prev_region = 'experiment', None
         for i, p in enumerate(self.files):
@@ -460,13 +482,15 @@ class Sites:
                             break
                 if flag is None:
                     flag = 'pulsing' if rec.get('ohmic') else 'experiment'
+                if over.get(p) in FLAGS:                     # a grid or point set by hand: that file alone
+                    flag = over[p]
                 auto[p] = flag
                 self.region_index[p] = region
             else:
-                auto[p] = prev_flag                      # phase rotations and noise spectra
+                auto[p] = over[p] if over.get(p) in FLAGS else prev_flag   # phase rotations and noise spectra
                 self.region_index[p] = prev_region
             prev_flag, prev_region = auto[p], self.region_index.get(p)
-        # Clean: the last spectra file of a pulsing run followed by experiment files.
+        # Clean: the last spectra file of a pulsing run followed by experiment files (never over a hand-set flag).
         i = 0
         n = len(self.files)
         while i < n:
@@ -479,11 +503,11 @@ class Sites:
             if j < n and auto[self.files[j]] == 'experiment':
                 for k in range(j - 1, i - 1, -1):
                     if self.kinds.get(self.files[k]) in ('grid', 'point'):
-                        auto[self.files[k]] = 'clean'
+                        if self.files[k] not in over:
+                            auto[self.files[k]] = 'clean'
                         break
             i = j
-        self.auto = auto
-        self.flags = {p: self.overrides.get(os.path.basename(p), auto[p]) for p in self.files}
+        return auto
 
     # --- queries and edits ---
 
@@ -514,12 +538,16 @@ class Sites:
         if flag not in FLAGS:
             raise ValueError(f"flag must be one of {FLAGS}")
         name = os.path.basename(path)
-        if flag == self.auto.get(path):
+        # An override is needed only when the flag differs from what the chain gives this file
+        # without an override of its own (the other hand-set flags in force).
+        others = {k: v for k, v in self.overrides.items() if k != name}
+        without = self._chain(self._topo_seq, self._footprints, others).get(path)
+        if flag == without:
             self.overrides.pop(name, None)
         else:
             self.overrides[name] = flag
-        self.flags = {p: self.overrides.get(os.path.basename(p), self.auto[p]) for p in self.files}
-        self.save()
+        self.classify()              # the hand-set flag feeds the regions, the spectra on them and the clean rule
+        self._save_flags()
 
     def _is_experiment_region(self, k):
         r = self.region(k) if k is not None else None
