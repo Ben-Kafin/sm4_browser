@@ -227,9 +227,10 @@ extrema show, the reference period being the extrema spacing of the topo
 profile along the part of the line that lies on a topo, and for a line off
 every topo the spacing measured on the other lines, else on the reference
 topos along the fast axis (no Fourier transform anywhere); the slow axis
-stays the baseline v, and the within-sweep shift along the line of a line
-with a measured forward factor is that line's own forward compression v_i =
-(1 - b_f) L_f / T_f (Drift.line_velocities), the baseline across it.  The
+stays the baseline v, and the within-sweep shift of a line with a measured
+forward factor is the baseline v plus that line's own forward compression
+v_i = (1 - b_f) L_f / T_f along the line (Drift.line_velocities): with the
+stripe matching on a sweep drifts more along the line, never less.  The
 stripe matching informs nothing: it never changes v.  With no velocity
 ('drift none') the lines start at their recorded positions and every
 reverse pass is stretched from its forward end to one recorded separation
@@ -3082,10 +3083,11 @@ class Drift:
             fast, _ = f.grid_axes()
             has = np.isfinite(line_v)
             if fast is not None and has.any():
-                along = out[has] @ fast                                          # (n, npts) the baseline along the line
-                perp = out[has] - along[:, :, None] * fast[None, None, :]        # the baseline across it, kept
+                # The line's own forward compression along the fast axis on top of the baseline (its
+                # along-line part included): with the stripe matching on a sweep drifts more along the
+                # line than with the velocity alone.
                 dt = et[has] - win[has, 0][:, None]
-                out[has] = perp - (line_v[has][:, None] * dt)[:, :, None] * fast[None, None, :]
+                out[has] = out[has] - (line_v[has][:, None] * dt)[:, :, None] * fast[None, None, :]
         return out
 
     def sweep_shift(self, f, loaded=None, stripe=False, auto=True, manual=True, anchor=False):
@@ -3093,9 +3095,9 @@ class Drift:
         The drift within every sweep of a spectra file: (N, npts, 2)
         absolute metres, the content's position relative to the sweep's
         start at every energy point's time (Sm4File.energy_times, the file's
-        column order): -v (t - t_start) with the pair velocity v; on a grid
-        line with a measured forward factor (stripe matching on) the line's
-        own forward compression along the fast axis instead, v across it.
+        column order): -v (t - t_start) with the pair velocity v, plus, on a
+        grid line with a measured forward factor (stripe matching on), the
+        line's own forward compression along the fast axis on top of it.
         NaN for a spectrum not kept; None without a result or energy points.
         """
         d = self.result(f, loaded, stripe, auto, manual, anchor)
@@ -3240,12 +3242,14 @@ class Drift:
         the npts + 1 energy-cell edges of its sweep, edge e at the sweep's
         start + e x its sample time (the sweep window over the points, the
         derived Sm4File.dwell_s; the first edge at the start, shear 0), in
-        metres, in the file's column order of the energy axis: -v_i x (edge
+        metres, in the file's column order of the energy axis: -(v . fast)
+        x (edge time - ramp start) with the pair velocity, plus -v_i x (edge
         time - ramp start) on a line with a measured forward factor (stripe
         matching on; v_i the line's own forward compression,
-        line_velocities), -(v . fast) x (edge time - ramp start) with the
-        pair velocity otherwise.  Shape (len(cols), npts + 1); NaN rows for
-        spectra not kept; None without a result or a fast axis.
+        line_velocities): the stripe matching adds its compression to the
+        velocity's along-line part, it never replaces it.  Shape (len(cols),
+        npts + 1); NaN rows for spectra not kept; None without a result or a
+        fast axis.
         """
         d_res = self.result(f, loaded, stripe, auto, manual)
         fast, _ = f.grid_axes()
@@ -3264,11 +3268,10 @@ class Drift:
             if k < 0 or k >= len(win) or not np.isfinite(win[k, 0]):
                 continue
             t_e = E[k] if E is not None else win[k, 0] + (win[k, 1] - win[k, 0]) * np.arange(npts + 1) / max(npts, 1)
+            d = model.displacement(t_e) - model.displacement(float(win[k, 0]))
+            out[r] = -(d @ fast)                                       # the velocity's along-line part
             if line_v is not None and k < len(line_v) and np.isfinite(line_v[k]):
-                out[r] = -line_v[k] * (t_e - win[k, 0])
-            else:
-                d = model.displacement(t_e) - model.displacement(float(win[k, 0]))
-                out[r] = -(d @ fast)
+                out[r] -= line_v[k] * (t_e - win[k, 0])               # plus the line's own forward compression
         return out
 
     def map_shift(self, f, loaded=None, stripe=False, auto=True, manual=True):

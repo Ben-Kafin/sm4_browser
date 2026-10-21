@@ -243,15 +243,15 @@ class Map:
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
         self.chk_auto = widgets.make(self.fig, 'auto drift', 0.26, 0.112, value=self.auto_on)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
-        self.chk_manual = widgets.make(self.fig, 'manual drift', 0.55, 0.112, value=self.manual_on)
+        self.chk_manual = widgets.make(self.fig, 'manual drift', 0.53, 0.112, value=self.manual_on)
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.btn_drift_win = widgets.make(self.fig, 'drift window', 0.63, 0.114)
+        self.btn_drift_win = widgets.make(self.fig, 'drift window', 0.612, 0.114)
         self.btn_drift_win.on_change(self._on_drift_window)
         # The grid's stripe matching: the 'stripe' toggle (one state per file, Drift.set_stripe_on) and
-        # the 'stripe match' button, between the two drift toggles.
-        self.chk_stripe = widgets.make(self.fig, 'stripe', 0.42, 0.116, value=False)
+        # the 'stripe match' button, the row under the drift toggles, left of 'Average'.
+        self.chk_stripe = widgets.make(self.fig, 'stripe', 0.54, 0.072, value=False)
         self.chk_stripe.on_change(self._on_stripe_toggle)
-        self.btn_stripe_win = widgets.make(self.fig, 'stripe match', 0.47, 0.118)
+        self.btn_stripe_win = widgets.make(self.fig, 'stripe match', 0.588, 0.074)
         self.btn_stripe_win.on_change(self._on_stripe_window)
         self._sync_stripe_toggle()
         self.btn_view = widgets.make(self.fig, 'Grid view', 0.92, 0.065)
@@ -593,8 +593,8 @@ class Map:
         """
         The spectra's drift lines in the frame (nm), (n, npts, 2): every
         sweep's polyline from its corrected start through its position at
-        every energy point (Drift.sweep_lines: the line's forward
-        compression along the line where measured, the model otherwise),
+        every energy point (Drift.sweep_lines: the model's drift plus the
+        line's forward compression along the line where measured),
         whenever a result places the pixels (a toggle on, or the stripe
         matching alone); None otherwise.  Memoized per toggle state
         (_lines_memo; a stripe change drops it through _refresh_drift).
@@ -905,7 +905,7 @@ class Map:
                 'limits': self._drift_bounds() if self._drift_result() is not None else None,
                 'shift': self._frame_shift(self.e_index),
                 'drift_lines': self._frame_lines(),
-                'marker_points': [(self.pixel_xy(px), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
+                'marker_points': [(self.marker_xy(px, True), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
                 'centers': [self.group_center_xy(m, g) for g, m in enumerate(self.groups())],
                 'cmap': self.cmap}
 
@@ -1196,9 +1196,51 @@ class Map:
         self.group_ctr = ctr
         return ctr
 
-    def group_center_xy(self, members, g=None):
-        """A group's centre in the frame (nm): pixel_xy of group_center (a fractional pixel is allowed)."""
+    def group_center_xy(self, members, g=None, on_map=True):
+        """A group's centre in the frame (nm) as drawn: the mean of its markers' drawn positions (marker_xy, on the map at the shown energy or on the topo), or pixel_xy of its kept centre without markers."""
+        if members:
+            pts = np.array([self.marker_xy(self.marker_px[i], on_map) for i in members], dtype=np.float64)
+            return (float(pts[:, 0].mean()), float(pts[:, 1].mean()))
         return self.pixel_xy(self.group_center(members, g))
+
+    def _marker_shift(self, on_map=True):
+        """Every pixel's shift as drawn, (n_lines, n_fast, 2) in the frame (nm): on the map the shift of the shown energy (_frame_shift), on the topo the chained shift of the sweep's start; None without a result."""
+        if on_map:
+            return self._frame_shift(self.e_index)
+        chain = self._chain_shift()
+        if chain is None:
+            return None
+        g = self.grid
+        n = g.n_lines * g.n_fast
+        s = np.full((n, 2), np.nan)
+        m = min(n, len(chain))
+        s[:m] = chain[:m]
+        return self._to_frame_shift(s).reshape(g.n_lines, g.n_fast, 2)
+
+    def marker_xy(self, px, on_map=True):
+        """Where grid pixel (line, fast) is drawn (nm): its centre plus its shift as drawn (_marker_shift), so that a marker sits on its pixel; the centre alone without a result."""
+        x, y = self.pixel_xy(px)
+        sh = self._marker_shift(on_map)
+        if sh is not None:
+            s = sh[int(px[0]), int(px[1])]
+            if np.all(np.isfinite(s)):
+                return (float(x + s[0]), float(y + s[1]))
+        return (float(x), float(y))
+
+    def xy_pixel_drawn(self, x, y, on_map=True):
+        """The grid pixel drawn nearest a point of the frame (every pixel at its shift as drawn, _marker_shift); xy_pixel without a result."""
+        sh = self._marker_shift(on_map)
+        if sh is None:
+            return self.xy_pixel(x, y)
+        l, r, b, t = self.extent
+        fx = l + (np.arange(self.n_fast) + 0.5) * (r - l) / self.n_fast
+        fy = b + (np.arange(self.n_lines) + 0.5) * (t - b) / self.n_lines
+        d = np.hypot(fx[None, :] + sh[:, :, 0] - x, fy[:, None] + sh[:, :, 1] - y)
+        d = np.where(np.isfinite(d), d, np.inf)
+        if not np.isfinite(d).any():
+            return self.xy_pixel(x, y)
+        k = int(np.argmin(d))
+        return (int(k // self.n_fast), int(k % self.n_fast))
 
     def group_order(self):
         """Group indices by their centres' y on the frame, highest first (the stack and slider order)."""
@@ -1247,8 +1289,10 @@ class Map:
                 self._marker_artists.extend(plots.draw_drift_lines(ax, lines, color=plots.drift_color(self._drift_source)))
             on_map = ax is self.ax_map
             marker_pick = {} if (self.avg_on and on_map) else {'picker': 6}
+            # Every marker on its pixel as drawn (marker_xy: the map's shift at the shown energy, the
+            # topo's chained shift), the centres at the mean of their members' drawn positions.
             for i, px in enumerate(self.marker_px):
-                x, y = self.pixel_xy(px)
+                x, y = self.marker_xy(px, on_map)
                 h, = ax.plot([x], [y], marker='s', ms=9, mfc='none', mec=self.marker_color(i), mew=1.8,
                              ls='none', label=f'marker_{i}', **marker_pick)
                 self._marker_artists.append(h)
@@ -1257,7 +1301,7 @@ class Map:
                 for g, members in enumerate(groups):
                     if not members:
                         continue                         # a group without markers has no centre mark
-                    x, y = self.group_center_xy(members, g)
+                    x, y = self.group_center_xy(members, g, on_map)
                     h, = ax.plot([x], [y], marker='X', ms=10, color='black', ls='none',
                                  label=f'_avg_{g}', **avg_pick)
                     self._marker_artists.append(h)
@@ -1297,7 +1341,7 @@ class Map:
         if event.inaxes not in (self.ax_map, self.ax_topo):
             return
         kind, idx = self._active_obj
-        target = self.xy_pixel(event.xdata, event.ydata)
+        target = self.xy_pixel_drawn(event.xdata, event.ydata, event.inaxes is self.ax_map)   # the pixel drawn under the cursor
         if kind == 'marker':
             if self.marker_px[idx] == target:
                 return
@@ -1593,7 +1637,7 @@ class Map:
                 else:
                     for i, item in enumerate(markers):
                         c.add_spectrum(self.V, item['curve'], xlim, lim_of(item['curve']),
-                                       self.pixel_xy(self.marker_px[i]), q)
+                                       self.marker_xy(self.marker_px[i], True), q)
         except Exception as exc:
             print(f"add to plot: {exc}")
 

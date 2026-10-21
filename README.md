@@ -298,7 +298,9 @@ avg`, `Send to fit`, `drift window`, its own drift toggles, and the `stripe` tog
 shared state, as the browser's) with `stripe match`. Each heatmap row sits on its own topography
 pixel at its first energy (the pixel was recorded seconds before the sweep began; the placement and
 the slow drift move pixel and spectrum alike) and is sheared by the drift during the sweep from
-there; the stripe never moves.
+there; the stripe never moves. The position markers on the heatmap follow their rows' shear, so
+they lie on the rows as drawn, and a drag on the heatmap takes that shear back out; on the stripe
+they are level. The Feenstra companion draws them the same way.
 
 ### Map window and the figure composer
 
@@ -310,9 +312,11 @@ per map; one `γ` box per energy slice. The markers are the Line window's method
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
 spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
 position plus the drift within its sweep up to the shown energy, the embedded topography is drawn as
-quads at the pixels' chained positions, and the frame widens to hold every shifted pixel; with both
-sources off but the grid's stripe matching set, the lines' placement alone does the same and the
-titles say "stripe matched". `add to
+quads at the pixels' chained positions, the frame widens to hold every shifted pixel, and every
+marker and group centre sits on its pixel as drawn (the map's shift at the shown energy, the
+topography's chained shift; a drag lands on the pixel drawn under the cursor; the composer's symbols
+follow); with both sources off but the grid's stripe matching set, the lines' placement alone does
+the same and the titles say "stripe matched". `add to
 plot` under the topography, the map and the curve panel copies that panel as shown into the figure
 composer (`composer.py`): one figure four square panels wide, the topography first, the maps in
 order of energy titled by bias, then the spectra, every spectrum with its own symbol drawn on every

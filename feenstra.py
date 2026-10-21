@@ -568,13 +568,26 @@ class FeenstraWindow:
                     pass
             marks = []
             if kind == 'line':
-                for pos_val, color in view['marker_lines']:
-                    for ax in (top, col['stripe']):
-                        marks.append(ax.axhline(y=pos_val, color=color, ls='--', lw=2, alpha=0.7))
+                # On the heatmaps the marker lines follow their rows' shear as in the main window
+                # ('marker_paths' / 'center_paths' over 'path_x'); on the stripe they are level.
+                px = view.get('path_x')
+                paths = view.get('marker_paths') if px is not None else None
+                cpaths = view.get('center_paths') if px is not None else None
+                for i, (pos_val, color) in enumerate(view['marker_lines']):
+                    sh = paths[i] if paths is not None and i < len(paths) else None
+                    if sh is not None:
+                        marks.extend(top.plot(px, float(pos_val) + sh, color=color, ls='--', lw=2, alpha=0.7))
+                    else:
+                        marks.append(top.axhline(y=pos_val, color=color, ls='--', lw=2, alpha=0.7))
+                    marks.append(col['stripe'].axhline(y=pos_val, color=color, ls='--', lw=2, alpha=0.7))
                 if view.get('avg_on'):
-                    for c in view['centers']:
-                        for ax in (top, col['stripe']):
-                            marks.append(ax.axhline(y=c, color='black', ls='-', lw=2.5, alpha=0.9))
+                    for g, c in enumerate(view['centers']):
+                        sh = cpaths[g] if cpaths is not None and g < len(cpaths) else None
+                        if sh is not None:
+                            marks.extend(top.plot(px, float(c) + sh, color='black', ls='-', lw=2.5, alpha=0.9))
+                        else:
+                            marks.append(top.axhline(y=c, color='black', ls='-', lw=2.5, alpha=0.9))
+                        marks.append(col['stripe'].axhline(y=c, color='black', ls='-', lw=2.5, alpha=0.9))
             else:
                 for (x, y), color in view['marker_points']:
                     marks.extend(top.plot([x], [y], marker='s', ms=9, mfc='none', mec=color, mew=1.8, ls='none'))

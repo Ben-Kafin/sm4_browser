@@ -1415,8 +1415,8 @@ class _BrowserCore:
                 d = self.drift.result(f, self.loaded, None, self.auto_on, self.manual_on, self.anchor_on)
                 if d is not None:
                     xy = np.where(np.isfinite(d['xy_corr']), d['xy_corr'], f.spec_xy_m) * k
-                    # Every sweep's drift line: the line through its sweep (Drift.sweep_lines: the line's
-                    # forward compression along a grid line with stripe matching, the velocity elsewhere).
+                    # Every sweep's drift line: the line through its sweep (Drift.sweep_lines: the velocity,
+                    # plus the line's forward compression along a grid line with stripe matching).
                     L = self.drift.sweep_lines(f, self.loaded, None, self.auto_on, self.manual_on, self.anchor_on)
                     lines = L * k if L is not None else np.stack([d['xy_corr'], d['xy_end']], axis=1) * k
                     corrected = True

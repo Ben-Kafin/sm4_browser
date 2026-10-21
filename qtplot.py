@@ -2530,12 +2530,15 @@ class Axes:
         fractions from the bottom; None without a shown label.
         """
         xa = self.xaxis_item
-        if not (xa.isVisible() and xa.label.isVisible()):
+        try:
+            if getattr(self.figure, '_closed', False) or not (xa.isVisible() and xa.label.isVisible()):
+                return None
+            W, H = self.figure._canvas_size()
+            x0, y0, w, h = self._px_rect()
+            lh = float(xa.label.boundingRect().height()) * 0.8      # pyqtgraph's share of the label in the axis height
+            yc = y0 + h + float(xa.maximumHeight()) - 0.5 * lh
+        except RuntimeError:                                       # the window's items already gone
             return None
-        W, H = self.figure._canvas_size()
-        x0, y0, w, h = self._px_rect()
-        lh = float(xa.label.boundingRect().height()) * 0.8          # pyqtgraph's share of the label in the axis height
-        yc = y0 + h + float(xa.maximumHeight()) - 0.5 * lh
         return 1.0 - yc / float(H), lh / float(H)
 
     def _request_place(self):
@@ -2591,6 +2594,8 @@ class Axes:
         if getattr(self, '_legend_clear', False) and getattr(self, '_last_h', None) != round(h):
             self._last_h = round(h)
             QtCore.QTimer.singleShot(0, self.keep_legend_clear)
+        if getattr(self.figure, '_closed', False):
+            return                                     # a placement queued before the window closed: nothing follows it
         for cb in list(getattr(self, '_placed_cbs', [])):
             try:
                 cb()

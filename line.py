@@ -628,8 +628,8 @@ class Line:
         stored fast-axis state; the placement and the slow drift move the
         pixel and the spectrum alike, so they never enter) plus the
         within-sweep shear (Drift.row_shear: the along-line drift at the
-        energy-cell edges of each sweep, the line's own forward compression
-        where the placement measured one, the velocity otherwise),
+        energy-cell edges of each sweep: the velocity's along-line part plus
+        the line's own forward compression where the placement measured one),
         converted to the position axis's units and ordered as the heatmap's
         energy axis, (n_kept, n_e + 1); None with nothing to apply.  The
         stripe itself is never moved: the rows move relative to it, from
@@ -1535,6 +1535,36 @@ class Line:
         p = [self._int_marker_pos[i] for i in members]
         return f"avg {g + 1}: {min(p):.1f}–{max(p):.1f} Å"
 
+    def _int_shear_of_pos(self, pos_val):
+        """The shear (n_e + 1 cell edges, the position axis's units) of the kept row drawn nearest a position; None without a shear."""
+        sh = self._int_shear()
+        kp = self._int_kept_pos()
+        if sh is None or len(kp) == 0 or sh.shape[0] != len(kp):
+            return None
+        r = int(np.argmin(np.abs(kp - float(pos_val))))
+        row = np.asarray(sh[r], dtype=np.float64)
+        return np.where(np.isfinite(row), row, 0.0)
+
+    def _int_marker_line(self, ax, pos_val, on_heatmap, **kw):
+        """A marker's line at a position: on the heatmap the polyline through the position plus the shear of the kept row drawn nearest it at every energy-cell edge (the marker lies on its row's cells as drawn), level without a shear; on the stripe level."""
+        sh = self._int_shear_of_pos(pos_val) if on_heatmap else None
+        if sh is None:
+            return ax.axhline(y=pos_val, **kw)
+        h, = ax.plot(plots.row_edges(self._int_energy), float(pos_val) + sh, **kw)
+        return h
+
+    def _int_unshear(self, e, y):
+        """The position a point (e, y) of the heatmap stands for: the kept row drawn nearest the point at energy e, the point's offset from that row kept and the row's shear there undone; y itself without a shear."""
+        sh = self._int_shear()
+        kp = self._int_kept_pos()
+        if sh is None or len(kp) == 0 or sh.shape[0] != len(kp):
+            return float(y)
+        edges = plots.row_edges(self._int_energy)
+        j = int(np.clip(np.searchsorted(edges, float(e)) - 1, 0, sh.shape[1] - 2))
+        s = np.where(np.isfinite(sh[:, j:j + 2]), sh[:, j:j + 2], 0.0).mean(axis=1)
+        r = int(np.argmin(np.abs(kp + s - float(y))))
+        return float(y - s[r])
+
     def _redraw_curves(self):
         """Redraw marker overlay lines on heatmap/topo and 1D curve panel."""
         # --- Remove old marker artists (Line2D only) ---
@@ -1557,9 +1587,11 @@ class Line:
         for ax in (self._int_ax_didv, self._int_ax_topo):
             on_heatmap = ax is self._int_ax_didv
             marker_pick = {} if (self._int_avg_on and on_heatmap) else {'picker': 5}
+            # On the heatmap every marker line follows the shear of its row (_int_marker_line), so it
+            # lies on the row's cells at every energy; on the stripe it is level.
             for i, pos_val in enumerate(self._int_marker_pos):
-                h = ax.axhline(y=pos_val, color=self._int_marker_color(i), ls='--', lw=2, alpha=0.7,
-                               label=f'marker_{i}', **marker_pick)
+                h = self._int_marker_line(ax, pos_val, on_heatmap, color=self._int_marker_color(i), ls='--', lw=2,
+                                          alpha=0.7, label=f'marker_{i}', **marker_pick)
                 self._int_marker_artists.append(h)
             # Average on: each group's average location as a thick black line
             # (draggable on the heatmap only).
@@ -1568,8 +1600,8 @@ class Line:
                 for g, members in enumerate(groups):
                     if not members:
                         continue                         # a group without markers has no average line
-                    h = ax.axhline(y=self._int_group_center(members, g), color='black', ls='-', lw=2.5,
-                                   alpha=0.9, label=f'_avg_{g}', **avg_pick)
+                    h = self._int_marker_line(ax, self._int_group_center(members, g), on_heatmap, color='black',
+                                              ls='-', lw=2.5, alpha=0.9, label=f'_avg_{g}', **avg_pick)
                     self._int_marker_artists.append(h)
 
         # --- Redraw 1D curve panel (plots.draw_marker_curves, shared with the Feenstra companion) ---
@@ -1871,6 +1903,12 @@ class Line:
                 'stripe_pos': np.array(self._int_topo_x, dtype=np.float64),
                 'marker_lines': [(float(p), self._int_marker_color(i)) for i, p in enumerate(self._int_marker_pos)],
                 'centers': [self._int_group_center(m, g) for g, m in enumerate(self._int_groups())],
+                # The marker lines as drawn on the heatmap: with a shear, every marker's and centre's
+                # polyline (the position plus its row's shear at the energy-cell edges, path_x).
+                'path_x': plots.row_edges(self._int_energy) if sh is not None else None,
+                'marker_paths': [self._int_shear_of_pos(p) for p in self._int_marker_pos] if sh is not None else None,
+                'center_paths': ([self._int_shear_of_pos(self._int_group_center(m, g)) for g, m in enumerate(self._int_groups())]
+                                 if sh is not None else None),
                 'cmap': self.cmap}
 
     # ------------------------------------------------------------------ #
@@ -1931,16 +1969,20 @@ class Line:
         if event.inaxes not in [self._int_ax_didv, self._int_ax_topo]:
             return
         kind, idx = self._int_active_obj
+        # On the heatmap the cursor's y is taken back to the position axis through the shear of the
+        # row drawn under it (_int_unshear); on the stripe y is the position itself.
+        y = (self._int_unshear(event.xdata, event.ydata)
+             if event.inaxes is self._int_ax_didv and event.xdata is not None else float(event.ydata))
         if kind == 'marker':
             pos_min, pos_max = self._int_pos_bounds()
-            self._int_marker_pos[idx] = float(np.clip(event.ydata, pos_min, pos_max))
+            self._int_marker_pos[idx] = float(np.clip(y, pos_min, pos_max))
         else:
             lo, hi = self._int_pos_bounds()
             members = self._int_groups()[idx]
             if not members:
                 return
             pos = [self._int_marker_pos[i] for i in members]
-            delta = float(event.ydata) - self._int_group_center(members, idx)
+            delta = float(y) - self._int_group_center(members, idx)
             delta = float(np.clip(delta, lo - min(pos), hi - max(pos)))
             for i in members:
                 self._int_marker_pos[i] = float(self._int_marker_pos[i] + delta)
@@ -2741,6 +2783,8 @@ class Line:
 
     def _int_follow_heatmap(self):
         """The heatmap's panel placed anew (a resize, a panel move, a text zoom, its axis re-measured; qtplot.Axes.on_placed): the 'γ' box back on the x-label row, the cursor boxes on their cursors."""
+        if not plt.fignum_exists(self._int_fig):
+            return
         gb = getattr(self, '_int_gamma_box', None)
         if gb is not None:
             gb.attach_label_row(self._int_ax_didv)

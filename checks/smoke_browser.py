@@ -640,6 +640,24 @@ def _pass_order_and_line(b, exp):
     placed = ((corr[cols] - np.asarray(f.spec_xy_m)[cols]) @ fast) * 1e10 / w.scalefactor
     assert np.nanmax(np.abs(placed)) > step                                       # the placement did move the spectra
     assert np.nanmax(np.abs(sh[:, -1] - sh[:, 0])) > 0                            # the within-sweep shear grows along the sweep
+    # the position markers on the heatmap follow their rows' shear (polylines); a drag on the heatmap undoes it
+    from sm4_Browser.qtplot import MouseEvent
+    p = w._int_marker_pos[0]
+    heat = [a for a in w._int_marker_artists if a.get_label() == 'marker_0' and a.axes is w._int_ax_didv][0]
+    r = int(np.argmin(np.abs(w._int_kept_pos() - p)))
+    ys = np.asarray(heat.get_ydata(), dtype=np.float64)
+    assert len(ys) == sh.shape[1] and np.allclose(ys, p + np.nan_to_num(sh[r])), (ys[:3], p, sh[r, :3])
+    edges = plots.row_edges(w._int_energy)
+    j = sh.shape[1] // 2
+    e_mid, s_mid = 0.5 * (edges[j] + edges[j + 1]), 0.5 * (sh[r, j] + sh[r, j + 1])
+    class P: pass
+    ev = P(); ev.artist = heat
+    w._int_on_pick(ev)
+    mv = MouseEvent('motion_notify_event', w._int_fig.canvas, 0, 0, button=1)
+    mv.inaxes, mv.xdata, mv.ydata = w._int_ax_didv, e_mid, p + s_mid + 0.25 * step
+    w._int_on_motion(mv)
+    w._int_on_release(mv)
+    assert abs(w._int_marker_pos[0] - (p + 0.25 * step)) < 1e-9, (w._int_marker_pos[0], p, step)
     d.set_fast_state(f, 'auto', 'off')
     plt.close(w._int_fig)
 
@@ -897,6 +915,17 @@ def _map_drift(b, exp):
     assert tmaps, "the topo should be drawn as quads with a drift source on"
     tsh = m._topo_shift('forward')
     assert tsh is not None and np.allclose(tmaps[-1].shift, tsh, equal_nan=True)
+    # every marker is drawn on its pixel as drawn: on the map at the shown energy's shift, on the topo at the chain's
+    px0 = m.marker_px[0]
+    arts = {id(a.axes): a for a in m._marker_artists if a.get_label() == 'marker_0'}
+    on_map = arts[id(m.ax_map)]
+    assert np.allclose((on_map.get_xdata()[0], on_map.get_ydata()[0]), m.marker_xy(px0, True))
+    assert np.allclose(m.marker_xy(px0, True), np.asarray(m.pixel_xy(px0)) + sh[px0[0], px0[1]])
+    on_topo = arts[id(m.ax_topo)]
+    assert np.allclose((on_topo.get_xdata()[0], on_topo.get_ydata()[0]), m.marker_xy(px0, False))
+    assert not np.allclose(m.marker_xy(px0, True), m.pixel_xy(px0))
+    # a drag lands on the pixel drawn under the cursor
+    assert m.xy_pixel_drawn(*m.marker_xy(m.marker_px[1], True), True) == tuple(m.marker_px[1])
     # every drawn quad (map and topo) lies inside the limits, which hold the recorded frame too
     quads = np.vstack([q._q.reshape(-1, 2) for q in tmaps] + [pm._q.reshape(-1, 2)])
     ok = np.all(np.isfinite(quads), axis=1)
@@ -976,7 +1005,7 @@ def _map_composer(b, exp):
     it_map = [it for it in c.ordered() if it['kind'] == 'map'][1]
     assert np.allclose(it_map['img'], m.maps[e0], equal_nan=True) and it_map['vmin'] is not None
     pos = [it['position'] for it in c.ordered() if it['kind'] == 'spectrum']
-    assert np.allclose(pos, [m.pixel_xy(px) for px in m.marker_px])
+    assert np.allclose(pos, [m.marker_xy(px, True) for px in m.marker_px])      # the markers as drawn on the map
     # Delete over the topo panel removes it; 'new plot' empties the list
     class _E:
         pass
