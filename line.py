@@ -2384,7 +2384,7 @@ class Line:
         # ends with the window.
         if self._int_drift is not None:
             drift = self._int_drift
-            drift.subscribe(self._int_apply_drift_toggle, alive=lambda: plt.fignum_exists(fig.number))
+            drift.subscribe(self._int_apply_drift_toggle, alive=lambda: plt.fignum_exists(fig))
             fig.canvas.mpl_connect('close_event', lambda event: drift.unsubscribe(self._int_apply_drift_toggle))
 
     # ------------------------------------------------------------------ #

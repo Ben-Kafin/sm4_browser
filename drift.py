@@ -565,14 +565,26 @@ def fit_marker_velocity(markers):
     return v, pairs, note
 
 
-def marker_pair_text(k, rec):
-    """One console line per marker pair: the MATLAB readout (nm, h:m:s, nm/h, degrees) and the residual."""
+def marker_pair_text(k, rec, scale=None):
+    """
+    One readout line per marker pair: the MATLAB readout (nm, h:m:s, nm/h, degrees) and the
+    residual, nominal (the recorded metres); with `scale` (the file's scale factor) every length
+    and velocity is followed by its calibrated value in brackets, the nominal divided by the scale.
+    """
     dt = rec['dt']
     hms = f"{int(dt // 3600):d}:{int((dt % 3600) // 60):02d}:{dt % 60:04.1f}" if np.isfinite(dt) else "n/a"
-    line = (f"pair {k + 1}: dx {rec['dx'] * 1e9:+.3f} nm, dy {rec['dy'] * 1e9:+.3f} nm, dL {rec['dL'] * 1e9:.3f} nm, "
-            f"dt {hms}")
+
+    def nm(x, fmt='+.3f'):
+        s = f"{x * 1e9:{fmt}} nm"
+        return s if scale is None else s + f" [{x * 1e9 / scale:{fmt}} cal]"
+
+    def nmh(x, fmt='+.3f'):
+        s = f"{x * 3.6e12:{fmt}} nm/h"
+        return s if scale is None else s + f" [{x * 3.6e12 / scale:{fmt}} cal]"
+
+    line = f"pair {k + 1}: dx {nm(rec['dx'])}, dy {nm(rec['dy'])}, dL {nm(rec['dL'], '.3f')}, dt {hms}"
     if rec['used']:
-        line += (f"; v_x {rec['vx'] * 3.6e12:+.3f} nm/h, v_y {rec['vy'] * 3.6e12:+.3f} nm/h, v_L {rec['vL'] * 3.6e12:.3f} nm/h, "
+        line += (f"; v_x {nmh(rec['vx'])}, v_y {nmh(rec['vy'])}, v_L {nmh(rec['vL'], '.3f')}, "
                  f"alpha {rec['alpha']:.1f} deg; residual ({rec['rx'] * 1e9:+.3f}, {rec['ry'] * 1e9:+.3f}) nm")
     else:
         line += "; left out (no positive time separation)"
@@ -652,10 +664,17 @@ class PairDrift:
         d_ref = self.displacement(float(t_ref))
         return lambda t: self.displacement(t) - d_ref
 
-    def text(self):
+    def text(self, scale=None):
+        """
+        The velocity on the console: nominal (the recorded metres, as stored and applied), and with
+        `scale` (the file's scale factor, scales.Scales) the calibrated value beside it, the nominal
+        divided by the scale (the scan area's own units).
+        """
         v = self.v * 1e12
-        return (f"v = ({v[0]:+.2f}, {v[1]:+.2f}) pm/s = ({self.v[0] * 3.6e12:+.3f}, {self.v[1] * 3.6e12:+.3f}) nm/h, "
-                f"from {self.source}")
+        out = (f"v = ({v[0]:+.2f}, {v[1]:+.2f}) pm/s = ({self.v[0] * 3.6e12:+.3f}, {self.v[1] * 3.6e12:+.3f}) nm/h nominal")
+        if scale is not None:
+            out += f", calibrated (/ {float(scale):g}) ({self.v[0] * 3.6e12 / scale:+.3f}, {self.v[1] * 3.6e12 / scale:+.3f}) nm/h"
+        return out + f", from {self.source}"
 
 
 PAIRS_FORMAT = 5          # the 'pairs' section of the computed store: the tracked pairs and the topo times
@@ -1856,6 +1875,7 @@ class Drift:
         self._lru = {}             # path -> Sm4File, the topos kept loaded during a build (LRU)
         self._img_cache = {}       # (path, direction, active flags, id(model)) -> corrected image
         self._listeners = []       # (fn, alive) pairs told of every manual change (subscribe / notify)
+        self.scale_of = None       # path -> scale factor (the browser's scale timeline), for the readouts only
         self.built = False
         self.index_segments()
         # The two stores (caches.py): the tracked pairs and topo times in the computed one, the
@@ -2132,11 +2152,13 @@ class Drift:
         if not quiet:
             print(f"manual drift: span {os.path.basename(a_path)} -> {os.path.basename(b_path)}, {len(markers)} marker pair(s), "
                   f"{kind}:")
+            sc = self.scale_of(a_path) if self.scale_of is not None else None
             for k, rec in enumerate(pairs):
-                print("  " + marker_pair_text(k, rec))
+                print("  " + marker_pair_text(k, rec, sc))
             if v is not None:
                 what = {'confirmed': "auto v confirmed", 'adjusted': "fitted v", 'typed': "typed v"}[kind]
-                print(f"  {what} = ({v[0] * 3.6e12:+.3f}, {v[1] * 3.6e12:+.3f}) nm/h = ({v[0] * 1e12:+.2f}, {v[1] * 1e12:+.2f}) pm/s")
+                print(f"  {what} = ({v[0] * 3.6e12:+.3f}, {v[1] * 3.6e12:+.3f}) nm/h nominal = ({v[0] * 1e12:+.2f}, {v[1] * 1e12:+.2f}) pm/s"
+                      + (f"; calibrated (/ {sc:g}) ({v[0] * 3.6e12 / sc:+.3f}, {v[1] * 3.6e12 / sc:+.3f}) nm/h" if sc else ""))
             else:
                 print(f"  no velocity ({note})")
         return span
@@ -3019,7 +3041,8 @@ class Drift:
             if model is None:
                 print(f"{sm4.name}: no drift skew (" + "; ".join(notes) + ")")
             else:
-                print(f"{sm4.name}: skewed with the {model.rule} velocity, " + model.text())
+                print(f"{sm4.name}: skewed with the {model.rule} velocity, "
+                      + model.text(self.scale_of(sm4.path) if self.scale_of is not None else None))
         key = (sm4.path, direction, tuple(bool(a) for a in active), id(model), getattr(sm4, 'sweep_mode', None))
         img = self._img_cache.get(key)
         if img is not None:
@@ -3206,14 +3229,18 @@ class DriftWindow:
         from sm4_Browser import topo as topo_mod
         self.drift = drift
         self.f = f
-        self.scalefactor = float(scalefactor)
+        # The scale: scalefactor(path) (the browser's timeline: each topo of the pair is drawn at the
+        # scale in force at its own time, the panels in calibrated nm) or one number for everything.
+        self.scale_of = scalefactor if callable(scalefactor) else (lambda p, v=float(scalefactor): v)
+        self.scale = self.scale_of(f.path)       # the file's scale: the readouts and the box are calibrated by it
+        self.scalefactor = self.scale
         self.active = list(active_procs)
         self._on_change = on_change
         self.auto_on = bool(auto_on)
         a, b = drift.window_pair(f)
         self.a, self.b = a, b
         self.v_auto = drift.auto_velocity_of(a.path, b.path)
-        k = 1e9 / self.scalefactor
+        k = 1e9 / self.scale
         self.k = k
         self.fig = plt.figure(figsize=self.DESIGN)
         try:
@@ -3228,7 +3255,8 @@ class DriftWindow:
         self._draw_pair()
         self.markers = widgets.PairMarkers(self.fig, [(self.ax_a, a.path, a.name), (self.ax_b, b.path, b.name)],
                                            self._resolve_on, n_pairs=0, seed=self._seed,
-                                           on_count=lambda n: self.sld_markers.set(n))
+                                           on_count=lambda n: self.sld_markers.set(n),
+                                           to_display=lambda xy_m, p: np.asarray(xy_m, dtype=np.float64) * self.k_of(p))
         self.markers.on_change(self._on_markers)
         self.sld_markers = widgets.make(self.fig, 'Markers', 0.08, 0.235, value=0, vmax=widgets.MARKER_PAIRS_MAX)
         self.sld_markers.on_change(lambda val: self.markers.set_pairs(int(round(float(val)))))
@@ -3261,20 +3289,31 @@ class DriftWindow:
         self._restore_span()
         plt.show()
 
+    def k_of(self, path):
+        """The drawing factor of a file: calibrated nm per recorded metre at the scale in force at its time."""
+        return 1e9 / self.scale_of(path)
+
     def _draw_pair(self):
-        """Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at absolute positions, titled with its file, the file's spectra on both, the other topo's recorded frame on top, one view centred on both frames."""
+        """
+        Both panels drawn anew for the pair (self.a, self.b): the processed forward pass of each at
+        absolute positions, every object at the scale in force at its own file's time (the panels
+        are in calibrated nm: the topo image at its scale, the file's spectra at the file's, the
+        other topo's recorded frame at that topo's), titled with its file, the frame drawn last and
+        on top, one view centred on both frames.  No drift correction: the drift is measured here.
+        """
         from sm4_Browser import plots
         from sm4_Browser import topo as topo_mod
-        f, k = self.f, self.k
+        f = self.f
         corners = []
         self._outlines = {}          # panel -> the artists of the other topo's recorded frame (drawn last)
         for ax, t, other, label in ((self.ax_a, self.a, self.b, "earlier"), (self.ax_b, self.b, self.a, "later")):
             ax.clear()
             img = topo_mod.process_topo(t.topo_raw('forward'), self.active) * 1e9
-            plots.draw_topo_absolute(ax, t, img, self.scalefactor, cmap=plots.TOPO_CMAP)
-            corners.append(t.corners_m() * k)
+            plots.draw_topo_absolute(ax, t, img, self.scale_of(t.path), cmap=plots.TOPO_CMAP)
+            corners.append(t.corners_m() * self.k_of(t.path))
+            corners.append(other.corners_m() * self.k_of(other.path))
             if f.kind != 'topo' and len(f.spec_xy_m):
-                xy = np.asarray(f.spec_xy_m, dtype=np.float64) * k
+                xy = np.asarray(f.spec_xy_m, dtype=np.float64) * self.k_of(f.path)
                 acq = np.asarray(f.acquired, dtype=bool)[:len(xy)] if f.kind == 'grid' else np.ones(len(xy), dtype=bool)
                 ax.plot(xy[acq, 0], xy[acq, 1], ls='none', marker='o', ms=2.5, color='cyan', mec='black', mew=0.3)
             # The title above the panel is the name of the file drawn in it; the rest of the line
@@ -3289,7 +3328,7 @@ class DriftWindow:
             ax.set_aspect('equal', adjustable='box')
             # The other topo of the pair as its recorded frame, drawn last: a thin black outline on
             # top of everything on the panel (the markers and arrows drawn later sit below its zorder).
-            self._outlines[ax] = plots.draw_topo_outline(ax, other, self.scalefactor)
+            self._outlines[ax] = plots.draw_topo_outline(ax, other, self.scale_of(other.path))
         # One view on both panels: the outline of the two frames together, centred, with a margin.
         # The limits are set on each axes (not only on the one the other shares), so that each
         # panel's box is shrunk to the equal aspect the same way and neither image sits off-centre.
@@ -3308,13 +3347,14 @@ class DriftWindow:
                    "no velocity covers this pair yet: place each partner by hand (or apply a velocity)")
         self.help_txt.set_text(f"{self.f.name}: click the same feature in both topos (the k-th marker on the left pairs "
                                f"with the k-th on the right).\n{seeding}; 'set from markers' puts the markers' velocity "
-                               "in the 'v (nm/h)' box, or type one; 'apply velocity' stores the box for the files between "
+                               f"in the 'v (nm/h, cal)' box (calibrated by this file's scale factor {self.scale:g}; the "
+                               "nominal value is shown beside it), or type one; 'apply velocity' stores the box for the files between "
                                f"these two topos ({self.a.name} -> {self.b.name}); '< before' / 'before >' and "
                                "'< after' / 'after >' step the topos through the segment.")
 
     def _restore_span(self):
         """A stored span between the pair shown put into the window: its markers in the draft, its velocity in the box, the readout."""
-        a, b, k = self.a, self.b, self.k
+        a, b = self.a, self.b
         sp = self.drift.span_between(a.path, b.path)
         if sp is None:
             self._show_draft()
@@ -3323,7 +3363,7 @@ class DriftWindow:
         if sp['a'] != a.path:                                  # stored the other way round
             m = m[:, [3, 4, 5, 0, 1, 2]]
         if len(m):
-            self.markers.restore(m, lambda xy_m: np.asarray(xy_m, dtype=np.float64) * k, kind=sp.get('kind', 'adjusted'))
+            self.markers.restore(m, kind=sp.get('kind', 'adjusted'))     # each panel at its own scale
             self.sld_markers.set(self.markers.n_pairs)
         if sp.get('v') is not None:
             self._fill_box(sp['v'], {'confirmed': 'confirmed', 'adjusted': 'markers'}.get(sp.get('kind'), 'typed'),
@@ -3368,7 +3408,7 @@ class DriftWindow:
         self.fig.canvas.draw_idle()
 
     def is_open(self):
-        return plt.fignum_exists(self.fig.number)
+        return plt.fignum_exists(self.fig)
 
     def raise_(self):
         try:
@@ -3381,7 +3421,7 @@ class DriftWindow:
 
     def _resolve_on(self, path, x, y):
         t = self._topo(path)
-        xy_m = np.array([x, y], dtype=np.float64) / self.k
+        xy_m = np.array([x, y], dtype=np.float64) / self.k_of(path)     # the panel's topo at its own scale
         if not t.contains_m(xy_m):
             return None
         return {'xy_m': xy_m, 't': pixel_time_at(t, xy_m, 'forward'), 'px_m': max(abs(t.xscale_m), abs(t.yscale_m))}
@@ -3427,13 +3467,15 @@ class DriftWindow:
         xy_to, t_to = res
         return dst.path, xy_to, t_to, max(abs(dst.xscale_m), abs(dst.yscale_m)), source
 
-    @staticmethod
-    def _v_text(v):
-        return f"({v[0] * 3.6e12:+.3f}, {v[1] * 3.6e12:+.3f}) nm/h = ({v[0] * 1e12:+.2f}, {v[1] * 1e12:+.2f}) pm/s"
+    def _v_text(self, v):
+        """A velocity ((2,) m/s, nominal) as text: calibrated by the file's scale first (the scan area's units), the nominal beside it."""
+        s = self.scale
+        return (f"({v[0] * 3.6e12 / s:+.3f}, {v[1] * 3.6e12 / s:+.3f}) nm/h calibrated (/ {s:g}); "
+                f"nominal ({v[0] * 3.6e12:+.3f}, {v[1] * 3.6e12:+.3f}) nm/h = ({v[0] * 1e12:+.2f}, {v[1] * 1e12:+.2f}) pm/s")
 
     def _fill_box(self, v, kind, markers):
-        """The box set to v ((2,) m/s) with its provenance (kind 'confirmed', 'markers', or 'typed') and the markers it came from."""
-        v = np.asarray(v, dtype=np.float64).reshape(2) * 3.6e12
+        """The box set to v ((2,) m/s, nominal) in calibrated nm/h (the file's scale), with its provenance (kind 'confirmed', 'markers', or 'typed') and the markers it came from."""
+        v = np.asarray(v, dtype=np.float64).reshape(2) * 3.6e12 / self.scale
         text = f"{v[0]:.4g}, {v[1]:.4g}"
         self.box_v.set(text)
         self._box_kind, self._box_markers, self._box_text = kind, markers, text
@@ -3450,7 +3492,8 @@ class DriftWindow:
                 raise ValueError
         except ValueError:
             return False
-        return np.array([vx, vy], dtype=np.float64) / 3.6e12
+        # The box is in calibrated nm/h (the file's scale): the stored velocity is nominal, in recorded metres.
+        return np.array([vx, vy], dtype=np.float64) / 3.6e12 * self.scale
 
     def _box_line(self):
         """The readout's line for the box: its velocity and where it came from, not applied."""
@@ -3458,7 +3501,7 @@ class DriftWindow:
         if v is None:
             return "box empty: 'apply velocity' removes this pair's velocity (the files between go back to auto)"
         if v is False:
-            return f"box: '{self.box_v.value}' is not 'Vx, Vy' in nm/h"
+            return f"box: '{self.box_v.value}' is not 'Vx, Vy' in calibrated nm/h"
         edited = str(self.box_v.value).strip() != self._box_text
         origin = ("typed" if edited or self._box_kind in (None, 'typed') else
                   ("from the markers, the auto velocity confirmed" if self._box_kind == 'confirmed' else
@@ -3466,7 +3509,7 @@ class DriftWindow:
         return f"box: v = {self._v_text(v)}, {origin}; not applied: 'apply velocity' stores it for this pair"
 
     def _show(self, span):
-        lines = [marker_pair_text(k, rec) for k, rec in enumerate(span.get('pairs', []))]
+        lines = [marker_pair_text(k, rec, self.scale) for k, rec in enumerate(span.get('pairs', []))]
         v = span.get('v')
         if v is not None:
             what = {'confirmed': "auto v confirmed", 'typed': "typed v"}.get(span.get('kind'), "fitted v")
@@ -3506,7 +3549,7 @@ class DriftWindow:
         """
         v = self._parse_box()
         if v is False:
-            print(f"apply velocity: '{self.box_v.value}' is not 'Vx, Vy' in nm/h; nothing applied.")
+            print(f"apply velocity: '{self.box_v.value}' is not 'Vx, Vy' in calibrated nm/h; nothing applied.")
             self._show_draft()
             return
         if v is None:

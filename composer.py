@@ -100,7 +100,7 @@ class FigureComposer:
         return sorted(self.items, key=lambda it: (rank[it['kind']], it['bias'] if it['kind'] == 'map' else 0.0))
 
     def is_open(self):
-        return self.fig is not None and plt.fignum_exists(self.fig.number)
+        return self.fig is not None and plt.fignum_exists(self.fig)
 
     # --- the figure ---
 

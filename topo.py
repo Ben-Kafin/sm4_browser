@@ -478,47 +478,60 @@ def _sample_raw(topo, img, xy_m):
     return map_coordinates(np.asarray(img, dtype=np.float64), [i, j], order=1, mode='constant', cval=np.nan)
 
 
-def cross_section(topos, p0_m, p1_m, scalefactor):
+def cross_section(topos, points, scale_of):
     """
-    The raw cross section of the loaded topographies along the segment
-    from p0_m to p1_m (absolute metres): samples along the segment at the
-    finest pixel pitch of the topos it crosses; at every sample the
-    topmost topo whose footprint contains it (`topos` oldest first, as the
-    browser draws them: the last one containing the sample wins) supplies
-    the raw height (Sm4File.topo_raw, in metres as the loader gives it, no
-    processor, no normalization), its forward page and, when the file has
-    one, its reverse page; NaN where no topo or no acquired pixel lies
-    under the sample.  Returns (x: the distance along the segment from
-    p0 in nm after the scale factor, z_forward (nm), z_reverse (nm, all NaN
-    without reverse pages), the names of the topos that supplied samples).
+    The raw cross section of the loaded topographies along a path: `points`
+    (n, 2) in the scan area's drawing units (calibrated nm), the path's
+    points in order, two or more.  Samples along the path at the finest
+    pixel pitch of the topos it crosses (each pitch in drawing units at that
+    topo's own scale); at every sample the topmost topo whose footprint
+    contains it (`topos` oldest first, as the browser draws them: the last
+    one containing the sample wins) supplies the raw height (Sm4File.topo_raw,
+    in metres as the loader gives it, no processor, no normalization), its
+    forward page and, when the file has one, its reverse page; NaN where no
+    topo or no acquired pixel lies under the sample.  A sample is converted
+    into each topo's recorded frame with that topo's scale, scale_of(path)
+    (the scale in force at the topo's time, scales.Scales; or one number for
+    every topo), so files of different scales are cut where they truly lie.
+    Returns (x: the distance along the path from its first point, calibrated
+    nm, z_forward (nm), z_reverse (nm, all NaN without reverse pages), the
+    names of the topos that supplied samples).
     """
-    p0 = np.asarray(p0_m, dtype=np.float64)
-    p1 = np.asarray(p1_m, dtype=np.float64)
-    L = float(np.linalg.norm(p1 - p0))
-    pitches = [min(abs(t.xscale_m), abs(t.yscale_m)) for t in topos if t.nx and t.ny]
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 2:
+        raise ValueError("a cross section needs a path of two or more points")
+    sc = scale_of if callable(scale_of) else (lambda p, v=float(scale_of): v)
+    seg = np.diff(pts, axis=0)
+    seg_len = np.linalg.norm(seg, axis=1)
+    L = float(seg_len.sum())
+    pitches = [min(abs(t.xscale_m), abs(t.yscale_m)) * 1e9 / sc(t.path) for t in topos if t.nx and t.ny]
     pitch = min(pitches) if pitches else L / 100.0
-    n = max(int(round(L / pitch)) + 1, 2) if L > 0 else 2
+    n = max(int(round(L / pitch)) + 1, 2) if L > 0 and pitch > 0 else 2
     s = np.linspace(0.0, L, n)
-    u = (p1 - p0) / L if L > 0 else np.array([1.0, 0.0])
-    pts = p0[None, :] + s[:, None] * u[None, :]
+    # Every sample on the path: the segment it falls in, and its position along it.
+    starts = np.concatenate([[0.0], np.cumsum(seg_len)])
+    idx = np.clip(np.searchsorted(starts, s, side='right') - 1, 0, len(seg) - 1)
+    frac = np.where(seg_len[idx] > 0, (s - starts[idx]) / np.where(seg_len[idx] > 0, seg_len[idx], 1.0), 0.0)
+    draw = pts[idx] + frac[:, None] * seg[idx]
     zf = np.full(n, np.nan)
     zr = np.full(n, np.nan)
     owner = np.full(n, -1)
     names = []
-    for idx in range(len(topos) - 1, -1, -1):              # the topmost first
-        t = topos[idx]
+    for i in range(len(topos) - 1, -1, -1):              # the topmost first
+        t = topos[i]
         free = owner < 0
         if not free.any():
             break
-        inside = np.array([t.contains_m(p) for p in pts]) & free
+        p_m = draw * (sc(t.path) * 1e-9)                   # this topo's recorded metres
+        inside = np.array([t.contains_m(p) for p in p_m]) & free
         if not inside.any():
             continue
-        zf[inside] = _sample_raw(t, t.topo_raw('forward'), pts[inside]) * 1e9
+        zf[inside] = _sample_raw(t, t.topo_raw('forward'), p_m[inside]) * 1e9
         if len(t.topo_pages) > 1:
-            zr[inside] = _sample_raw(t, t.topo_raw('reverse'), pts[inside]) * 1e9
-        owner[inside] = idx
+            zr[inside] = _sample_raw(t, t.topo_raw('reverse'), p_m[inside]) * 1e9
+        owner[inside] = i
         names.append(t.name)
-    return s * 1e9 / float(scalefactor), zf, zr, names
+    return s, zf, zr, names
 
 
 class ProfileWindow:

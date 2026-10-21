@@ -99,13 +99,13 @@ class StripeWindow:
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
         self.fig.canvas.mpl_connect('button_release_event', self._on_release)
         fig = self.fig
-        drift.subscribe(self.draw, alive=lambda: plt.fignum_exists(fig.number))
+        drift.subscribe(self.draw, alive=lambda: plt.fignum_exists(fig))
         fig.canvas.mpl_connect('close_event', lambda event: drift.unsubscribe(self.draw))
         self.draw()
         plt.show()
 
     def is_open(self):
-        return plt.fignum_exists(self.fig.number)
+        return plt.fignum_exists(self.fig)
 
     def raise_(self):
         try:

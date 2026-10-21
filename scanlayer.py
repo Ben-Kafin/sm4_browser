@@ -343,11 +343,15 @@ class ScanLayer:
         """
         Show the image of every visible path that has an image record (created on first need),
         hide the rest; the current grid is not drawn as an image (its stripes are the overlay);
-        every shown image placed by affine_matrix with its file's pass and drift model.  With
-        `wanted(path)` given, a record made for another (pass, processors) key is not shown (it
-        waits for its new record).  Returns the corners (drawing units) of the shown images, for
-        the view's extent.
+        every shown image placed by affine_matrix with its file's pass and drift model.  `k` is
+        the drawing factor (calibrated nm per recorded metre, 1e9 / scale factor): one number for
+        every file, or k(path), each file at the scale in force at its own time (the browser's
+        scale timeline, scales.Scales), so files of different temperature regimes sit at their
+        true sizes side by side.  With `wanted(path)` given, a record made for another (pass,
+        processors) key is not shown (it waits for its new record).  Returns the corners (drawing
+        units) of the shown images, for the view's extent.
         """
+        k_of = k if callable(k) else (lambda p, kk=float(k): kk)
         n = max(len(self.files), 1)
         corners = []
         shown = set()
@@ -367,6 +371,7 @@ class ScanLayer:
                 continue                                         # wholly under a later complete image
             direction = direction_of(p)
             model = model_of(p, rec)
+            k = k_of(p)
             mat = affine_matrix(rec, k, direction, model)
             it = self.items.get(p)
             if it is None or it['key'] != rec['key']:

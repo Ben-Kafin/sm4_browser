@@ -175,7 +175,7 @@ SPECS = {
     'reference': _spec('text', 0.5, 0.3, fs=8),
     'width': _spec('text', 0.65, 0.30, fs=8),                        # the Feenstra broadening width (V)
     'rows': _spec('text', 0.42, 0.22, fs=8),                         # a topo row's line-index box
-    'drift v': _spec('text', 1.2, 0.3, fs=8),                        # the typed manual velocity "Vx, Vy" (nm/h)
+    'drift v': _spec('text', 1.2, 0.3, fs=8),                        # the typed manual velocity "Vx, Vy" (nm/h, calibrated by the file's scale)
     'param': _spec('text', 0.9, 0.26, fs=7),                         # the fit edit window's parameter boxes
 }
 
@@ -183,7 +183,7 @@ SPECS = {
 LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass': None, 'site': None,
           'hold': '', 'param': '', 'rows': '', 'width': '', 'file': 'file', 'spectra': 'spectra',
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
-          'γ': 'γ ', 'drift v': 'v (nm/h) ', 'E range': 'E (V) ', 'x range': 'x (Å) '}
+          'γ': 'γ ', 'drift v': 'v (nm/h, cal) ', 'E range': 'E (V) ', 'x range': 'x (Å) '}
 
 # The short form of every label that has one, used when a window is taller than it is wide (the
 # figure's portrait flag, qtplot.Figure.set_portrait; the browser's window, browser._WindowZoom):
@@ -215,7 +215,7 @@ SHORT_LABELS = {
     '< Prev': '<', 'Next >': '>', 'Add peak': 'peak', 'Revert fit': 'revert', 'Forward fit': 'forward',
     'Edit peaks': 'peaks', 'Save fit': 'save',
     # text-box and slider labels
-    'scale factor': 'scale', 'min (min)': 'min', 'width (V)': 'width', 'v (nm/h)': 'v', 'E (V)': 'E',
+    'scale factor': 'scale', 'min (min)': 'min', 'width (V)': 'width', 'v (nm/h, cal)': 'v', 'E (V)': 'E',
     'x (Å)': 'x', 'reference': 'ref', 'E-markers': 'E-mk', 'Markers': 'mk',
 }
 
@@ -2207,11 +2207,14 @@ class PairMarkers:
     GRAB_PX = 10
     CLICK_PX = 3
 
-    def __init__(self, fig, panels, resolve_on, n_pairs=1, seed=None, on_count=None):
+    def __init__(self, fig, panels, resolve_on, n_pairs=1, seed=None, on_count=None, to_display=None):
         self.fig = fig
         self.panels = list(panels)
         self.resolve_on = resolve_on
         self.seed = seed
+        # to_display(xy_m, path) -> drawing units of a position on the panel of `path`: each topo at its
+        # own scale (the drift window); None: one drawing scale for both panels (a marker's own ratio).
+        self.to_display = to_display
         self.on_count = on_count           # callback(n) when a click raised the pair count (the window's slider)
         self.n_pairs = min(max(int(n_pairs), 0), MARKER_PAIRS_MAX)
         self.markers = {path: [] for _, path, _ in self.panels}     # path -> [{'xy', 'xy_m', 't', 'px_m', 'seed'}]
@@ -2282,17 +2285,19 @@ class PairMarkers:
         self.panels = list(panels)
         self.markers = {path: [] for _, path, _ in self.panels}
 
-    def restore(self, markers, to_display, kind='adjusted'):
+    def restore(self, markers, to_display=None, kind='adjusted'):
         """
         Markers from a stored span ((n, 6) metres and seconds; the earlier
-        topo's columns first), to_display(xy_m) -> drawing units; a
-        confirmed span's later markers come back as seeded and unmoved.
+        topo's columns first), to_display(xy_m) -> drawing units (None: the
+        constructor's to_display(xy_m, path), each panel at its own scale);
+        a confirmed span's later markers come back as seeded and unmoved.
         """
         (_, a, _), (_, b, _) = self.panels[0], self.panels[1]
+        disp = (lambda xy_m, path: to_display(xy_m)) if to_display is not None else self.to_display
         self.markers = {a: [], b: []}
         for row in np.asarray(markers, dtype=np.float64).reshape(-1, 6):
-            self.markers[a].append(self._record(row[0:2], row[2], to_display(row[0:2])))
-            self.markers[b].append(self._record(row[3:5], row[5], to_display(row[3:5]),
+            self.markers[a].append(self._record(row[0:2], row[2], disp(row[0:2], a)))
+            self.markers[b].append(self._record(row[3:5], row[5], disp(row[3:5], b),
                                                 seed=row[3:5] if kind == 'confirmed' else None))
         self.n_pairs = min(max(self.n_pairs, len(self.markers[a])), MARKER_PAIRS_MAX)
         self.draw()
@@ -2408,7 +2413,8 @@ class PairMarkers:
         k = next(i for i, x in enumerate(self.markers[path]) if x is m)    # by identity (dicts of arrays)
         if len(self.markers[other]) != k:
             return
-        rec = self._record(xy_m, t, np.asarray(xy_m, dtype=np.float64) * scale, px_m, seed=xy_m)
+        xy = self.to_display(xy_m, other) if self.to_display is not None else np.asarray(xy_m, dtype=np.float64) * scale
+        rec = self._record(xy_m, t, xy, px_m, seed=xy_m)
         rec['seed_source'] = source
         self.markers[other].append(rec)
         name = next(n for _, p, n in self.panels if p == other)
@@ -2426,7 +2432,8 @@ class PairMarkers:
         if res is None or res[0] != other:
             return
         _, xy_m, t, px_m = res[:4]
-        rec = self._record(xy_m, t, np.asarray(xy_m, dtype=np.float64) * scale, px_m, seed=xy_m)
+        xy = self.to_display(xy_m, other) if self.to_display is not None else np.asarray(xy_m, dtype=np.float64) * scale
+        rec = self._record(xy_m, t, xy, px_m, seed=xy_m)
         rec['seed_source'] = res[4] if len(res) > 4 else 'auto'
         self.markers[other][k] = rec
 

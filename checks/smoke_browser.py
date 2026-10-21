@@ -849,7 +849,6 @@ def _drift_outline(b, exp):
     goto_kind(b, 'grid')
     b._on_drift_window()
     w = b.drift_window
-    k = 1e9 / w.scalefactor
 
     def check_frames():
         plt._app().processEvents()                          # the deferred placement of the boxes runs
@@ -858,17 +857,17 @@ def _drift_outline(b, exp):
             assert len(arts) == 1, "the outline carries no text"
             line = arts[0]
             x, y = line.get_data()
-            c = other.corners_m() * k
+            c = other.corners_m() * w.k_of(other.path)       # the other topo's frame at its own scale
             assert np.allclose(np.column_stack([x, y]), np.vstack([c, c[:1]])), (own.name, other.name)
             assert line.get_zorder() > max(a.get_zorder() for a in ax.lines if a is not line), own.name
             assert line.get_zorder() > max(a.get_zorder() for a in ax.images), own.name
-            assert not np.allclose(c, own.corners_m() * k), "the frame must be the other topo's, not this panel's"
+            assert not np.allclose(c, own.corners_m() * w.k_of(own.path)), "the frame must be the other topo's, not this panel's"
             for art in w.markers._arts:                     # markers and arrows drawn later still sit below it
                 if getattr(art, 'axes', None) is ax:
                     assert art.get_zorder() < line.get_zorder(), own.name
             assert ax.get_title() == own.name, (ax.get_title(), own.name)
         # one view on both panels: the same limits, the same box, the two frames together centred
-        allc = np.vstack([w.a.corners_m() * k, w.b.corners_m() * k])
+        allc = np.vstack([w.a.corners_m() * w.k_of(w.a.path), w.b.corners_m() * w.k_of(w.b.path)])
         (xa0, xa1), (ya0, ya1) = w.ax_a.get_xlim(), w.ax_a.get_ylim()
         (xb0, xb1), (yb0, yb1) = w.ax_b.get_xlim(), w.ax_b.get_ylim()
         assert np.allclose([xa0, xa1, ya0, ya1], [xb0, xb1, yb0, yb1]), ((xa0, xa1, ya0, ya1), (xb0, xb1, yb0, yb1))
@@ -883,7 +882,7 @@ def _drift_outline(b, exp):
 
     check_frames()
     # a marker pair placed after the frames (a click on the earlier topo seeds its partner on the later)
-    click(w.fig, w.ax_a, *(np.asarray(w.a.center_m) * k))
+    click(w.fig, w.ax_a, *(np.asarray(w.a.center_m) * w.k_of(w.a.path)))
     assert w.markers.n_pairs == 1 and any(getattr(a, 'axes', None) is w.ax_b for a in w.markers._arts)
     check_frames()
     paths = list(w.members)
@@ -1281,6 +1280,92 @@ def _flag_chain(b, exp):
     assert s.overrides == {}, s.overrides
     assert all(v == 'experiment' for v in s.flags.values())
     assert _json(_store_files(b.directory)[0])['flags'] == {}
+
+
+@check("K1 scale timeline: the first entry covers everything, later ones from their file's time; every file and window at its own scale; drift readouts calibrated with the nominal; records note another scale")
+def _scale_timeline(b, exp):
+    import io, contextlib
+    from sm4_Browser.scales import file_time
+    topos = [p for p in b.files if b.kinds[p] == 'topo']
+    grid = next(p for p in b.files if b.kinds[p] == 'grid')
+    point = next(p for p in b.files if b.kinds[p] == 'point')
+    assert b.scales.entries == [] and all(b.scale_of(p) == 1.0 for p in b.files)
+    # set on the grid: the first entry covers every file, the ones before it too
+    b._goto(b.files.index(grid))
+    assert b.box_scale.value == '1'
+    b._on_scale("2.0")
+    assert b.scale_of(grid) == 2.0 and b.scale_of(point) == 2.0 and b.scale_of(topos[0]) == 2.0
+    assert b.box_scale.value == '2' and b.scalefactor == 2.0
+    # set on the later point: from its time on; the grid and the earlier topos keep 2
+    b._goto(b.files.index(point))
+    b._on_scale("4.0")
+    assert b.scale_of(point) == 4.0 and b.scale_of(topos[-1]) == 4.0 and b.scale_of(grid) == 2.0 and b.scale_of(topos[0]) == 2.0
+    assert file_time(point) > file_time(grid)
+    st = _json(_store_files(b.directory)[0])
+    assert [e['scale'] for e in st['scales']['entries']] == [2.0, 4.0]
+    # the scan area: every topo image at its own scale, the diamonds too
+    b._goto(b.files.index(topos[-1]))
+    plt._app().processEvents()
+    assert abs(b.layer.items[topos[0]]['k'] - 1e9 / 2.0) < 1e-3 and abs(b.layer.items[topos[-1]]['k'] - 1e9 / 4.0) < 1e-3
+    grey, blue = b._point_colours(b._visible_paths())
+    assert any(p == point for p, _ in grey + blue)
+    arts = b._draw_points(b._visible_paths())
+    xy_point = np.asarray(b.layer.records[point]['xy_m']) * 1e9 / 4.0
+    assert any(np.allclose(a, xy_point) for arr in arts for a in arr), "the point's diamond is not at its own scale"
+    # every window opened for a file takes that file's scale
+    w = open_line(b)
+    assert w.scalefactor == 2.0
+    m = open_map(b)
+    assert m.scalefactor == 2.0
+    b._goto(b.files.index(point))
+    b._on_topo_window()
+    assert b.children[-1].scalefactor == 4.0
+    if b.drift_window is not None and b.drift_window.is_open():
+        plt.close(b.drift_window.fig)              # a window left open by an earlier check would be raised, not replaced
+    b._on_drift_window()
+    d = b.drift_window
+    assert d.scale == 4.0 and d.scale_of(d.a.path) == b.scale_of(d.a.path), (d.scale, d.f.name)
+    # the drift window: each topo image and the other's frame at that topo's own scale
+    for ax, own, other in ((d.ax_a, d.a, d.b), (d.ax_b, d.b, d.a)):
+        x, y = d._outlines[ax][0].get_data()
+        assert np.allclose(np.column_stack([x, y])[:-1], other.corners_m() * 1e9 / b.scale_of(other.path))
+        im = ax.images[0]
+        l, r, bt, tp = im.get_extent()
+        assert abs((r - l) - abs(own.frame_extent_m()[1] - own.frame_extent_m()[0]) * 1e9 / b.scale_of(own.path)) < 1e-6
+    # the readouts: calibrated with the nominal beside; the box calibrated, stored nominal
+    v = np.array([4e-12, -2e-12])
+    t = d._v_text(v)
+    assert "calibrated (/ 4)" in t and f"({4e-12 * 3.6e12 / 4:+.3f}, {-2e-12 * 3.6e12 / 4:+.3f}) nm/h calibrated" in t and "nominal" in t
+    d._fill_box(v, 'typed', None)
+    assert d.box_v.value.startswith(f"{4e-12 * 3.6e12 / 4:.4g}")
+    d.box_v.set("30, -20")
+    d._on_typed("30, -20")
+    assert np.allclose(d._parse_box() * 3.6e12, [30 * 4.0, -20 * 4.0]), "the box is calibrated: the stored velocity is nominal"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        d._on_apply()
+    sp = b.drift.span_between(d.a.path, d.b.path)
+    assert sp is not None and np.allclose(np.asarray(sp['v']) * 3.6e12, [120.0, -80.0])
+    assert "calibrated" in buf.getvalue() and "nominal" in buf.getvalue()
+    b.drift.clear_manual_span(d.a.path, d.b.path)
+    plt.close(d.fig)
+    # the console readout of a placed file's velocity carries the nominal and the calibrated value
+    model = b._layer_model(topos[0], b.layer.records[topos[0]])
+    assert model is not None, "the synthetic topo has an auto velocity"
+    t = model.text(b.scale_of(topos[0]))
+    assert "nm/h nominal" in t and "calibrated (/ 2)" in t, t
+    # a record made with another scale: the timeline's applies, with a note
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        sc = b._record_scale(b.loaded.get(grid) or b._load(grid), 2.75)
+    assert sc == 2.0 and "2.75" in buf.getvalue() and "applies now" in buf.getvalue()
+    # back to the base scale for the checks that follow
+    b.scales.remove(point)
+    b.scales.remove(grid)
+    assert b.scales.entries == [] and b.scale_of(point) == 1.0
+    b._goto(0)
+    plt.close(w._int_fig)
+    plt.close(m.fig)
 
 
 def widgets_text(lo, hi):

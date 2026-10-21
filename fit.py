@@ -2504,7 +2504,7 @@ class Fit:
     def _edit_open(self):
         """The edit window's state while its figure is open, else None."""
         st = getattr(self, '_edit', None)
-        return st if (st is not None and plt.fignum_exists(st['fig'].number)) else None
+        return st if (st is not None and plt.fignum_exists(st['fig'])) else None
 
     def _set_bg_toggle(self, chk, on):
         """Set a toggle's box without firing its callback (the widget wrapper's quiet set)."""
@@ -2627,7 +2627,7 @@ class Fit:
         self._draw_current()
         # An open edit window reloads its peaks and background from the fit now shown.
         st = getattr(self, '_edit', None)
-        if st is not None and plt.fignum_exists(st['fig'].number):
+        if st is not None and plt.fignum_exists(st['fig']):
             st['peaks'] = self._working_peaks(self.shown_fit())
             st['bg'] = self._working_bg(self.shown_fit())
             st['selected'] = None
@@ -2643,7 +2643,7 @@ class Fit:
         self._draw_current()
         # An open edit window reloads its peaks and background from the fit now shown.
         st = getattr(self, '_edit', None)
-        if st is not None and plt.fignum_exists(st['fig'].number):
+        if st is not None and plt.fignum_exists(st['fig']):
             st['peaks'] = self._working_peaks(self.shown_fit())
             st['bg'] = self._working_bg(self.shown_fit())
             st['selected'] = None

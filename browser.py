@@ -67,8 +67,15 @@ spym flips image columns when RHK_Xscale < 0 and rows when RHK_Yscale > 0;
 those flips are undone here so that the raw order is used.  Images are read
 from the page data at the resolution they were saved at (spym discards the
 SM4 thumbnail objects) and drawn without interpolation or anti-aliasing.  Every x and y
-(positions, extents, markers) is divided by the scale factor in the browser
-window (default 2.75) and shown in nm.  For every grid file the embedded
+(positions, extents, markers) is divided by the scale factor in force at
+the file's own time and shown in nm: the recorded value is nominal, the
+divided one calibrated.  The scale factors form a timeline (scales.Scales,
+kept in the settings store): the 'scale factor' box shows the current
+file's and sets the timeline from the current file's time on (the first
+entry set covers the whole experiment; before any entry the constructor's
+base scale, default 2.75, applies); every file on the scan area and every
+window opened for a file use that file's scale, so files from different
+temperature regimes sit at their true sizes side by side.  For every grid file the embedded
 Topography spectra channel is compared with the image page once (self
 check, printed on the console).
 
@@ -116,7 +123,8 @@ lock-in and modulation settings, filters, sample time, range and step,
 points acquired, position, notes) as a grid, SI prefixes on the units.
 Below: a file slider (drag anywhere in the directory; the file loads when
 the mouse is released), '< Prev' / 'Next >', the 'Topo Window' button, the
-'scale factor' box, the topography processing toggles (topo.TOPO_PROCESSORS,
+'scale factor' box (the current file's scale; editing it sets the scale
+timeline from this file's time on, see "Coordinates"), the topography processing toggles (topo.TOPO_PROCESSORS,
 one active at most), 'load saved averages' (the saved averages window),
 and along the bottom left the drift controls: the 'auto drift' and
 'manual drift' toggles (every file: the two velocity sources for the
@@ -501,6 +509,7 @@ from sm4_Browser.map import Map
 from sm4_Browser.scanlayer import (ScanLayer, display_record, record_corners, SHOW_MODES, DEFAULT_SHOW_MODE, cache_dir,
                                    cache_load, cache_store, read_record)
 from sm4_Browser.caches import open_stores
+from sm4_Browser.scales import Scales
 from collections import OrderedDict
 from types import SimpleNamespace
 
@@ -522,7 +531,10 @@ class _BrowserCore:
                  iv_broadening_V=0.2, tip_params=None):
         """
         directory         : folder of .sm4 files of one experiment
-        scalefactor       : initial x/y scale factor (editable in the window)
+        scalefactor       : the base x/y scale factor: the one in force before any entry of the
+                            experiment's scale timeline (scales.Scales; the 'scale factor' box and
+                            the section features' 'set scale' window add entries, each from its
+                            file's time on)
         hampel_defaults, sgolay_defaults : pre-fill of the filter boxes in the
                             browser and the analysis windows (None: the FilterControls defaults);
                             every filter starts off
@@ -538,7 +550,7 @@ class _BrowserCore:
         self.files = list_sm4_files(directory)
         if not self.files:
             raise ValueError(f"No .sm4 files with a date-time stamp in {directory}.")
-        self.scalefactor = float(scalefactor)
+        self.base_scale = float(scalefactor)
         self.hampel_defaults = hampel_defaults
         self.sgolay_defaults = sgolay_defaults
         self.line_window_kwargs = dict(line_window_kwargs or {})
@@ -566,6 +578,10 @@ class _BrowserCore:
         # handed to the header scan, the drift tracker and the sites (the earlier caches are carried
         # over the first time).
         self.settings, self.computed = open_stores(directory, self.files)
+        # The scale timeline (scales.Scales): every file is drawn and measured at the scale in force at
+        # its own time (scale_of / k_of); the entries are kept in the settings store.
+        self.scales = Scales(self.base_scale, self.settings, self.files)
+        self.scales.describe()
         self.headers = header_cache(directory, self.files, computed=self.computed)   # path -> types, geom, start/end time
         for p in self.files:
             h = self.headers[p]
@@ -587,6 +603,7 @@ class _BrowserCore:
         # any drift window, redraws the scan area (Drift.subscribe; the Line and Map windows
         # subscribe their own redraws when they open).
         self.drift.subscribe(self._on_manual_changed)
+        self.drift.scale_of = self.scale_of          # the drift's console readouts show the calibrated value too
         # The sites and regions (sites.Sites: the once-over metrics cache, the regions, the flags).
         self.sites = Sites(directory, self.files, self.kinds, self.head_geoms, self.drift.seg_first, self._load,
                            tip_params, settings=self.settings, computed=self.computed)
@@ -657,6 +674,32 @@ class _BrowserCore:
         if f.self_check_text:
             print(f.self_check_text)
         return f
+
+    # --- the scale timeline: one function per use ---
+
+    def scale_of(self, path):
+        """The scale factor in force for a file (scales.Scales.at: the timeline entry at or before its time)."""
+        return self.scales.at(path)
+
+    def k_of(self, path):
+        """The drawing factor of a file: recorded metres times k_of are calibrated nm, the scan area's units."""
+        return 1e9 / self.scales.at(path)
+
+    @property
+    def scalefactor(self):
+        """The current file's scale factor (what the 'scale factor' box shows); the base scale before any file is current."""
+        try:
+            path = self.files[self.index]
+        except (AttributeError, IndexError):
+            return self.base_scale
+        return self.scales.at(path)
+
+    def _record_scale(self, f, stored):
+        """The timeline's scale for a file being rebuilt from a record; a console note when the record was made with another."""
+        scale = self.scale_of(f.path)
+        if stored is not None and abs(float(stored) - scale) > 1e-9:
+            print(f"{f.name}: the record was made with scale factor {float(stored):g}; the timeline's {scale:g} applies now.")
+        return scale
 
     @staticmethod
     def _point_xy(f):
@@ -818,6 +861,7 @@ class _BrowserCore:
     def _draw_all(self):
         f = self.current
         self._set_controls_for_kind(f.kind)
+        self.box_scale.set(f"{self.scale_of(f.path):g}")       # the current file's scale (the timeline)
         # Both sliders follow the file shown: the file slider the current file, the
         # spectra slider the spectra file last shown (unchanged while a topo is current).
         self.sld_file.set(self.index)
@@ -919,7 +963,7 @@ class _BrowserCore:
             if model is None:
                 print(f"{name}: no drift skew (" + "; ".join(notes) + ")")
             else:
-                print(f"{name}: skewed with the {model.rule} velocity, " + model.text())
+                print(f"{name}: skewed with the {model.rule} velocity, " + model.text(self.scale_of(path)))
         return model
 
     def _drift_state(self):
@@ -954,23 +998,22 @@ class _BrowserCore:
         last_img = max((j for j in range(i + 1) if self.kinds.get(self.files[j]) in ('topo', 'grid')), default=-1)
         grey, blue = [], []
         for p, xy in self.layer.points(visible, self.files[i]):
-            (blue if self.layer.rank.get(p, 0) > last_img else grey).append(xy)
-        return np.array(grey).reshape(-1, 2), np.array(blue).reshape(-1, 2)
+            (blue if self.layer.rank.get(p, 0) > last_img else grey).append((p, xy))
+        return grey, blue
 
     def _draw_points(self, visible):
-        """The other spectra files' diamonds (grey before the current topo, blue after); returns their drawing positions."""
+        """The other spectra files' diamonds (grey before the current topo, blue after), each at its file's scale; returns their drawing positions."""
         for a in self._point_artists:
             try:
                 a.remove()
             except Exception:
                 pass
         self._point_artists = []
-        k = 1e9 / self.scalefactor
         out = []
         grey, blue = self._point_colours(visible)
-        for xy_m, colour in ((grey, POINT_BEFORE_COLOR), (blue, POINT_AFTER_COLOR)):
-            if len(xy_m):
-                oxy = xy_m * k
+        for items, colour in ((grey, POINT_BEFORE_COLOR), (blue, POINT_AFTER_COLOR)):
+            if items:
+                oxy = np.array([np.asarray(xy, dtype=np.float64) * self.k_of(p) for p, xy in items]).reshape(-1, 2)
                 out.append(oxy)
                 h, = self.ax_scan.plot(oxy[:, 0], oxy[:, 1], ls='none', marker='D', ms=7, color=colour,
                                        mec="black", mew=0.6, zorder=1.9)
@@ -1115,11 +1158,10 @@ class _BrowserCore:
 
     def _layer_refresh(self):
         """The layer and the diamonds updated for the current state (no overlay redraw); the full extent grows with them."""
-        k = 1e9 / self.scalefactor
         visible = self._visible_paths()
         # While files are still arriving the occlusion is not recomputed (every arrival would redo it);
         # the last refresh, with the queue empty, computes it once.
-        corners = self.layer.update(visible, self.current.path, k, self._direction_of_path,
+        corners = self.layer.update(visible, self.current.path, self.k_of, self._direction_of_path,
                                     lambda p, rec: self._layer_model(p, rec), wanted=self._layer_key,
                                     state=None if self._bg_queue else self._drift_state())
         pts = list(corners) + self._draw_points(visible)
@@ -1201,13 +1243,13 @@ class _BrowserCore:
         ax = self.ax_scan
         self._clear_overlays()
         f = self.current
-        k = 1e9 / self.scalefactor
+        k = self.k_of(f.path)                   # the current file's drawing factor (every file at its own scale)
         pts = []
         focus = None                            # the current file's own extent: the view relocates to it
         for g in self.loaded.values():
             self._record_of_loaded(g)
         visible = self._visible_paths()
-        corners = self.layer.update(visible, f.path, k, self._direction_of_path,
+        corners = self.layer.update(visible, f.path, self.k_of, self._direction_of_path,
                                     lambda p, rec: self._layer_model(p, rec), wanted=self._layer_key,
                                     state=self._drift_state())
         pts.extend(corners)
@@ -1595,9 +1637,23 @@ class _BrowserCore:
             self.box_scale.set(f"{self.scalefactor:g}")
             self.fig.canvas.draw_idle()
             return
-        if v != self.scalefactor:
-            self.scalefactor = v
-            self._draw_all()
+        self.set_scale_from_current(v)
+
+    def set_scale_from_current(self, v):
+        """
+        The scale timeline set from the current file's time on (scales.Scales.set_from; the first
+        entry covers the whole experiment): the 'scale factor' box and the 'set scale' window both
+        end here.  Everything is redrawn at the files' scales; the windows already open keep the
+        scale they were opened with.
+        """
+        v = float(v)
+        e = self.scales.entry_of(self.current.path)
+        if e is not None and abs(e['scale'] - v) < 1e-12:
+            return
+        self.scales.set_from(self.current.path, v)
+        print(f"scale factor {v:g} from {self.current.name} on (kept in {self.settings.name}).")
+        self.scales.describe()
+        self._draw_all()
 
     def _on_topo_toggle(self, active):
         """The topo processor box (widgets.TopoProcessorBox; one active at most): everything redrawn."""
@@ -1656,7 +1712,7 @@ class _BrowserCore:
         from sm4_Browser.stripe import StripeWindow
         self.drift.loaded = self.loaded
         try:
-            self.stripe_window = StripeWindow(self.drift, f, self.scalefactor, list(self.topo_active),
+            self.stripe_window = StripeWindow(self.drift, f, self.scale_of(f.path), list(self.topo_active),
                                               setting=self.drift.slow_setting(f, self.auto_on, self.manual_on),
                                               pass_top='reverse' if self._direction_of(f) == 'reverse' else 'forward')
         except ValueError as exc:
@@ -1677,7 +1733,7 @@ class _BrowserCore:
             w.raise_()
             return
         try:
-            self.drift_window = DriftWindow(self.drift, self.current, self.scalefactor, self.topo_active,
+            self.drift_window = DriftWindow(self.drift, self.current, self.scale_of, self.topo_active,
                                             auto_on=self.auto_on)
         except ValueError as exc:
             print(f"drift window: {exc}.")
@@ -1715,14 +1771,12 @@ class _BrowserCore:
         if pts is None:
             print("cross section: no line; 'section' places one.")
             return
-        k = 1e9 / self.scalefactor
-        p0_m, p1_m = pts[0] / k, pts[1] / k
         topos = self._topos()
         if not topos:
             print("cross section: no topography in the loaded set.")
             return
         try:
-            x, zf, zr, names = cross_section(topos, p0_m, p1_m, self.scalefactor)
+            x, zf, zr, names = cross_section(topos, np.vstack(pts), self.scale_of)
         except Exception as exc:
             print(f"cross section: not available ({exc}).")
             return
@@ -2099,8 +2153,8 @@ class _BrowserCore:
         kw['sm4'] = f
         try:
             analyzer = Line(f.path, chunk_index=line, cmap=self.line_window_kwargs.get('cmap', 'jet'),
-                            scalefactor=self.scalefactor, scan_mode='single', combine_scans=False,
-                            sweeps=rec.get('sweeps') or f.sweep_mode)
+                            scalefactor=self._record_scale(f, rec.get('scalefactor')), scan_mode='single',
+                            combine_scans=False, sweeps=rec.get('sweeps') or f.sweep_mode)
             ch = rec.get('channel', 'didv')
             if ch != analyzer.channel and ch in analyzer.spectra.channels():
                 analyzer.channel = ch
@@ -2137,7 +2191,7 @@ class _BrowserCore:
                 f = self._resolve_file(rm.get('path'), rm.get('name'))
                 if rm.get('sweeps'):
                     f = f.with_sweeps(rm['sweeps'])
-                members.append(member_from_file(f, int(rm.get('line', 0)), float(rm.get('scalefactor', self.scalefactor)),
+                members.append(member_from_file(f, int(rm.get('line', 0)), self._record_scale(f, rm.get('scalefactor')),
                                                 topo_lines=[(int(r), m) for r, m in rm.get('topo_lines', [])] or None,
                                                 markers=rm.get('markers'), centers=rm.get('centers')))
             except (FileNotFoundError, ValueError) as exc:
@@ -2169,7 +2223,7 @@ class _BrowserCore:
         spec = f if f.kind in ('point', 'phase', 'grid') and len(f.spec_xy_m) else None
         title = topo.name + (f"   (x: {f.name})" if spec is not None else "")
         self.drift.loaded = self.loaded
-        self.children.append(TopoWindow(topo, list(self.topo_active), self.scalefactor, None, title,
+        self.children.append(TopoWindow(topo, list(self.topo_active), self.scale_of(f.path), None, title,
                                         direction=self._direction_of(topo), spec=spec, drift=self.drift,
                                         auto_on=self.auto_on, manual_on=self.manual_on,
                                         anchor_on=self.anchor_on,
@@ -2184,7 +2238,7 @@ class _BrowserCore:
         kw['sm4'] = f
         try:
             analyzer = Line(f.path, chunk_index=self.line_index, cmap=self.line_window_kwargs.get('cmap', 'jet'),
-                            scalefactor=self.scalefactor, scan_mode='single',
+                            scalefactor=self.scale_of(f.path), scan_mode='single',
                             combine_scans=False, sweeps=f.sweep_mode)
             if self.channel != analyzer.channel and self.channel in analyzer.spectra.channels():
                 analyzer.channel = self.channel        # open on the browser's channel
@@ -2202,7 +2256,7 @@ class _BrowserCore:
             return
         try:
             # The Map window has its own 'Feenstra' toggle (on at open); the Feenstra settings are handed over.
-            self.children.append(Map(f, list(self.topo_active), self.scalefactor,
+            self.children.append(Map(f, list(self.topo_active), self.scale_of(f.path),
                                      self.hampel_defaults, self.sgolay_defaults, self.cmap_map,
                                      divide_iv=True, iv_broadening=self.iv_broadening,
                                      iv_zero_sub=self.iv_zero_sub, iv_broadened=self.iv_broadened,

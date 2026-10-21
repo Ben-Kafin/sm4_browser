@@ -44,9 +44,10 @@ the owner and is final. When all three items are done, item 3 removes this file.
   `settings_<stamp>.json`, `computed_<stamp>.json`, the carry-over, the rules), the drift tracker, the
   sites and the header scan on them, the hand-set flags feeding the whole chain, checks J1 to J3. Found
   on the way and fixed: the browser made its file loader's cache after the sites ran, so the sites'
-  once-over failed on every file and no metrics were ever computed. (b) next: the scale timeline
-  (`scales.py`) applied per file everywhere, the drift readouts calibrated with the nominal beside. (c)
-  last: the path editing with its three features.
+  once-over failed on every file and no metrics were ever computed. (b) done: the scale timeline
+  (`scales.py`) applied per file everywhere, the drift readouts calibrated with the nominal beside, check
+  K1; found and fixed on the way: every window's is_open tested a figure number, which qtplot reuses after
+  a close, so a closed window could count as open. (c) next: the path editing with its three features.
 * Item 3: not started.
 
 ## Item 1: text size and short labels
@@ -107,8 +108,10 @@ the owner and is final. When all three items are done, item 3 removes this file.
 
 ### The scale timeline
 * The experiment keeps a list of scale factors, each anchored at the time of the file it was set on. A file
-  takes the latest scale set at or before its own time; before the first entry the starting scale factor
-  (the constructor's `scalefactor`, default 2.75) applies.
+  takes the latest scale set at or before its own time; the first entry set covers the whole experiment, so
+  a file earlier than every entry takes the earliest one (the owner's rule: "setting the scale anywhere does
+  so for the whole experiment if no other scales have been set"); without any entry the starting scale
+  factor (the constructor's `scalefactor`, default 2.75) applies.
 * The browser's `scale factor` box shows the current file's scale; editing it sets the scale from the
   current file's time onward, the same as `set scale`.
 * **Every drawing uses the file's own scale.** The scan area draws every file at its own scale (the layer's

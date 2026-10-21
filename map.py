@@ -273,7 +273,7 @@ class Map:
         # the window.
         if self.drift is not None:
             fig = self.fig
-            self.drift.subscribe(self._refresh_drift, alive=lambda: plt.fignum_exists(fig.number))
+            self.drift.subscribe(self._refresh_drift, alive=lambda: plt.fignum_exists(fig))
             fig.canvas.mpl_connect('close_event', lambda event: self.drift.unsubscribe(self._refresh_drift))
         self._draw_topo(self.ax_topo)
         self.recompute()
