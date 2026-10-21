@@ -46,8 +46,6 @@ import os
 from sm4_Browser import sm4file
 
 
-SCALES_FORMAT = 1         # not read anywhere: the 'scales' section carries no format number of its own (the settings store is migrated whole, never discarded)
-
 
 def file_time(path):
     """The time of a file, seconds since the epoch, from the date-and-time stamp of its name; None without a stamp."""

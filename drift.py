@@ -2488,35 +2488,6 @@ class Drift:
         """The stored manual span between two topos (either order), or None."""
         return next((sp for sp in self.manual_spans if {sp['a'], sp['b']} == {a_path, b_path}), None)
 
-    def auto_pair_for(self, f):
-        """
-        The tracked pair a file's auto velocity comes from: (earlier path,
-        later path, v) or None.  Not called by the package at present (the
-        drift window seeds from DriftWindow._seed_velocity, which also
-        covers manual spans).  A spectra file: (last topo of its segment
-        before it, first after it); a topo: (it, the next topo of its
-        segment), else (the previous one, it); None when that pair is not
-        tracked (an extrapolated or absent velocity seeds nothing).
-        """
-        path = f.path
-        seg = self.segment_key_of(path)
-        members = self.segment_members(seg) if seg is not None else []
-        if f.kind == 'topo':
-            if path not in members:
-                return None
-            j = members.index(path)
-            cands = ([(path, members[j + 1])] if j + 1 < len(members) else []) + ([(members[j - 1], path)] if j > 0 else [])
-        else:
-            i = self.files.index(path) if path in self.files else len(self.files)
-            before = [p for p in members if self.files.index(p) < i]
-            after = [p for p in members if self.files.index(p) > i]
-            cands = [(before[-1], after[0])] if before and after else []
-        for a, b in cands:
-            v = self.auto_velocity_of(a, b)
-            if v is not None:
-                return a, b, v
-        return None
-
     def window_pair(self, f):
         """
         The two topos the drift window shows for a file, as loaded Sm4Files
@@ -3275,9 +3246,8 @@ class DriftWindow:
     click on either topo places the partner on the other at once where the
     velocity that currently governs the pair puts it (_seed_velocity: the
     pair's applied manual velocity, else the file's velocity with both
-    sources on, else the pair's tracked velocity; independent of `auto_on`,
-    which the openers pass and the window keeps as self.auto_on but nothing
-    reads; seed_partner, the module docstring, "Seeded markers"), with the
+    sources on, else the pair's tracked velocity; seed_partner, the module
+    docstring, "Seeded markers"), with the
     pair's arrow on both panels.
     'Markers' is the pair count (0 to 8; a click raises it), 'clear
     markers' empties the draft.  The markers are a draft: the readout
@@ -3315,7 +3285,7 @@ class DriftWindow:
 
     DESIGN = (14, 7.6)     # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
-    def __init__(self, drift, f, scalefactor, active_procs, on_change=None, auto_on=True):
+    def __init__(self, drift, f, scalefactor, active_procs, on_change=None):
         from sm4_Browser import widgets, plots
         from sm4_Browser import topo as topo_mod
         self.drift = drift
@@ -3327,7 +3297,6 @@ class DriftWindow:
         self.scalefactor = self.scale            # the same under the name the other windows use
         self.active = list(active_procs)
         self._on_change = on_change
-        self.auto_on = bool(auto_on)
         a, b = drift.window_pair(f)
         self.a, self.b = a, b
         self.v_auto = drift.auto_velocity_of(a.path, b.path)

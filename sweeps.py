@@ -76,7 +76,7 @@ def chosen_columns(info, mode):
     list of int arrays, one per pixel, possibly empty.  `info` is
     STS.sweep_info; ValueError for an unknown mode.
     """
-    pix, sw, d = info['pixel'], info['sweep'], info['dir']
+    sw, d = info['sweep'], info['dir']
     out = []
     for p in range(info['n_pix']):
         cols = info['cols_of'][p]

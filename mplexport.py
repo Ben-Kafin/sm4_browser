@@ -109,7 +109,7 @@ def to_matplotlib(fig):
     bottom = min((_pos(ax)[1] for ax in axes), default=0.0)
     for t in fig._texts:
         if t.get_visible() and t.get_text() and t._y >= bottom - 0.02:
-            _text(mfig, t, transform=mfig.transFigure, target=mfig)
+            _text(t, transform=mfig.transFigure, target=mfig)
     return mfig
 
 
@@ -278,7 +278,7 @@ def _artist(m, a):
         if not a.get_text():
             return None
         tr = m.transAxes if a._coords == 'axes' else None
-        return _text(m, a, transform=tr, target=m)
+        return _text(a, transform=tr, target=m)
     return None
 
 
@@ -300,12 +300,12 @@ def _quads(m, item, zorder=None):
     return pc
 
 
-def _text(target_owner, t, transform=None, target=None):
+def _text(t, transform=None, target=None):
     """
     A qtplot Text as matplotlib text on `target` (a matplotlib Axes or Figure): size in points,
     alignment, colour, rotation, weight, a monospace family, the bbox keys matplotlib takes,
     `transform` (axes or figure coordinates; None for data), and the qtplot pixel offset as an
-    offset in points.  `target_owner` is not read; the callers pass the same object as `target`.
+    offset in points.
     """
     kw = dict(fontsize=t._size, ha=t._ha, va=t._va, color=t._color, rotation=t._rotation)
     if t._weight:

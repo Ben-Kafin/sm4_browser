@@ -694,13 +694,12 @@ class Line:
                  (" (rows placed by the stripe matching alone)." if stripe else " (rows plain).")))
 
     def _int_on_drift_window(self):
-        """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow, seeding from this window's 'auto drift'); a change applied there reaches every subscriber of the Drift, this window included."""
+        """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow; partners seeded by the velocity governing the pair); a change applied there reaches every subscriber of the Drift, this window included."""
         if self._int_drift is None:
             print(f"{self._int_tag()}: no drift model at hand; no drift window.")
             return
         try:
-            w = DriftWindow(self._int_drift, self._int_sm4(), self.scalefactor, list(self._int_topo_active),
-                            auto_on=self._int_auto_on)
+            w = DriftWindow(self._int_drift, self._int_sm4(), self.scalefactor, list(self._int_topo_active))
         except ValueError as exc:
             print(f"{self._int_tag()}: drift window not opened ({exc}).")
             return

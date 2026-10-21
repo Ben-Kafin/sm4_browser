@@ -514,7 +514,7 @@ def draw_marker_curves(ax, energy, markers, groups, avg_on, stack_on, substack_o
         else:
             items = [(m['curve'], m['color'], 2, m['label']) for m in markers]
         sig = (bool(avg_on), tuple(c for _, c, _, _ in items), texts['ylabel'], texts['title_markers'],
-               len(groups), id(energy) if False else len(energy))
+               len(groups), len(energy))
         prev = getattr(ax, '_mc_state', None)
         if prev is not None and prev[0] == sig and all(ln in ax._children for ln in prev[1]):
             for ln, (curve, _, _, label) in zip(prev[1], items):

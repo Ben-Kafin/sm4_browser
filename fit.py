@@ -154,9 +154,8 @@ Pipeline
    Fit.from_cache(path) opens the figure from that file without
    process() or select_model(); has_cache(ifile) tells whether an
    up-to-date cache exists for a data file or send label.  Cache format 3
-   holds the raw columns, the filter stage, and the per-fit data contexts;
-   a format-2 cache (one smoothing setting per analyzer) predates the
-   loader format and is out of date.
+   holds the raw columns, the filter stage, the per-fit data contexts and
+   the normalization range; an earlier format is out of date.
 9. Figure: data (left panel, with the Savitzky-Golay / Hampel
    controls: the curve a Refit would fit with the current settings; the shown
    fit's own curve is overlaid when it differs) and, beside it in the same
@@ -1123,11 +1122,14 @@ class Fit:
     #  Background evaluation, envelope ceiling, and fit seed              #
     # ------------------------------------------------------------------ #
 
+    def _phi_min(self):
+        """The barrier height's lower bound (eV): half the largest |V| of the window plus 0.05 eV; the one rule of _bg_bounds and the edit panel's refusal."""
+        return 0.5 * float(np.max(np.abs(self.V))) + 0.05
+
     def _bg_bounds(self):
-        """Background parameter bounds; phi_eV bounded below by half the largest |V| (plus 0.05 eV)."""
+        """Background parameter bounds; phi_eV bounded below by _phi_min."""
         bounds = list(BACKGROUND['bounds'])
-        phi_min = 0.5 * float(np.max(np.abs(self.V))) + 0.05
-        bounds[0] = (phi_min, bounds[0][1])
+        bounds[0] = (self._phi_min(), bounds[0][1])
         return bounds
 
     def _envelope(self):
@@ -1995,14 +1997,14 @@ class Fit:
 
     # Bumped whenever the cached state changes shape (format 1 held the earlier
     # background families and prominence-ordered peaks; format 2 one smoothing
-    # setting per analyzer).  Every write is format 3 with 'loader_format'
+    # setting per analyzer; both predate the loader format and are out of
+    # date).  Every write is format 3 with 'loader_format'
     # (sm4file.LOADER_FORMAT); a cache is up to date when its format is read
-    # here and its loader format is the loader's (cache_up_to_date).  Format 2
-    # predates the loader format, so a format-2 cache is out of date and its
-    # migration (from_cache) is no longer reached.  A cache that is not up to
-    # date is never read or written: a new one goes beside it (cache_path).
+    # here and its loader format is the loader's (cache_up_to_date).  A cache
+    # that is not up to date is never read or written: a new one goes beside
+    # it (cache_path).
     _CACHE_FORMAT = 3
-    _CACHE_FORMATS_READ = (2, 3)
+    _CACHE_FORMATS_READ = (3,)
 
     @staticmethod
     def _stem_of(label):
@@ -2090,7 +2092,7 @@ class Fit:
         mode; a missing attribute is stored as None), plus 'shown', 'back'
         and 'fwd' (the shown fit and the Revert / Forward chains), 'format'
         (_CACHE_FORMAT) and 'loader_format' (sm4file.LOADER_FORMAT).
-        norm_range is not among the fields.
+        norm_range (the sent curve's normalization range, or None) is among the fields.
         """
         fields = ('ifile', 'hampel_filter_params', 'sgolay_filter_params',
                   'energy', 'V', 'data',
@@ -2099,7 +2101,7 @@ class Fit:
                   'noise_level', 'noise_z', 'max_width_ratio', 'known_features',
                   'envelope', 'bg_seed', 'env_bg', 'env_residual', 'candidates', 'results', 'fits',
                   'lia', 'iv', 'units_lia', 'units_iv', 'vmod', 'filter_stage', 'areas_A', 'delta_I_window_A',
-                  'quantity', 'iv_broadening', 'iv_zero_sub', 'raw_sets', 'resample', 'background')
+                  'quantity', 'iv_broadening', 'iv_zero_sub', 'raw_sets', 'resample', 'background', 'norm_range')
         state = {name: getattr(self, name, None) for name in fields}
         state['shown'] = self._shown
         state['back'] = list(self._back)
@@ -2107,60 +2109,6 @@ class Fit:
         state['format'] = self._CACHE_FORMAT
         state['loader_format'] = sm4file.LOADER_FORMAT
         return state
-
-    def _migrate_format_2(self, state):
-        """
-        Bring a format-2 state (one smoothing setting per analyzer, no raw
-        columns) up to format 3 in memory: every fit is stamped with the
-        analyzer-level data context; the raw sweeps are reloaded from the .sm4
-        when the cache names a file (one raw set), otherwise the stage is
-        'post' (no raw columns: refits only with the stored settings).
-        """
-        ctx = {k: state.get(k) for k in self._CONTEXT_KEYS}
-        for fit in self.fits:
-            for k, v in ctx.items():
-                fit.setdefault(k, v)
-        self.lia = self.iv = None
-        self.units_lia = self.units_iv = self.vmod = None
-        self.raw_sets = None
-        self.filter_stage = 'post'
-        self.areas_A = None
-        self.delta_I_window_A = None
-        path_part = str(self.ifile).partition(' | ')[0].strip()
-        if ' | ' not in str(self.ifile) and os.path.isfile(path_part):
-            try:
-                saved_ifile = self.ifile             # the label stays as it was, whatever the load does
-                self.ifile = path_part
-                try:
-                    self.extract_data()              # self.lia, self.iv, the units, vmod, self.energy
-                finally:
-                    self.ifile = saved_ifile
-                self.filter_stage = 'average'
-                self.raw_sets = [sts.STS.from_arrays(self.energy, self.lia, self.iv, self.units_lia,
-                                                     self.units_iv, self.vmod)]
-                order = np.argsort(self.energy)
-                iv_f = filters.filter_lia(self.iv, self.hampel_filter_params, self.sgolay_filter_params)
-                calibrated, _ = calibration.calibrate(self.energy, self.lia.copy(), iv_f, self.vmod)
-                _, norm_areas = normalization.normalize(self.energy, calibrated,
-                                                        energy_range=getattr(self, 'norm_range', None))
-                self.areas_A = np.array(norm_areas)
-                iv_sorted = self.iv[order, :]
-                self.delta_I_window_A = iv_sorted[self.i_bias, :] - iv_sorted[self.i_ref, :]
-                for fit in self.fits:
-                    fit.setdefault('areas_A', self.areas_A)
-                    fit.setdefault('delta_I_window_A', self.delta_I_window_A)
-                print(f"Format-2 cache: raw sweeps reloaded from {path_part} (filter stage 'average').")
-            except Exception as exc:
-                self.lia = self.iv = None
-                self.filter_stage = 'post'
-                print(f"Format-2 cache: could not reload the raw sweeps ({exc}); "
-                      "refits filter the stored unsmoothed curve (stage 'post').")
-        else:
-            print("Format-2 cache of a sent curve holds no raw columns; "
-                  "refits filter the stored unsmoothed curve (stage 'post').")
-        for fit in self.fits:
-            fit.setdefault('areas_A', self.areas_A)
-            fit.setdefault('delta_I_window_A', self.delta_I_window_A)
 
     def _write_cache(self):
         """
@@ -2229,13 +2177,8 @@ class Fit:
         self._back = list(state['back'])
         self._fwd = list(state['fwd'])
         print(f"Fit history loaded: {path}")
-        if state.get('format') == 2:
-            print("Format-2 cache: migrating to format 3 (per-fit smoothing).")
-            self._migrate_format_2(state)
         if self._shown is not None:
             self._restore_context(self.fits[self._shown])
-        if state.get('format') == 2:
-            print(f"Cache rewritten as format 3: {self._write_cache()}")
         print(f"Curve: {self.ifile}")
         print(f"Points: {len(self.V)}, energy {self.V[0]:.3f} to {self.V[-1]:.3f} V"
               + ("" if self.window_has_zero else "  (window does not contain 0 V)")
@@ -3155,9 +3098,9 @@ class Fit:
             if kind == 'bg':
                 if key == 'bg_amp' and v <= 0:
                     raise ValueError("the background amplitude must be > 0")
-                if key == 'bg_phi_eV' and v <= 0.5 * float(np.max(np.abs(self.V))):
-                    raise ValueError(f"phi must exceed half the largest |V| of the window "
-                                     f"({0.5 * float(np.max(np.abs(self.V))):.3f} eV)")
+                if key == 'bg_phi_eV' and v < self._phi_min():
+                    raise ValueError(f"phi must be at least half the largest |V| of the window plus 0.05 eV "
+                                     f"({self._phi_min():.3f} eV), the fit's own lower bound")
                 if key == 'bg_kappa' and v <= 0:
                     raise ValueError("kappa must be > 0")
                 cur[key] = v

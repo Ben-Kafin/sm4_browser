@@ -1050,7 +1050,7 @@ def short_label(text):
     return (head + tail).strip()
 
 
-_FILE_NAME_RE = re.compile(r'\.[A-Za-z0-9]{1,4}$')     # a title that is a file name: it ends in an extension
+_FILE_NAME_RE = re.compile(r'\.[A-Za-z][A-Za-z0-9]{0,3}$')     # a title that is a file name: it ends in an extension (a letter, then up to three letters or digits; '0.5' is not one)
 
 
 def is_file_name(text):
@@ -1244,9 +1244,9 @@ class _Axis(pg.AxisItem):
         vmin, vmax = norm.vmin, norm.vmax
         if vmin is None or vmax is None or not vmax > vmin:
             return []
-        levels = self._mpl_ticks(vmin, vmax, size)
+        levels = self._mpl_ticks(vmin, vmax, size)      # at most one level
         out = []
-        for sp, vals in levels[:2]:
+        for sp, vals in levels:
             v = np.asarray([x for x in vals if vmin - 1e-12 * abs(vmax - vmin) <= x <= vmax + 1e-12 * abs(vmax - vmin)])
             pos = np.asarray(norm(v), dtype=np.float64) if len(v) else np.zeros(0)
             out.append((sp, [float(p) for p in pos]))
@@ -1697,9 +1697,7 @@ class AxesImage(Artist):
         if extent is None:
             extent = (-0.5, nx - 0.5, ny - 0.5, -0.5) if self.origin == 'upper' else (-0.5, nx - 0.5, -0.5, ny - 0.5)
         l, r, b, t = [float(v) for v in extent]
-        if self.origin == 'upper':
-            # matplotlib: row 0 at the top edge t; the drawn array is flipped, so its row 0 sits at b.
-            pass
+        # origin 'upper': row 0 at the top edge t (the drawn array is flipped in _refresh, so its row 0 sits at b).
         self._extent = (l, r, b, t)
         self._refresh()
         self._place_transform()
@@ -2745,7 +2743,8 @@ class Axes:
         """
         The title above the axes: the full text is kept (_title_full) and the shown part is
         short_title(full, figure.portrait); when the two differ the full text goes to the figure's
-        info panel (Figure._set_info).  `fontsize` in points (12 when not given), `loc` 'left' /
+        info panel (Figure._set_info).  `fontsize` in points (not given: the size last set through
+        ax.title.set_fontsize or an earlier call, 12 at first), `loc` 'left' /
         'center' / 'right', `pad` in points (6), `y` the axes fraction of the baseline (1.0).
         """
         if fontdict:
@@ -2757,7 +2756,7 @@ class Axes:
         self._title_full = full
         label = short_title(full, self.figure.portrait)
         self.figure._set_info(self, full if full.strip() != label else '')
-        size = font_pt(fontsize, self._title_size) if fontsize is not None else 12.0
+        size = font_pt(fontsize, self._title_size)
         self._title_size = size
         ha = {'left': 'left', 'right': 'right'}.get(loc, 'center')
         x = {'left': 0.0, 'right': 1.0}.get(loc, 0.5)
@@ -2978,13 +2977,14 @@ class Axes:
             x0, y0, w, h = self._px_rect()
             ratio = float(self.vb.state['aspectLocked'])
             dx, dy = tx[1] - tx[0], ty[1] - ty[0]
-            if w > 0 and h > 0 and dx > 0 and dy > 0:
-                # data units per pixel needed on each axis
-                ux, uy = dx / w, dy / (h / ratio) if False else dy / h
-                u = max(ux, uy)
+            if w > 0 and h > 0 and dx > 0 and dy > 0 and ratio > 0:
+                # pyqtgraph's lock: data width / data height = (box width / box height) / ratio, so the
+                # y units per pixel are `ratio` times the x units per pixel.  The x units per pixel
+                # that hold both requested ranges, then both ranges widened about their centres.
+                u = max(dx / w, dy / (h * ratio))
                 cx, cy = 0.5 * (tx[0] + tx[1]), 0.5 * (ty[0] + ty[1])
                 tx = (cx - 0.5 * u * w, cx + 0.5 * u * w)
-                ty = (cy - 0.5 * u * h, cy + 0.5 * u * h)
+                ty = (cy - 0.5 * u * ratio * h, cy + 0.5 * u * ratio * h)
             self.vb.setRange(xRange=tx, yRange=ty, padding=0)
             if getattr(self, '_adjust_box', False):
                 self._place_box_only()
@@ -4583,7 +4583,7 @@ def export_vector(fig, path):
               f"written as {pdf} instead (Illustrator opens PDF and SVG with every object editable).")
         return pdf
     import subprocess
-    subprocess.run([gs, '-q', '-dNOPAUSE', '-dBATCH', '-dNoOutputFonts' if False else '-dSAFER', '-sDEVICE=eps2write',
+    subprocess.run([gs, '-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=eps2write',
                     f'-sOutputFile={path}', pdf], check=True)
     try:
         os.remove(pdf)

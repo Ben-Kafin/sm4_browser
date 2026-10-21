@@ -633,13 +633,12 @@ class Map:
         print(f"Map window: {which} drift {'on' if flag else 'off'}.")
 
     def _on_drift_window(self):
-        """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow, seeding from this window's 'auto drift'); a change applied there reaches every subscriber of the Drift, this window included."""
+        """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow; partners seeded by the velocity governing the pair); a change applied there reaches every subscriber of the Drift, this window included."""
         if self.drift is None:
             print("Map window: no drift model at hand; no drift window.")
             return
         try:
-            w = DriftWindow(self.drift, self.grid, self.scalefactor, list(self.active_procs),
-                            auto_on=self.auto_on)
+            w = DriftWindow(self.drift, self.grid, self.scalefactor, list(self.active_procs))
         except ValueError as exc:
             print(f"Map window: drift window not opened ({exc}).")
             return

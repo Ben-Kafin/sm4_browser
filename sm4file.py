@@ -1537,11 +1537,6 @@ class Sm4File:
                 f"tolerance {float(PIXEL_PAIR_TOL_PX if tol_px is None else tol_px):g} px)"
                 + (f"; {int((~paired).sum())} spectra have no pixel at their location" if not paired.all() else ""))
 
-    def _z_page(self):
-        """The grid's embedded Topography spectra page (the Z recorded at every spectrum), or None.  Not called anywhere at present (topo_spectra_z, spectra_z and _self_check find the page themselves)."""
-        pages = self.f.pages
-        return next((p for p in pages if p.page_type == 'RHK_PAGE_INTERACTIVE_SPECTRA' and p.label == 'Topography'), None)
-
     def _z_per_spectrum(self, zpage):
         """
         The Topography channel's value for every spectrum of the file as shown (N,), NaN where never

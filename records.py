@@ -51,7 +51,7 @@ LINEAVG_RECORD_FORMAT = 1  # the line-average records
 RECORD_RE = re.compile(r'^(.+)_average\.json$')          # group 1: the stem (the name cleaned as a file name)
 LINE_RECORD_RE = re.compile(r'^(.+)_line(\d+)_markers\.json$')
 LINEAVG_RECORD_RE = re.compile(r'^(lineavg\d+.*)_average\.json$')   # the default names; a record's 'members' key decides
-OLD_CACHE_RE = re.compile(r'_average_of_.*_fits\.pkl$')
+OLD_CACHE_RE = re.compile(r'^(.*_average_of_.*)_fits(?:_\d+)?\.pkl$')   # group 1: the family's stem (the numbered members too)
 
 
 # --- paths and names ---
@@ -368,15 +368,30 @@ class SavedAveragesWindow:
         return {'kind': 'record', 'index': index, 'name': avg_name, 'stem': stem, 'record': rec,
                 'cache': cache if state is not None else None, 'n_fits': n_fits, 'text': text}
 
-    def _old_entry(self, name):
+    @staticmethod
+    def old_family_stems(names):
+        """The stems of the old label-named fit-history families among `names` (OLD_CACHE_RE: <stem>_fits.pkl and its numbered members <stem>_fits_<n>.pkl), each family once, in name order."""
+        out = []
+        for name in sorted(names):
+            m = OLD_CACHE_RE.search(name)
+            if m and m.group(1) not in out:
+                out.append(m.group(1))
+        return out
+
+    def _old_entry(self, stem):
         """
-        The entry of a fit history of the earlier label-named form in the
-        directory itself (OLD_CACHE_RE): read whatever its loader format
-        (listed by its label, which parse_label must accept, else None); the
-        text carries the files, sweeps and removed sweeps of the label, its
-        filter settings and fit count, and the file's modification time.
+        The entry of a fit-history family of the earlier label-named form in
+        the directory itself (OLD_CACHE_RE; `stem` from old_family_stems):
+        its newest member (sm4file.cache_family) read whatever its loader
+        format (listed by its label, which parse_label must accept, else
+        None); the text carries the files, sweeps and removed sweeps of the
+        label, its filter settings and fit count, and the file's
+        modification time.
         """
-        cache = os.path.join(self.directory, name)
+        family = sm4file.cache_family(os.path.join(self.directory, f"{stem}_fits.pkl"))
+        if not family:
+            return None
+        cache = family[-1][1]
         state = read_cache(cache, up_to_date=False)      # listed by its label; every such history predates the loader format
         if state is None:
             return None
@@ -386,7 +401,6 @@ class SavedAveragesWindow:
         n_fits = len(state.get('fits', []))
         hp, sp = state.get('hampel_filter_params'), state.get('sgolay_filter_params')
         when = datetime.fromtimestamp(os.path.getmtime(cache)).isoformat(timespec='seconds')
-        stem = name[:-len('_fits.pkl')]
         text = (f"old {stem} | {parsed['k']} files, {parsed['n']} sweeps, "
                 f"{len(parsed['removed'])} removed | {self._times_text(parsed['times'])} | "
                 f"{self._filters_text(hp, sp)} | {n_fits} fits | written {when}")
@@ -453,11 +467,10 @@ class SavedAveragesWindow:
                     e = self._lineavg_entry(name, m.group(1)) if lineavg else self._record_entry(name, m.group(1))
                     if e is not None:
                         (lineavgs if lineavg else records).append(e)
-        for name in sorted(os.listdir(self.directory)):
-            if OLD_CACHE_RE.search(name):
-                e = self._old_entry(name)
-                if e is not None:
-                    old.append(e)
+        for stem in self.old_family_stems(os.listdir(self.directory)):
+            e = self._old_entry(stem)
+            if e is not None:
+                old.append(e)
         records.sort(key=lambda e: -e['index'])
         old.sort(key=lambda e: -e['mtime'])
         lines.sort(key=lambda e: -e['mtime'])

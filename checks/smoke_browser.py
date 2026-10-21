@@ -49,7 +49,10 @@ the traceback, and exits non-zero when any failed.  One @check per feature, name
       as drawn at each file's scale; M5 tracked pairs with the files' signatures, tracked again
       after a change, written when tracked outside the build; M7 the Map window under the stripe
       matching alone (frame, lines, title, one label per grid cell); M8 RowHeatmap with a short
-      shear.
+      shear; M6 the fit history keeps norm_range and the barrier bound is one rule; M9 qtplot
+      (a title's size kept, a decimal is not a file name, a numeric aspect in the datalim
+      widening); M10 records and helpers (an old fit family listed once, a member's default row,
+      the Hampel filter's dtype, zero_crossing's tag).
 
 The checks share one browser and tidy up after themselves (windows closed, settings removed), so
 a failed check can leave state behind for the ones after it.  smoke_sweeps.py reuses make_browser,
@@ -630,9 +633,6 @@ def _e_markers(b, exp):
     QTest.keyClick(c, Qt.Key.Key_Tab)
     assert w._int_e_selected == 1
     # the record keeps them
-    rec = w._int_marker_record() if hasattr(w, '_int_marker_record') else None
-    import inspect
-    src = inspect.getsource(type(w))
     w._int_on_e_count(1)
     plt.close(w._int_fig)
     # line average: built on the Line window, gets the E-markers too
@@ -1773,6 +1773,73 @@ def _row_heatmap_short_shear(b, exp):
     assert abs(y0 - (float(np.min(hm.y_edges)) - 0.25)) < 1e-12 and abs(y1 - float(np.max(hm.y_edges))) < 1e-12
     assert np.allclose(hm._quads, full._quads)
     plt.close(fig)
+
+
+@check("M6 the fit: norm_range is kept in the fit history; the barrier height's lower bound is one rule for the fit and the edit panel")
+def _fit_history(b, exp):
+    import inspect
+    from sm4_Browser.fit import Fit
+    V = np.linspace(-1.0, 1.0, 101)
+    data = np.exp(-((V - 0.2) / 0.1) ** 2) + 0.2
+    f = Fit.from_curve(V, data, data, -1.0, 1e-10, np.array([1e-10]), 'synthetic curve', norm_range=(-0.5, 0.5))
+    f._shown, f._back, f._fwd = None, [], []            # as a run leaves them before a fit is accepted
+    state = f._cache_state()
+    assert state['norm_range'] == (-0.5, 0.5) and state['format'] == Fit._CACHE_FORMAT, state.get('norm_range')
+    assert f._bg_bounds()[0][0] == f._phi_min() == 0.5 * float(np.max(np.abs(f.V))) + 0.05
+    assert "self._phi_min()" in inspect.getsource(Fit._edit_on_param), "the edit panel refuses by the same rule"
+    assert Fit._CACHE_FORMATS_READ == (3,) and not hasattr(Fit, '_migrate_format_2')
+
+
+@check("M9 qtplot: a title re-set without a size keeps the size last set; a decimal is not a file name; the datalim widening applies a numeric aspect")
+def _qtplot_rules(b, exp):
+    from sm4_Browser.qtplot import is_file_name, short_title
+    assert not is_file_name('gamma 0.5') and short_title('gamma 0.5') == 'Gamma 0.5'
+    assert is_file_name('Synth_CT_2024_01_01_10_05_01_440.sm4') and is_file_name('x.tif') and is_file_name('a.b1')
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_title('one', fontsize=9)
+    ax.set_title('two')
+    assert ax._title_size == 9.0 and ax._title._size == 9.0, (ax._title_size, ax._title._size)
+    ax.title.set_fontsize(7)
+    ax.set_title('three')
+    assert ax._title_size == 7.0 and ax._title._size == 7.0
+    # datalim with aspect 2: pyqtgraph's lock makes the y units per pixel twice the x units per pixel;
+    # both requested ranges are held, the short one widened about its centre
+    ax.set_aspect(2, adjustable='datalim')
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    plt._app().processEvents()
+    x0, y0, w, h = ax._px_rect()
+    (xa, xb), (ya, yb) = ax.vb.viewRange()
+    assert abs((xb - xa) / (yb - ya) - (w / h) / 2.0) < 1e-6 * (w / h), ((xb - xa) / (yb - ya), (w / h) / 2.0)
+    assert xa <= 0 + 1e-9 and xb >= 10 - 1e-9 and ya <= 0 + 1e-9 and yb >= 10 - 1e-9, (xa, xb, ya, yb)
+    assert abs((xa + xb) - 10) < 1e-9 and abs((ya + yb) - 10) < 1e-9, "widened about the centres"
+    plt.close(fig)
+
+
+@check("M10 records and helpers: an old fit-history family listed once by its stem; a line-average member defaults to the forward row; the Hampel filter returns float64; zero_crossing's tag rule")
+def _records_helpers(b, exp):
+    import ast
+    from sm4_Browser.records import SavedAveragesWindow, OLD_CACHE_RE
+    from sm4_Browser.lineavg import member_from_file
+    from sm4_Browser.filters import hampel
+    names = ['2024_01_01_10_00_00_average_of_a_b_fits.pkl', '2024_01_01_10_00_00_average_of_a_b_fits_2.pkl',
+             'other.pkl', 'x_average_of_c_fits_3.pkl', 'avg1_average.json']
+    assert all(OLD_CACHE_RE.search(n) for n in (names[0], names[1], names[3])) and not OLD_CACHE_RE.search(names[2])
+    assert SavedAveragesWindow.old_family_stems(names) == ['2024_01_01_10_00_00_average_of_a_b', 'x_average_of_c']
+    grid = goto_kind(b, 'grid')
+    m = member_from_file(grid, 0, 1.0)
+    assert [tuple(x) for x in m['topo_lines']] == [(0, 'forward')], m['topo_lines']
+    out = hampel(np.arange(12).reshape(12, 1), window=2)
+    assert out.dtype == np.float64 and out.shape == (12, 1)
+    # zero_crossing is a script over real data: its tag rule compiled alone from the file
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zero_crossing.py')
+    tree = ast.parse(open(path).read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'tag_of')
+    ns = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), path, 'exec'), ns)
+    assert ns['tag_of']('A_CT_2024_01_01_10_00_00_000.sm4') == '2024_01_01_10_00_00_000'
+    assert ns['tag_of']('plain_2024.sm4') == 'plain_2024'
+    b._goto(0)
 
 
 def widgets_text(lo, hi):

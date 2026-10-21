@@ -30,7 +30,7 @@ def hampel(curves, window=3, n_sigma=2.5):
     neighbour equal) the threshold is 0 and any sample that differs from
     the median is replaced.  `window` is the number of neighbours on each
     side and must be a whole number (ValueError otherwise).  Returns a new
-    array of the input's shape and dtype; the input is not changed.
+    float64 array of the input's shape; the input is not changed.
     """
     if window != int(window):
         raise ValueError(
@@ -38,7 +38,7 @@ def hampel(curves, window=3, n_sigma=2.5):
             "Window defines the number of neighboring data points on each side "
             "and cannot be fractional."
         )
-    filtered = np.zeros_like(curves)
+    filtered = np.zeros_like(curves, dtype=np.float64)
     for j in range(curves.shape[1]):
         current_curve = curves[:, j]
         filtered_curve = current_curve.copy()

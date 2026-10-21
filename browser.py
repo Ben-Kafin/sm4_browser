@@ -623,7 +623,6 @@ from types import SimpleNamespace
 
 # The other point and phase files on the scan area (_draw_points): diamonds in MATLAB's two time
 # colours (the current point and its sweeps use the colours of plots.draw_point_sweeps).
-POINT_LOADED_COLOR = '#00e5ff'      # unused: the scan layer draws every other file in the two colours below
 POINT_BEFORE_COLOR = '#9e9e9e'      # a spectra file taken before the current topo: grey diamond (MATLAB)
 POINT_AFTER_COLOR = '#1f4fff'       # a spectra file taken after it: blue diamond (MATLAB)
 
@@ -631,7 +630,6 @@ POINT_AFTER_COLOR = '#1f4fff'       # a spectra file taken after it: blue diamon
 class _BrowserCore:
     """The experiment logic (files, drift, sites, averages, the analysis windows) and the drawing of the panels; Browser below is its window."""
     WINDOW = 25                    # the loaded set: the current file and the WINDOW - 1 files before it
-    TOPO_CBAR = [0.565, 0.40, 0.012, 0.35]        # unused: the scan area's colour bar is placed in Browser._build_figure
 
     def __init__(self, directory, scalefactor=2.75, hampel_defaults=None, sgolay_defaults=None,
                  line_window_kwargs=None, cmap_map='jet', drift_params=None,
@@ -1020,20 +1018,6 @@ class _BrowserCore:
     def _drift_active(self):
         """True when either drift source is on (the corrected positions and the skewed topos are drawn)."""
         return self.auto_on or self.manual_on
-
-    def _topo_image(self, t):
-        """
-        The processed image of a loaded topo (nm): skewed pixel by pixel by the drift with a source
-        on (Drift.corrected_topo).  Not used by the scan area, which places every topo through the
-        layer (scanlayer.affine_matrix); kept as the per-pixel form of the same correction.
-        """
-        if self._drift_active():
-            try:
-                return self.drift.corrected_topo(t, self._direction_of(t), self.topo_active, self.loaded,
-                                                 self.auto_on, self.manual_on) * 1e9
-            except Exception as exc:
-                print(f"{t.name}: drift correction of the image not applied ({exc}).")
-        return processed_topo(t, self._direction_of(t), self.topo_active) * 1e9
 
     @staticmethod
     def _box_of(points):
@@ -1895,8 +1879,7 @@ class _BrowserCore:
             w.raise_()
             return
         try:
-            self.drift_window = DriftWindow(self.drift, self.current, self.scale_of, self.topo_active,
-                                            auto_on=self.auto_on)
+            self.drift_window = DriftWindow(self.drift, self.current, self.scale_of, self.topo_active)
         except ValueError as exc:
             print(f"drift window: {exc}.")
             self.drift_window = None

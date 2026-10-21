@@ -64,8 +64,8 @@ def member_from_file(sm4, line, scalefactor, topo_lines=None, markers=None, cent
     along the line, Å after `scalefactor`), the stripe rows ((row, pass)
     pairs with every pixel at its own recorded location, line.stripe_rows,
     'topo_x' their common position axis, the pixels of spectra not kept
-    NaN; the line's forward and reverse rows when None, which a file with a
-    single topographic page refuses: give topo_lines then), the Line
+    NaN; the line's forward row alone when None, as the Line window opens),
+    the Line
     window's marker positions and group centres when given (Å), and the
     scale factor.  ValueError for a file that is not a grid with spectra or
     a line index outside 0..n_lines - 1.
@@ -80,7 +80,7 @@ def member_from_file(sm4, line, scalefactor, topo_lines=None, markers=None, cent
     pos = line_axis(sm4.spec_xy_m, sm4.n_fast, line, scalefactor, fast_page=fast_page_of(pages, sm4.name))
     selection = Selection(sm4, cols, {'line': line, 'positions': [float(p) for p in pos]})
     if topo_lines is None:
-        topo_lines = [(line, 'forward'), (line, 'reverse')]
+        topo_lines = [(line, 'forward')]
     profiles, positions, resolved = stripe_rows(sm4, topo_lines, line=line, scalefactor=scalefactor)
     topo_x, profiles = common_stripe_axis(profiles, positions)
     return {'selection': selection, 'file': sm4, 'path': sm4.path, 'name': sm4.name, 'line': line,

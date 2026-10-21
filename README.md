@@ -340,7 +340,8 @@ the first run.
 `load saved averages` opens the saved-records window (`records.py`): every record of the `averages`
 subfolder, by index, descending (name, entries and sweeps, removed sweeps, the files' times, the
 filter settings, the number of fits in its fit history), then the fit histories of the earlier
-label-named form, the Line windows' marker records and the line-average records. `load` rebuilds the
+label-named form (each family once, its newest file), the Line windows' marker records and the
+line-average records. `load` rebuilds the
 chosen average in a window of its index and opens the fit from its history when one exists, opens a
 Line window on a marker record's file and line with everything restored, or rebuilds a line-average
 window; `rescan` re-reads the directory.
@@ -359,7 +360,8 @@ Feenstra controls, the stack of the raw sets, the fit and the background-divided
 `Revert fit` / `Forward fit` walk the fit history, `Edit peaks` opens the edit window where peaks are
 selected, moved, reshaped by dragging, removed, added (`Add peak`) and held per parameter, and
 `Refit` runs the joint fit again; `Save fit` writes the displayed fit as JSON and CSV. Every accepted
-fit is kept in the fit history file.
+fit is kept in the fit history file, with the energy range the curve was normalized over, so a
+reopened history refits the same curve.
 
 ### The drift window
 
@@ -770,8 +772,8 @@ The methods the code implements, with the references the code names:
 
 ## Limits
 
-* Known differences from matplotlib in `qtplot`: with an equal aspect and `'datalim'` the view
-  range is widened to fit the box; `'X'` and `'x'` markers both draw pyqtgraph's filled X; text
+* Known differences from matplotlib in `qtplot`: with an equal or numeric aspect and `'datalim'`
+  the view range is widened to fit the box; `'X'` and `'x'` markers both draw pyqtgraph's filled X; text
   `wrap=True` is ignored; `clip_on` is ignored for axes-coordinate text.
 * A window far narrower than half its design width crowds its controls, which keep their sizes in
   inches; the text itself is never cut.

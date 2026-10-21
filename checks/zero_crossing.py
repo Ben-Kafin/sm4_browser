@@ -6,10 +6,17 @@ does the per-sweep work).  Run as a script from anywhere; the paths below
 are relative to this file (checks/ inside the package): the folder 'sm4s'
 beside checks/ and its 'averages' subfolder, which the repository does not
 carry.  The console lines name each file by the part of its name after
-'_CT_' (the files of that folder are named that way).  Nothing is written.
+'_CT_' (the files of that folder are named that way; a name without it
+is used whole, tag_of).  Nothing is written.
 """
 import os, sys, json, glob, warnings
 warnings.filterwarnings('ignore')
+
+
+def tag_of(fn):
+    """A file's console tag: the part of its name after '_CT_' (the whole stem without one), '.sm4' dropped."""
+    return (fn.split('_CT_', 1)[1] if '_CT_' in fn else fn).replace('.sm4', '')
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))   # the folder holding the package
 import numpy as np
 from sm4_Browser import sm4file
@@ -54,7 +61,7 @@ for rec in sorted(glob.glob(os.path.join(A, 'avg*_average.json'))):
         keep = [j for j in range(cr.shape[0]) if j not in gone]
         v_all = cr[:, 0] * 1e3
         n, m, sd, se = stats(v_all[keep]) if keep else (0, np.nan, np.nan, np.nan)
-        tag = fn.split('_CT_')[1].replace('.sm4', '')
+        tag = tag_of(fn)
         print(f"  {tag}: {n_all} sweeps ({n_acq} acquired), nominal-0 sample at {e0 * 1e3:+.3f} mV; "
               f"crossings (mV): {np.array2string(v_all, precision=1, separator=', ')}"
               + (f"; removed sweeps {[j + 1 for j in gone]}" if gone else ''))
