@@ -3703,7 +3703,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.setIconSize(QtCore.QSize(k, k))
         st = self.style()
         sp = QtWidgets.QStyle.StandardPixmap
-        a = self.addAction(st.standardIcon(sp.SP_DirHomeIcon), 'Home')
+        self.a_home = a = self.addAction(st.standardIcon(sp.SP_DirHomeIcon), 'Home')
         a.setToolTip('Reset the views to where the window put them')
         a.triggered.connect(self._home)
         self.addSeparator()

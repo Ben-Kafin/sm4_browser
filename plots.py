@@ -15,7 +15,7 @@ these functions, and take their events from widgets.py.
       panels
   TOPO_CMAP, draw_topo_absolute, draw_topo_frame, draw_point_sweeps,
       draw_grid_stripes, draw_drift_lines, draw_topo_cbar : topography drawing
-  draw_section_line, draw_drift_markers : the browser's cross-section line
+  draw_section_path, draw_drift_markers : the browser's section path
       and the manual-drift markers on the scan area
   draw_profiles : the raw forward/reverse topo profiles and cross sections
       (the profile window) as curves of height against position
@@ -46,7 +46,7 @@ CONFIRMED_DRIFT_COLOR = '#ffd84a'
 # on the topo colour map, so the 'Markers' sliders run 1 to len(MARKER_COLORS)
 # (widgets.MARKER_PAIRS_MAX).  The earlier marker of a pair is a circle, the later a square.
 MARKER_COLORS = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff', '#ff8000', '#8000ff']
-SECTION_LINE_COLOR = '#ff00ff'        # the browser's cross-section line (draggable endpoints)
+SECTION_LINE_COLOR = '#ff00ff'        # the browser's section path (draggable numbered points)
 PARTNER_FRAME_COLOR = 'black'         # the drift window: the other topo's recorded frame on each panel
 # The profile window: the forward and reverse passes of a topo line, and the cross section's two passes.
 PROFILE_FORWARD_COLOR = '#1f77b4'
@@ -668,19 +668,30 @@ def draw_drift_lines(ax, lines, markers=True, zorder=3.2, color=None):
     return arts
 
 
-def draw_section_line(ax, p0, p1):
+def draw_section_path(ax, points):
     """
-    The browser's cross-section line on the scan area: the segment from p0
-    to p1 (drawing units) in SECTION_LINE_COLOR with its two endpoints as
-    handles (a filled circle at p0, the start of the section's position
-    axis, a hollow one at p1).  Returns [line, start handle, end handle].
+    The browser's section path on the scan area: the polyline through
+    `points` ((n, 2), drawing units, in order) in SECTION_LINE_COLOR, every
+    point a handle (a filled circle at the first point, the start of the
+    path's distance axis, hollow ones after it) numbered from 1 beside it.
+    Returns the artists.
     """
-    p0 = np.asarray(p0, dtype=np.float64)
-    p1 = np.asarray(p1, dtype=np.float64)
-    line, = ax.plot([p0[0], p1[0]], [p0[1], p1[1]], ls='-', lw=1.6, color=SECTION_LINE_COLOR, zorder=4.0)
-    h0, = ax.plot([p0[0]], [p0[1]], ls='none', marker='o', ms=8, color=SECTION_LINE_COLOR, mec='black', mew=0.8, zorder=4.1)
-    h1, = ax.plot([p1[0]], [p1[1]], ls='none', marker='o', ms=8, mfc='white', mec=SECTION_LINE_COLOR, mew=1.6, zorder=4.1)
-    return [line, h0, h1]
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    arts = []
+    if len(pts) == 0:
+        return arts
+    if len(pts) > 1:
+        line, = ax.plot(pts[:, 0], pts[:, 1], ls='-', lw=1.6, color=SECTION_LINE_COLOR, zorder=4.0)
+        arts.append(line)
+    for i, p in enumerate(pts):
+        if i == 0:
+            h, = ax.plot([p[0]], [p[1]], ls='none', marker='o', ms=8, color=SECTION_LINE_COLOR, mec='black', mew=0.8, zorder=4.1)
+        else:
+            h, = ax.plot([p[0]], [p[1]], ls='none', marker='o', ms=8, mfc='white', mec=SECTION_LINE_COLOR, mew=1.6, zorder=4.1)
+        arts.append(h)
+        arts.append(ax.annotate(str(i + 1), xy=(p[0], p[1]), xytext=(6, 6), textcoords='offset points',
+                                color=SECTION_LINE_COLOR, fontsize=8, fontweight='bold', zorder=4.2))
+    return arts
 
 
 def draw_topo_outline(ax, sm4, scalefactor, zorder=6.0):

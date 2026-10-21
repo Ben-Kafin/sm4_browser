@@ -931,9 +931,15 @@ def _item1_windows(b):
     wins.append(('drift', b.drift_window.fig))
     b._on_stripe_window()
     wins.append(('stripe', b.stripe_window.fig))
-    b._on_section_line()
+    settle(b)
+    ax = b.ax_scan
+    x0, x1 = ax.get_xlim(); y0, y1 = ax.get_ylim()
+    b._on_section()
+    _path_click(b, x0 + 0.3 * (x1 - x0), 0.5 * (y0 + y1))
+    _path_click(b, x0 + 0.7 * (x1 - x0), 0.5 * (y0 + y1))
     b._on_cross_section()
     wins.append(('profile', b.profile_window.fig))
+    b._on_clear_path()
     goto_kind(b, 'point')
     b._on_add_new_avg()
     wins.append(('averaging', list(b.averages.open().values())[-1].fig))
@@ -1366,6 +1372,109 @@ def _scale_timeline(b, exp):
     b._goto(0)
     plt.close(w._int_fig)
     plt.close(m.fig)
+
+
+def _mouse(b, name, x, y, button=1, key=None):
+    """A mouse event on the scan area at data (x, y): the display position filled in, so the path's grab works."""
+    from sm4_Browser.qtplot import MouseEvent
+    ax, canvas = b.ax_scan, b.canvas_scan
+    px, py = ax.transData.transform((x, y))
+    e = MouseEvent(name, canvas, float(px), float(py), button=button)
+    e.inaxes, e.xdata, e.ydata = ax, float(x), float(y)
+    canvas._fire(name, e)
+    plt._app().processEvents()
+    return e
+
+
+def _path_click(b, x, y, button=1):
+    _mouse(b, 'button_press_event', x, y, button)
+    _mouse(b, 'button_release_event', x, y, button)
+
+
+@check("L1 section path: editing with frozen navigation, add / drag / remove, off keeps the points; measure, set scale (two-way, apply), cross section along the path, clear")
+def _section_path(b, exp):
+    from sm4_Browser.qtplot import Qt, MouseEvent
+    from PySide6.QtTest import QTest
+    from sm4_Browser.section import path_lengths
+    grid = next(p for p in b.files if b.kinds[p] == 'grid')
+    b._goto(b.files.index(grid))
+    b._on_scale("2.0")                       # the grid's scale: nominal = calibrated x 2
+    settle(b)                                # the background placing may relocate the view once more
+    sec, view, tb = b.section, b.view, b.toolbar_scan
+    assert not sec.editing and not sec.active() and not view.frozen
+    x0, x1 = b.ax_scan.get_xlim(); y0, y1 = b.ax_scan.get_ylim()
+    cx, cy, w = 0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.25 * (x1 - x0)
+    # editing on: the view is frozen, the toolbar's Home, Pan and Zoom are off
+    b._on_section()
+    assert sec.editing and view.frozen and not tb.a_home.isEnabled() and not tb.a_pan.isEnabled() and not tb.a_zoom.isEnabled()
+    e = MouseEvent('scroll_event', b.canvas_scan, 0, 0, button='up', step=1)
+    e.inaxes, e.xdata, e.ydata = b.ax_scan, cx, cy
+    b.canvas_scan._fire('scroll_event', e)
+    QTest.keyClick(b.canvas_scan, Qt.Key.Key_Home)
+    tb._home()
+    assert b.ax_scan.get_xlim() == (x0, x1) and b.ax_scan.get_ylim() == (y0, y1), "the view moved while editing"
+    # clicks add points, numbered; a drag moves one; a right click removes one
+    _path_click(b, cx - w, cy)
+    _path_click(b, cx, cy + 0.5 * w)
+    _path_click(b, cx + w, cy)
+    pts = sec.points()
+    assert pts is not None and len(pts) == 3 and np.allclose(pts[1], [cx, cy + 0.5 * w])
+    assert sum(1 for a in sec._arts if hasattr(a, 'text')) == 3, "three numbered points"
+    _mouse(b, 'button_press_event', cx, cy + 0.5 * w)
+    _mouse(b, 'motion_notify_event', cx + 0.1 * w, cy + 0.7 * w)
+    _mouse(b, 'button_release_event', cx + 0.1 * w, cy + 0.7 * w)
+    pts = sec.points()
+    assert len(pts) == 3 and np.allclose(pts[1], [cx + 0.1 * w, cy + 0.7 * w]), pts
+    _path_click(b, cx + w, cy, button=3)
+    pts = sec.points()
+    assert len(pts) == 2 and np.allclose(pts[0], [cx - w, cy]), pts
+    _path_click(b, cx + w, cy - 0.3 * w)
+    assert len(sec.points()) == 3
+    assert b.ax_scan.get_xlim() == (x0, x1), "a click on the scan area is a point, never a pan"
+    # editing off: the points stay, the view moves again; on again: the same points
+    kept = sec.points().copy()
+    b._on_section()
+    assert not sec.editing and not view.frozen and tb.a_home.isEnabled() and tb.a_pan.isEnabled()
+    b.canvas_scan._fire('scroll_event', e)
+    assert b.ax_scan.get_xlim() != (x0, x1), "the scroll zooms again"
+    b.view.keep(x0, x1, y0, y1); b.view.view = (x0, x1, y0, y1); b.view._apply()
+    assert np.allclose(sec.points(), kept)
+    b._on_section()
+    assert sec.editing and np.allclose(sec.points(), kept)
+    # measure: nominal = calibrated x 2, the lengths too; using it ends the editing
+    b._on_measure()
+    assert not sec.editing and b.measure_window is not None and b.measure_window.is_open()
+    lines = b.measure_window.lines
+    seg, total = path_lengths(kept)
+    assert any(f"{kept[0][0] * 2:12.3f}" in l and f"{kept[0][0]:12.3f}" in l for l in lines), lines
+    assert any(l.strip().startswith('total') and f"{total * 2:14.3f}" in l and f"{total:16.3f}" in l for l in lines), lines
+    # set scale: the nominal length fixed, the two boxes recompute each other, apply sets the timeline and rescales the path
+    b._on_set_scale()
+    sw = b.scale_window
+    assert sw is not None and sw.is_open() and abs(sw.nominal - total * 2) < 1e-9
+    assert sw.box_scale.value == '2' and abs(float(sw.box_cal.value) - total) < 1e-3
+    sw._on_scale("4")
+    assert abs(float(sw.box_cal.value) - total * 2 / 4) < 1e-3
+    sw._on_cal(f"{total * 2 / 8:.6f}")
+    assert abs(float(sw.box_scale.value) - 8.0) < 1e-3
+    sw._on_apply()
+    assert abs(b.scale_of(grid) - 8.0) < 1e-3 and b.box_scale.value.startswith('8')
+    assert np.allclose(sec.points(), kept * 2 / 8), "the path keeps its nominal place when the scale changes"
+    assert abs(sw.nominal - total * 2) < 1e-6 and b.measure_window.lines[0].find('scale factor 8') > 0
+    # the cross section along the whole path
+    b._on_section()
+    b._on_cross_section()
+    assert not sec.editing and b.profile_window is not None and b.profile_window.is_open()
+    x = b.profile_window.pair['forward'][0]
+    assert abs(x[-1] - path_lengths(sec.points())[1]) < 1e-6 and len(x) > 10
+    # clear: the path goes, the editing state stays
+    b._on_clear_path()
+    assert not sec.active() and not sec.editing and b.measure_window.lines[0].startswith('no path')
+    for win in (b.measure_window, b.scale_window, b.profile_window):
+        plt.close(win.fig)
+    b.scales.remove(grid)
+    assert b.scale_of(grid) == 1.0
+    b._goto(0)
 
 
 def widgets_text(lo, hi):

@@ -7,8 +7,8 @@ show, enable, place), and the composite controllers that several windows
 share so that same-named controls are the same code: FilterControls,
 PipelineBox, FeenstraSettings, StackControls, MarkerGroupControls,
 TopoProcessorBox, ResampleControls, RunControls, GammaBox, NameBox,
-StepButtons, AveragePicker, ViewNavigator, DragLine (the browser's
-cross-section line), PairMarkers (the marker pairs of the drift window's
+StepButtons, AveragePicker, ViewNavigator, DragPath (the browser's
+section path), PairMarkers (the marker pairs of the drift window's
 two topos, seeded by the auto velocity).  The drawing of data lives in
 plots.py and never touches a widget; a window owns its data and state,
 draws through plots, and receives events from here.
@@ -119,8 +119,11 @@ SPECS = {
     'close': _spec('button', 0.9, 0.36),
     'Grid view': _spec('button', 0.9, 0.36),
     'Topo Window': _spec('button', 1.5, 0.45),
-    'section': _spec('button', 1.1, 0.36),                        # the browser: the cross-section path (editing on / off)
-    'cross section': _spec('button', 1.1, 0.36),                  # ... and its profile window
+    'section': _spec('button', 1.1, 0.36),                        # the browser: the section path (editing on / off)
+    'cross section': _spec('button', 1.1, 0.36),                  # ... the three section features: its profile window,
+    'measure': _spec('button', 1.1, 0.36),                        # ... the measure window (the points and lengths),
+    'set scale': _spec('button', 1.1, 0.36),                      # ... and the set-scale window (section.py)
+    'cal length': _spec('text', 0.9, 0.3, fs=9),                  # the set-scale window: the calibrated length (nm)
     'clear markers': _spec('button', 1.2, 0.36),                  # the manual-drift markers removed
     'clear points': _spec('button', 1.1, 0.36),                   # the stripe window: the dragged points dropped
     'set from markers': _spec('button', 1.4, 0.36, fs=7),         # the drift window's velocity box filled from the marker draft (nothing stored)
@@ -183,6 +186,7 @@ SPECS = {
 LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass': None, 'site': None,
           'hold': '', 'param': '', 'rows': '', 'width': '', 'file': 'file', 'spectra': 'spectra',
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
+          'cal length': 'calibrated length (nm) ',
           'γ': 'γ ', 'drift v': 'v (nm/h, cal) ', 'E range': 'E (V) ', 'x range': 'x (Å) '}
 
 # The short form of every label that has one, used when a window is taller than it is wide (the
@@ -216,6 +220,7 @@ SHORT_LABELS = {
     'Edit peaks': 'peaks', 'Save fit': 'save',
     # text-box and slider labels
     'scale factor': 'scale', 'min (min)': 'min', 'width (V)': 'width', 'v (nm/h, cal)': 'v', 'E (V)': 'E',
+    'calibrated length (nm)': 'cal (nm)',
     'x (Å)': 'x', 'reference': 'ref', 'E-markers': 'E-mk', 'Markers': 'mk',
 }
 
@@ -1900,7 +1905,8 @@ class ViewNavigator:
         self._drag = None
         self._cb = None
         self.saved = None          # the view saved with R (x0, x1, y0, y1), returned to with space
-        self._holds = []           # predicates: a press for which any returns True is not a pan (DragLine)
+        self._holds = []           # predicates: a press for which any returns True is not a pan (DragPath)
+        self.frozen = False        # freeze(True): no zoom, pan, centring, Home, R or space (the path is edited)
         ax.set_aspect('equal', adjustable='datalim')
         ax.home_callback = self.reset          # the toolbar's Home button: the full extent
         fig.canvas.mpl_connect('scroll_event', self._on_scroll)
@@ -1915,6 +1921,16 @@ class ViewNavigator:
     def hold(self, predicate):
         """Register predicate(event): True when another controller takes this press, so no pan starts."""
         self._holds.append(predicate)
+
+    def freeze(self, flag):
+        """
+        Frozen, the view does not move: the scroll zoom, the drag pan, the double-click centring,
+        Home (button and key), R and space do nothing (the browser freezes it while the section
+        path is edited, so the scan area responds to the path's points only).
+        """
+        self.frozen = bool(flag)
+        if self.frozen:
+            self._drag = None
 
     def _toolbar_busy(self):
         tb = getattr(self.fig.canvas, 'toolbar', None)
@@ -1972,6 +1988,8 @@ class ViewNavigator:
         self._apply()
 
     def reset(self):
+        if self.frozen:
+            return
         self.view = self.full
         self._apply()
         self._changed()
@@ -2002,7 +2020,7 @@ class ViewNavigator:
         self._changed()
 
     def _on_key(self, event):
-        if self._toolbar_busy():
+        if self._toolbar_busy() or self.frozen:
             return
         if event.key == 'home':
             self.reset()
@@ -2020,7 +2038,7 @@ class ViewNavigator:
         self.fig.canvas.draw_idle()
 
     def _on_scroll(self, event):
-        if event.inaxes is not self.ax or self._toolbar_busy() or event.xdata is None:
+        if event.inaxes is not self.ax or self._toolbar_busy() or event.xdata is None or self.frozen:
             return
         f = 1.0 / self.ZOOM_STEP if event.button == 'up' else self.ZOOM_STEP
         x0, x1 = self.ax.get_xlim()
@@ -2031,7 +2049,7 @@ class ViewNavigator:
         self._changed()
 
     def _on_press(self, event):
-        if event.inaxes is not self.ax or self._toolbar_busy() or event.button != 1:
+        if event.inaxes is not self.ax or self._toolbar_busy() or event.button != 1 or self.frozen:
             return
         if any(h(event) for h in self._holds):
             return
@@ -2062,15 +2080,24 @@ class ViewNavigator:
             self._changed()
 
 
-class DragLine:
+class DragPath:
     """
-    The browser's cross-section line on the scan area: a segment with two
-    draggable endpoints (a press within GRAB_PX display pixels of an
-    endpoint moves that endpoint while the button is down; a press anywhere
-    else is left to the ViewNavigator's pan).  set(p0, p1) places it,
-    clear() removes it, points() gives (p0, p1) in the axes' data units or
-    None, draw() redraws it after the axes were cleared (plots.draw_section_line).
-    on_change(callback) runs callback() after every drag.
+    The browser's section path on the scan area: a polyline through any
+    number of points, drawn numbered (plots.draw_section_path).  Editing
+    (set_editing(True), the browser's 'section' button) makes the axes
+    respond to the path alone (the browser freezes the ViewNavigator): a
+    left click away from every point appends a point, a press within
+    GRAB_PX display pixels of a point drags it while the button is down, a
+    right click on a point removes it.  Editing off, the points stay where
+    they were and the clicks go back to the navigation.  points() gives the
+    (n, 2) array of points in the axes' data units (None without any),
+    set(points) places a path, clear() removes it (the editing state stays
+    as it was), rescale(factor) multiplies every point by factor (the
+    browser's scale timeline changed under the path), draw() redraws it
+    after the axes were cleared, active() says whether there is a path.
+    on_change(callback) runs callback() after every addition, drag or
+    removal; on_edit(callback) runs callback(flag) when editing turns on
+    or off.
     """
 
     GRAB_PX = 10
@@ -2078,12 +2105,14 @@ class DragLine:
     def __init__(self, fig, ax, navigator=None):
         self.fig = fig
         self.ax = ax
-        self.p = None
+        self.p = []                   # the points, (2,) arrays in data units
+        self.editing = False
         self._arts = []
         self._drag = None
         self._cb = None
+        self._cb_edit = None
         if navigator is not None:
-            navigator.hold(lambda ev: self._grab(ev) is not None)
+            navigator.hold(lambda ev: self.editing)
         fig.canvas.mpl_connect('button_press_event', self._on_press)
         fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
         fig.canvas.mpl_connect('button_release_event', self._on_release)
@@ -2091,20 +2120,38 @@ class DragLine:
     def on_change(self, callback):
         self._cb = callback
 
+    def on_edit(self, callback):
+        self._cb_edit = callback
+
+    def set_editing(self, flag):
+        flag = bool(flag)
+        if flag == self.editing:
+            return
+        self.editing = flag
+        self._drag = None
+        if self._cb_edit is not None:
+            self._cb_edit(flag)
+
     def active(self):
-        return self.p is not None
+        return bool(self.p)
 
     def points(self):
-        return None if self.p is None else (np.array(self.p[0], dtype=np.float64), np.array(self.p[1], dtype=np.float64))
+        return None if not self.p else np.array(self.p, dtype=np.float64).reshape(-1, 2)
 
-    def set(self, p0, p1):
-        self.p = [np.array(p0, dtype=np.float64), np.array(p1, dtype=np.float64)]
+    def set(self, points):
+        self.p = [np.array(p, dtype=np.float64).reshape(2) for p in np.asarray(points, dtype=np.float64).reshape(-1, 2)]
         self.draw()
 
     def clear(self):
-        self.p = None
+        self.p = []
+        self._drag = None
         self._remove()
         self.fig.canvas.draw_idle()
+
+    def rescale(self, factor):
+        """Every point multiplied by factor (the drawing units changed: a new scale factor for the current file)."""
+        self.p = [p * float(factor) for p in self.p]
+        self.draw()
 
     def _remove(self):
         for a in self._arts:
@@ -2117,13 +2164,17 @@ class DragLine:
     def draw(self):
         from sm4_Browser import plots
         self._remove()
-        if self.p is not None:
-            self._arts = plots.draw_section_line(self.ax, self.p[0], self.p[1])
+        if self.p:
+            self._arts = plots.draw_section_path(self.ax, np.array(self.p))
         self.fig.canvas.draw_idle()
 
+    def _changed(self):
+        if self._cb is not None:
+            self._cb()
+
     def _grab(self, event):
-        """The endpoint index within GRAB_PX display pixels of a press inside the axes, else None."""
-        if self.p is None or event.inaxes is not self.ax or event.button != 1 or event.x is None:
+        """The index of the point within GRAB_PX display pixels of a press inside the axes, else None."""
+        if not self.p or event.inaxes is not self.ax or event.x is None:
             return None
         best = None
         for k, pt in enumerate(self.p):
@@ -2134,21 +2185,35 @@ class DragLine:
         return None if best is None else best[1]
 
     def _on_press(self, event):
+        if not self.editing or event.inaxes is not self.ax or event.xdata is None:
+            return
         k = self._grab(event)
-        if k is not None:
-            self._drag = k
+        if event.button == 1:
+            if k is not None:
+                self._drag = (k, False)
+            else:
+                self.p.append(np.array([event.xdata, event.ydata], dtype=np.float64))
+                self.draw()
+                self._changed()
+        elif event.button == 3 and k is not None:
+            del self.p[k]
+            self.draw()
+            self._changed()
 
     def _on_motion(self, event):
         if self._drag is None or event.xdata is None or event.inaxes is not self.ax:
             return
-        self.p[self._drag] = np.array([event.xdata, event.ydata], dtype=np.float64)
+        k, _ = self._drag
+        self.p[k] = np.array([event.xdata, event.ydata], dtype=np.float64)
+        self._drag = (k, True)
         self.draw()
 
     def _on_release(self, event):
         if self._drag is not None:
+            _, moved = self._drag
             self._drag = None
-            if self._cb is not None:
-                self._cb()
+            if moved:
+                self._changed()
 
 
 MARKER_PAIRS_MAX = 8          # marker pairs per span: one colour each (plots.MARKER_COLORS); the drift window's 'Markers' top

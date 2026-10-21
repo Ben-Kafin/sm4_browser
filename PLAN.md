@@ -47,7 +47,10 @@ the owner and is final. When all three items are done, item 3 removes this file.
   once-over failed on every file and no metrics were ever computed. (b) done: the scale timeline
   (`scales.py`) applied per file everywhere, the drift readouts calibrated with the nominal beside, check
   K1; found and fixed on the way: every window's is_open tested a figure number, which qtplot reuses after
-  a close, so a closed window could count as open. (c) next: the path editing with its three features.
+  a close, so a closed window could count as open. (c) done: the section path (`widgets.DragPath`,
+  `plots.draw_section_path`), the frozen navigation while editing, `section` over `clear` with the stack of
+  `cross section`, `measure` and `set scale` (`section.py`), the cross section along the whole path, check L1.
+  Item 2 is complete.
 * Item 3: not started.
 
 ## Item 1: text size and short labels

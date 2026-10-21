@@ -135,8 +135,9 @@ the manual drift window of the current file (see "Manual drift").  Right, for th
 (grid; the line is chosen inside the Line window and the scan area
 highlights it), the 'calibrate' / 'normalize' box of the spectra panels
 (widgets.PipelineBox, both off at open, as in every window that uses
-Feenstra; see the pipeline order below), the cross-section controls
-('section', 'cross section'; see "Cross section"),
+Feenstra; see the pipeline order below), the section path's controls
+('section' with 'clear' under it, and the stack of its three features
+'cross section', 'measure', 'set scale'; see "Section path"),
 'add new' and 'add existing' (point; the second drops a list of the open
 averages above the button, and a text line names the open averages that
 already hold the current file), the forward / reverse / average list
@@ -433,27 +434,50 @@ console names every file's source ('auto (pair)', 'auto (extrapolated)',
 'auto (confirmed)', 'manual (markers)', 'manual (typed)', ...), as does
 the scan-area title.
 
-Cross section
--------------
-'section' places a line across the middle of the current view of the
-scan area (pressed again, removes it); its endpoints drag (a press near an
-endpoint moves it, elsewhere the pan works as before).  'cross section'
-samples the raw topography under the line (topo.cross_section: along the
-line at the finest pixel pitch of the topos it crosses, at every sample the
-topmost loaded topo containing it, bilinear in its raw page, in metres as
-the loader gives it and nothing else, forward and reverse pages as two curves,
-NaN where no topo or no acquired pixel lies under the sample; the raw page
-at the recorded pixel locations, so the drift toggles do not move the cut)
-and shows it in the profile window (topo.ProfileWindow: height in nm
-against the distance along the line from the filled endpoint in nm after
-the scale factor), the same window type the Line window's 'profile'
-buttons open for a line's forward and reverse passes.  Every profile
-window carries 'add new' and 'add existing': 'add new' opens a profile plot
-(topo.ProfilePlot, profile1, profile2, ...) holding the window's pair, 'add
-existing' drops the list of the open profile plots and adds the pair to the
-chosen one; a profile plot overlays its pairs in one axes as they are, one
-colour per pair, the forward pass solid and the reverse dashed, the legend
-naming each pair's file, line and row, or cross section.
+Section path
+------------
+'section' turns path editing on: the scan area then responds to the path's
+points alone (widgets.DragPath; the view is frozen: no scroll zoom, drag
+pan, double-click centring, Home, R or space, and the toolbar's Home, Pan
+and Zoom are disabled).  A left click away from every point appends a
+point, a drag moves a point, a right click on a point removes it; the
+points are drawn numbered along the path (plots.draw_section_path).
+'section' pressed again turns editing off without using any feature: the
+points stay where they are and the view moves again.  'clear' (under
+'section', not a feature) removes the path; the editing state stays as it
+was.  Using any of the three features ends editing the same way.  The
+path is in the scan area's drawing units, calibrated nm; when the current
+file's scale factor changes, the path is rescaled with it so it stays on
+that file's features.
+  'cross section' samples the raw topography under the whole path
+      (topo.cross_section: along every segment in order at the finest pixel
+      pitch of the topos it crosses, at every sample the topmost loaded topo
+      containing it, each topo entered at its own scale, bilinear in its raw
+      page, in metres as the loader gives it and nothing else, forward and
+      reverse pages as two curves, NaN where no topo or no acquired pixel
+      lies under the sample; the raw page at the recorded pixel locations,
+      so the drift toggles do not move the cut) and shows it in the profile
+      window (topo.ProfileWindow: height in nm against the calibrated
+      distance along the path from its first point), the same window type
+      the Line window's 'profile' buttons open for a line's forward and
+      reverse passes.  Every profile window carries 'add new' and 'add
+      existing': 'add new' opens a profile plot (topo.ProfilePlot, profile1,
+      profile2, ...) holding the window's pair, 'add existing' drops the
+      list of the open profile plots and adds the pair to the chosen one; a
+      profile plot overlays its pairs in one axes as they are, one colour
+      per pair, the forward pass solid and the reverse dashed, the legend
+      naming each pair's file, line and row, or cross section.
+  'measure' opens the measure window (section.MeasureWindow): every point's
+      coordinates, every segment's length and the total, each nominal (the
+      recorded nm: calibrated x the current file's scale factor) and
+      calibrated (the drawing units); the lines also go to the console.
+  'set scale' opens the set-scale window (section.SetScaleWindow): the
+      path's nominal length, the scale factor and the calibrated length;
+      editing the scale factor recomputes the calibrated length, editing
+      the calibrated length recomputes the scale factor, and 'apply' sets
+      the scale timeline from the current file's time on
+      (set_scale_from_current), exactly as the 'scale factor' box does.
+Every open window of the path follows it while it is edited.
 
 Grid stripes
 ------------
@@ -510,6 +534,7 @@ from sm4_Browser.scanlayer import (ScanLayer, display_record, record_corners, SH
                                    cache_load, cache_store, read_record)
 from sm4_Browser.caches import open_stores
 from sm4_Browser.scales import Scales
+from sm4_Browser.section import MeasureWindow, SetScaleWindow, path_lengths
 from collections import OrderedDict
 from types import SimpleNamespace
 
@@ -562,6 +587,8 @@ class _BrowserCore:
         self.stripe_window = None  # the stripe window opened by 'stripe match' (stripe.StripeWindow)
         self.anchor_on = False     # 'anchor to topo' is the Topo window's toggle; the browser never applies it (off there)
         self.profile_window = None # the cross-section profile window (topo.ProfileWindow)
+        self.measure_window = None # the section path's measure window (section.MeasureWindow)
+        self.scale_window = None   # the section path's set-scale window (section.SetScaleWindow)
         self.profile_plots = ProfilePlots()   # the profile plots (topo.ProfilePlots): the profile windows' 'add' buttons
         self.drift_window = None   # the manual drift window opened by 'drift' (drift.DriftWindow)
         self.topo_dir = {}         # topo path -> 'forward' | 'reverse' | 'average' (what it was left on)
@@ -1650,10 +1677,14 @@ class _BrowserCore:
         e = self.scales.entry_of(self.current.path)
         if e is not None and abs(e['scale'] - v) < 1e-12:
             return
+        old = self.scale_of(self.current.path)
         self.scales.set_from(self.current.path, v)
         print(f"scale factor {v:g} from {self.current.name} on (kept in {self.settings.name}).")
         self.scales.describe()
+        if self.section.active():
+            self.section.rescale(old / v)        # the path stays on the current file's features (nominal kept)
         self._draw_all()
+        self._on_path_changed()
 
     def _on_topo_toggle(self, active):
         """The topo processor box (widgets.TopoProcessorBox; one active at most): everything redrawn."""
@@ -1745,54 +1776,126 @@ class _BrowserCore:
         self._draw_scan_area()
         self.fig.canvas.draw_idle()
 
-    # --- the cross section ---
+    # --- the section path and its three features ---
 
-    def _on_section_line(self):
-        """'section': a line across the middle of the current view (pressed again, it goes)."""
-        if self.section.active():
-            self.section.clear()
-            print("cross section: line removed.")
+    def _set_path_editing(self, on):
+        """
+        Path editing on or off.  On, the scan area responds to the path's points alone: the view
+        navigator is frozen (no zoom, pan, centring, Home, R or space) and the toolbar's Home, Pan
+        and Zoom are disabled, any pan or zoom mode switched off first.  Off, everything is back,
+        and the path's points stay where they were.
+        """
+        on = bool(on)
+        if on == self.section.editing:
             return
-        x0, x1 = self.ax_scan.get_xlim()
-        y0, y1 = self.ax_scan.get_ylim()
-        cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
-        w = 0.25 * (x1 - x0)
-        self.section.set((cx - w, cy), (cx + w, cy))
-        print("cross section: line placed; drag its endpoints, then 'cross section'.")
+        tb = self.toolbar_scan
+        if on and getattr(tb, 'mode', ''):
+            tb._mode('')
+        for act in (tb.a_home, tb.a_pan, tb.a_zoom):
+            act.setEnabled(not on)
+        self.view.freeze(on)
+        self.section.set_editing(on)
+        n = len(self.section.p)
+        if on:
+            print(f"section: editing on ({n} point(s)); a left click adds a point, a drag moves one, a right click on a "
+                  "point removes it; the view is frozen until 'section' is pressed again or a feature is used.")
+        else:
+            print(f"section: editing off; {n} point(s) kept, the view moves again.")
 
-    def _on_section_moved(self):
-        """An endpoint dragged: the open profile window follows."""
-        if self.profile_window is not None and self.profile_window.is_open():
-            self._on_cross_section()
+    def _on_section(self):
+        """'section': path editing on, or off again without using any feature (the points stay)."""
+        self._set_path_editing(not self.section.editing)
 
-    def _on_cross_section(self):
-        """'cross section': the raw topo under the line into the profile window (topo.cross_section)."""
+    def _on_clear_path(self):
+        """'clear': the path removed; the editing state stays as it is (editing on, the next click starts a new path)."""
+        if not self.section.active():
+            print("section: no path to clear.")
+            return
+        self.section.clear()
+        print("section: path cleared.")
+        self._on_path_changed()
+
+    def _on_path_changed(self):
+        """A point added, moved or removed: every open window of the path follows (the profile, the measure, the set-scale window)."""
         pts = self.section.points()
-        if pts is None:
-            print("cross section: no line; 'section' places one.")
-            return
+        f = self.current
+        scale = self.scale_of(f.path)
+        if self.measure_window is not None and self.measure_window.is_open():
+            self.measure_window.update(pts, scale, f.name)
+        if self.scale_window is not None and self.scale_window.is_open():
+            self.scale_window.update(path_lengths(pts)[1] if pts is not None else 0.0, scale)
+        if self.profile_window is not None and self.profile_window.is_open() and pts is not None and len(pts) >= 2:
+            self._sample_path()
+
+    def _sample_path(self):
+        """The raw topo under the whole path into the profile window (topo.cross_section); False when it could not be made."""
+        pts = self.section.points()
+        if pts is None or len(pts) < 2:
+            print("cross section: the path needs two points or more ('section', then clicks on the scan area).")
+            return False
         topos = self._topos()
         if not topos:
             print("cross section: no topography in the loaded set.")
-            return
+            return False
         try:
-            x, zf, zr, names = cross_section(topos, np.vstack(pts), self.scale_of)
+            x, zf, zr, names = cross_section(topos, pts, self.scale_of)
         except Exception as exc:
             print(f"cross section: not available ({exc}).")
-            return
+            return False
         curves = [("forward", x, zf, plots.PROFILE_FORWARD_COLOR)]
         pair = {'label': "cross section, " + (", ".join(names) if names else "no topo"), 'forward': (x, zf),
                 'reverse': (x, zr) if np.isfinite(zr).any() else None}
         if np.isfinite(zr).any():
             curves.append(("reverse", x, zr, plots.PROFILE_REVERSE_COLOR))
-        title = "Cross section: " + (", ".join(names) if names else "no topo under the line")
+        title = "Cross section: " + (", ".join(names) if names else "no topo under the path")
         if self.profile_window is not None and self.profile_window.is_open():
             self.profile_window.update(curves, title, pair)
         else:
-            self.profile_window = ProfileWindow(curves, title, xlabel="distance along the line (nm)",
+            self.profile_window = ProfileWindow(curves, title, xlabel="distance along the path (nm, calibrated)",
                                                 ylabel="height (nm, raw)", pair=pair, registry=self.profile_plots)
             self.children.append(self.profile_window)
-        print(f"cross section: {len(x)} samples over {x[-1]:.2f} nm from {len(names)} topo(s): " + ", ".join(names))
+        print(f"cross section: {len(x)} samples over {x[-1]:.2f} nm ({len(pts)} points) from {len(names)} topo(s): "
+              + ", ".join(names))
+        return True
+
+    def _on_cross_section(self):
+        """'cross section': editing ends; the raw topo along the whole path into the profile window."""
+        self._set_path_editing(False)
+        self._sample_path()
+
+    def _on_measure(self):
+        """'measure': editing ends; the window with every point's coordinates and every segment's length, nominal and calibrated."""
+        self._set_path_editing(False)
+        pts = self.section.points()
+        if pts is None:
+            print("measure: no path ('section', then clicks on the scan area place one).")
+            return
+        f = self.current
+        if self.measure_window is not None and self.measure_window.is_open():
+            self.measure_window.update(pts, self.scale_of(f.path), f.name)
+            self.measure_window.raise_()
+        else:
+            self.measure_window = MeasureWindow(pts, self.scale_of(f.path), f.name)
+            self.children.append(self.measure_window)
+        for line in self.measure_window.lines:
+            print("measure: " + line)
+
+    def _on_set_scale(self):
+        """'set scale': editing ends; the window with the nominal length, the scale factor and the calibrated length."""
+        self._set_path_editing(False)
+        pts = self.section.points()
+        if pts is None or len(pts) < 2:
+            print("set scale: the path needs two points or more.")
+            return
+        L = path_lengths(pts)[1]
+        scale = self.scale_of(self.current.path)
+        if self.scale_window is not None and self.scale_window.is_open():
+            self.scale_window.update(L, scale)
+            self.scale_window.raise_()
+        else:
+            self.scale_window = SetScaleWindow(L, scale, self.set_scale_from_current)
+            self.children.append(self.scale_window)
+        print(f"set scale: path length {L:.4f} nm calibrated = {L * scale:.4f} nm nominal at scale factor {scale:g}.")
 
     def _on_channel(self, label):
         """
@@ -3040,7 +3143,7 @@ class Browser(_BrowserCore):
         lv.addWidget(self.toolbar_scan)
         lv.addWidget(self.canvas_scan, 1)
         self.view = widgets.ViewNavigator(self.fig_scan, self.ax_scan)
-        self.section = widgets.DragLine(self.fig_scan, self.ax_scan, self.view)
+        self.section = widgets.DragPath(self.fig_scan, self.ax_scan, self.view)
         self.layer = ScanLayer(self.ax_scan, self.files, TOPO_CMAP)
 
         n = len(self.files)
@@ -3141,7 +3244,8 @@ class Browser(_BrowserCore):
         self.btn_line, self.btn_map = QPush('Line'), QPush('Map')
         self.btn_add_new, self.btn_add_existing = QPush('add new'), QPush('add existing')
         self.txt_in_avgs = QTextLabel()
-        self.btn_section, self.btn_cross = QPush('section'), QPush('cross section')
+        self.btn_section, self.btn_clear = QPush('section'), QPush('clear')
+        self.btn_cross, self.btn_measure, self.btn_scale = QPush('cross section'), QPush('measure'), QPush('set scale')
         self.txt_dir = QTextLabel('topo under')
         self.rad_dir = QRadio('topo pass', list(TOPO_DIRECTIONS), 'forward')
         self.txt_site = QTextLabel('site')
@@ -3151,7 +3255,23 @@ class Browser(_BrowserCore):
         col.addWidget(_row(self.btn_line, self.btn_map))
         col.addWidget(self.txt_in_avgs.qt)
         col.addWidget(_row(self.btn_add_new, self.btn_add_existing))
-        col.addWidget(_row(self.btn_section, self.btn_cross))
+        # The section path: 'section' with 'clear' under it, and beside them the stack of the three
+        # section features (cross section, measure, set scale).
+        sec = QtWidgets.QWidget()
+        sl = QtWidgets.QHBoxLayout(sec)
+        sl.setContentsMargins(0, 0, 0, 0)
+        c1 = QtWidgets.QVBoxLayout()
+        c1.addWidget(self.btn_section.qt)
+        c1.addWidget(self.btn_clear.qt)
+        c1.addStretch(1)
+        c2 = QtWidgets.QVBoxLayout()
+        for btn in (self.btn_cross, self.btn_measure, self.btn_scale):
+            c2.addWidget(btn.qt)
+        c2.addStretch(1)
+        sl.addLayout(c1)
+        sl.addLayout(c2)
+        sl.addStretch(1)
+        col.addWidget(sec)
         col.addStretch(1)
         actions.addLayout(col, 1)
         for lab, rad in ((self.txt_dir, self.rad_dir), (self.txt_site, self.rad_site)):
@@ -3193,9 +3313,12 @@ class Browser(_BrowserCore):
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
         self.btn_stripe.on_change(self._on_stripe_window)
         self.btn_drift.on_change(self._on_drift_window)
-        self.btn_section.on_change(self._on_section_line)
+        self.btn_section.on_change(self._on_section)
+        self.btn_clear.on_change(self._on_clear_path)
         self.btn_cross.on_change(self._on_cross_section)
-        self.section.on_change(self._on_section_moved)
+        self.btn_measure.on_change(self._on_measure)
+        self.btn_scale.on_change(self._on_set_scale)
+        self.section.on_change(self._on_path_changed)
         self.rad_dir.on_change(self._on_direction)
         self.rad_site.on_change(self._on_site)
         self.rad_channel.on_change(self._on_channel)
