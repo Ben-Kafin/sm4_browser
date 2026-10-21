@@ -3680,7 +3680,7 @@ class DriftWindow:
             return
         v_fit, pairs, note = fit_marker_velocity(m)
         for k, rec in enumerate(pairs):
-            print("  " + marker_pair_text(k, rec))
+            print("  " + marker_pair_text(k, rec, self.scale))
         sources = self.markers.seed_sources()
         auto_seeded = bool(sources) and all(str(x).startswith('auto') for x in sources)
         if self.markers.confirmable() and auto_seeded and self.v_auto is not None:

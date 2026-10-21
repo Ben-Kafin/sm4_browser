@@ -1,22 +1,15 @@
 """
 Calibration of the lock-in channels against the co-acquired I(V) current:
 the per-curve gain-plus-offset regression referenced at the sample nearest
-0 V (the method in use before 2026-10-16), and its double-derivative
-counterpart for the IETS (second-harmonic) channel.  This file was written
-as one of three interchangeable calibration files (calibration_zeroref,
-this one; the free-intercept calibration_gainoffset; the scale-only
-calibration_stretch), of which the one renamed to calibration.py is the
-package's calibration; the repository carries only this one, and the
-other two methods appear in the __main__ block for comparison.  The
-contract they share: calibrate and calibrate_iets return (calibrated,
-fits), every fit entry carrying at least a, c, rms, with X / Z, model,
-residual, and b where the method has one.  Plain arrays in, columns =
-spectra; the pipeline (sts.STS.process_arrays) calls these on the acquired
-columns only, after the current has been through the filters and before
-the Feenstra division.  Run as a file, the __main__ block draws one file's
-calibration (its inputs, the fit in the I(V) frame, the calibrated curve
-in the dI/dV frame with the other two methods for comparison, and the cost
-surface), one sweep at a time.
+0 V, and its double-derivative counterpart for the IETS (second-harmonic)
+channel.  calibrate and calibrate_iets return (calibrated, fits), every
+fit entry carrying a, b, c, rms, X / Z, model and residual.  Plain arrays
+in, columns = spectra; the pipeline (sts.STS.process_arrays) calls these
+on the acquired columns only, after the current has been through the
+filters and before the Feenstra division.  Run as a file, the __main__
+block draws one file's calibration (its inputs, the fit in the I(V) frame,
+the calibrated curve in the dI/dV frame, and the cost surface), one sweep
+at a time.
 """
 
 if __package__ in (None, ''):
@@ -100,10 +93,9 @@ def calibrate(energy, curves, iv, vmod=None):
     The calibrated dI/dV is then  a_j · LIA_j(V) + b_j, which
     simultaneously recovers the scale and offset in a single fit.
     X and ΔI are referenced at the data point nearest 0 V; V is the
-    energy axis itself.  (The method in use before 2026-10-16, unchanged;
-    when the bias range does not contain 0 V the reference is the sweep
-    end nearest 0 V and the b·V term is then not b·(V − V_ref), which
-    biases the fit.)
+    energy axis itself.  (When the bias range does not contain 0 V the
+    reference is the sweep end nearest 0 V and the b·V term is then not
+    b·(V − V_ref), which biases the fit.)
 
     Parameters
     ----------
@@ -222,9 +214,9 @@ def calibrate_iets(energy, curves, iv, vmod=None):
 
     solved with numpy.linalg.solve as calibrate solves its 2 by 2 system.
     The calibrated curve is a_j · S_j(V) + b_j (in the Current page's units
-    per V²), in the original energy ordering.  (The method in use before
-    2026-10-16, unchanged.)  As in calibrate, V is the energy axis itself,
-    not V − V_ref, so a window without 0 V biases the fit.
+    per V²), in the original energy ordering.  As in calibrate, V is the
+    energy axis itself, not V − V_ref, so a window without 0 V biases the
+    fit.
 
     Parameters: as calibrate (energy in V, any order; curves the
     second-harmonic page's data as the loader gives it, never filtered; iv
@@ -298,9 +290,8 @@ if __name__ == '__main__':
     # referenced integral X, the recorded current (every acquired column faint, the shown sweep bold;
     # the filtered current when the filters are on).  Row 2: the fit in the I(V) frame with its parts
     # a·X, b·V, c = I(V_ref) and the residual; the calibrated a·LIA + b in the browser's dI/dV frame
-    # with the numerical derivative of the (filtered) current and the other two methods dashed; the
-    # least-squares cost S(a, b) around its minimum.  Parameters of every column printed once; the
-    # shown sweep's three methods on every step.
+    # with the numerical derivative of the (filtered) current; the least-squares cost S(a, b)
+    # around its minimum.  Parameters of every column printed once; the shown sweep's on every step.
     from sm4_Browser import qtplot as plt
     from sm4_Browser import sm4file, widgets, filters
     path = r'experiment_dir/file.sm4'
@@ -343,25 +334,6 @@ if __name__ == '__main__':
     bold = dict(color='C0', lw=1.2)
     to_pA = (lambda y: y * pA, lambda y: y / pA)      # the right-hand axes in pA (a Current page in A)
 
-    def x_from_start(k):
-        """The integral of sweep k's LIA from the first sample of the ascending axis (sorted order)."""
-        return cumulative_trapezoid(lia[order, k], Vs, initial=0)
-
-    def gainoffset(k):
-        """The free-intercept regression of sweep k: I = a·X + b·V + c, 3 by 3 normal equations.  (a, b, c)."""
-        A = np.column_stack([x_from_start(k), Vs, np.ones_like(Vs)])
-        a, b, c = np.linalg.solve(A.T @ A, A.T @ iv[order, k])
-        return float(a), float(b), float(c)
-
-    def stretch(k):
-        """The scale-only calibration of sweep k: a the least-squares slope of I on X, c the equal-integral offset.  (a, c)."""
-        X = x_from_start(k)
-        Is = iv[order, k]
-        dX = X - X.mean()
-        a = float(np.dot(dX, Is - Is.mean()) / np.dot(dX, dX))
-        c = float((np.trapezoid(Is, Vs) - a * np.trapezoid(X, Vs)) / (Vs[-1] - Vs[0]))
-        return a, c
-
     def cost_surface(k):
         """
         This method's least-squares cost S(a, b) = Σ (ΔI − a·X − b·V)² of
@@ -399,10 +371,7 @@ if __name__ == '__main__':
         cf = fits[k]
         lia_k = lia[:, k]
         iv_k = iv[:, k]
-        a_go, b_go, c_go = gainoffset(k)
-        a_st, c_st = stretch(k)
-        print(f"column {cols[k]}: this method (0 V-referenced) a = {cf.a:.4g}, b = {cf.b:.4g}; "
-              f"gain-plus-offset a = {a_go:.4g}, b = {b_go:.4g}, c = {c_go:.4g}; stretch a = {a_st:.4g}, c = {c_st:.4g}")
+        print(f"column {cols[k]}: a = {cf.a:.4g}, b = {cf.b:.4g}")
         aa, bb, S, S_min = cost_surface(k)
 
         axes = fig.subplots(2, 3)
@@ -464,10 +433,7 @@ if __name__ == '__main__':
         didv_num[order] = np.gradient(iv_k[order], Vs)
         ax.plot(V, didv_num, color='0.6', lw=0.6, alpha=0.7,
                 label="numerical dI/dV of the " + ("filtered" if filtered else "recorded") + " I(V)")
-        ax.plot(V, cal[:, k], color='C3', lw=1.3, label="a·LIA + b (this method, 0 V-referenced)")
-        ax.plot(V, a_go * lia_k + b_go, '--', color='0.35', lw=1,
-                label=f"gain-plus-offset regression (a = {a_go:.3g}, b = {b_go:.3g})")
-        ax.plot(V, a_st * lia_k, '--', color='C0', lw=1, label=f"stretch only (a = {a_st:.3g})")
+        ax.plot(V, cal[:, k], color='C3', lw=1.3, label="a·LIA + b (0 V-referenced)")
         ax.set_ylabel(f"dI/dV ({uI}/V)")
         ax.set_title("the dI/dV frame: a scales the LIA, b shifts it")
         ax.legend(fontsize=8)

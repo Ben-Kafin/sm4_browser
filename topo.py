@@ -290,9 +290,11 @@ class TopoWindow:
     the pass the radio names on top.  'stripe match' (grid files) opens the
     stripe window (stripe.StripeWindow); the grid's stored fast-axis state
     for the setting in force places the lines (Drift.result with stripe
-    None); the browser's anchor_on state is taken at opening (no toggle of
-    its own here; no window builds the 'anchor to topo' toggle today, so it
-    is off).  Its colour bar carries the height scale (nm).  Every length
+    None); the window's own 'anchor to topo' toggle (the MATLAB "drift for
+    first point", Drift.result's `anchor`: the spectra file shifted rigidly
+    to where the surface sat when this topo began) starts at the browser's
+    state and is independent after.  Its colour bar carries the height
+    scale (nm).  Every length
     is drawn at `scalefactor`: the window takes the scale the caller gives
     and keeps it (the browser passes the current file's).
       topo        : the topography (Sm4File)
@@ -307,17 +309,16 @@ class TopoWindow:
                     or 'phase'), or None
       drift       : the directory's Drift, or None (no correction possible; the
                     toggles then start off and cannot be turned on)
-      auto_on, manual_on : the toggles' starting states
-      anchor_on   : the state taken from the browser (always False today)
+      auto_on, manual_on, anchor_on : the three toggles' starting states (the
+                    browser's; anchor_on needs a drift model like the others)
       spec_dir    : the grid's topo pass at opening ('forward' or 'reverse')
-      stripe_on   : accepted and unused
     """
 
     DESIGN = (7.5, 7.4)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
     def __init__(self, topo, active_procs, scalefactor, marker_xy_m=None, title=None, direction='forward',
                  spec=None, drift=None, auto_on=False, manual_on=False, anchor_on=False,
-                 spec_dir='forward', stripe_on=None):
+                 spec_dir='forward'):
         from sm4_Browser import widgets
         self.topo = topo
         self.active = list(active_procs)
@@ -329,7 +330,7 @@ class TopoWindow:
         self.drift = drift
         self.auto_on = bool(auto_on and drift is not None)
         self.manual_on = bool(manual_on and drift is not None)
-        self.anchor_on = bool(anchor_on)
+        self.anchor_on = bool(anchor_on and drift is not None)
         self.spec_dir = spec_dir if spec_dir in ('forward', 'reverse') else 'forward'
         self.stripe_window = None
         self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
@@ -341,6 +342,8 @@ class TopoWindow:
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
         self.btn_stripe = widgets.make(self.fig, 'stripe match', 0.36, 0.015)
         self.btn_stripe.on_change(self._on_stripe_window)
+        self.chk_anchor = widgets.make(self.fig, 'anchor to topo', 0.53, 0.015, value=self.anchor_on)
+        self.chk_anchor.on_change(lambda flag: self._on_drift_toggle('anchor', flag))
         is_grid = spec is not None and spec.kind == 'grid' and bool(spec.topo_pages)
         self.btn_stripe.show(is_grid and drift is not None)
         # The grid's own topo pass (the 'topo pass' radio of the scan area, for the grid's topo).
@@ -444,8 +447,8 @@ class TopoWindow:
         self.fig.canvas.draw_idle()
 
     def _on_drift_toggle(self, which, flag):
-        """The window's 'auto drift' / 'manual drift' toggles: on only with a drift model at hand (else the toggle goes back)."""
-        chk = {'auto': self.chk_auto, 'manual': self.chk_manual}[which]
+        """The window's 'auto drift' / 'manual drift' / 'anchor to topo' toggles: on only with a drift model at hand (else the toggle goes back)."""
+        chk = {'auto': self.chk_auto, 'manual': self.chk_manual, 'anchor': self.chk_anchor}[which]
         if flag and self.drift is None:
             print("Topo window: no drift model at hand; the toggle stays off.")
             chk.set(False)
@@ -453,8 +456,10 @@ class TopoWindow:
             return
         if which == 'auto':
             self.auto_on = bool(flag)
-        else:
+        elif which == 'manual':
             self.manual_on = bool(flag)
+        else:
+            self.anchor_on = bool(flag)
         self.draw()
 
     def _on_stripe_window(self):

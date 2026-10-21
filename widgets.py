@@ -81,7 +81,7 @@ SPECS = {
     'auto drift': _spec('check', 1.1, 0.38),                      # the tracker's drift (KAZE pairs)
     'manual drift': _spec('check', 1.25, 0.38),                   # the marker / typed drift (the MATLAB method)
     'stripe match': _spec('button', 1.2, 0.36),                   # grids: opens the stripe window (stripe.StripeWindow)
-    'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift); no window builds it today
+    'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift): the browser's and the Topo window's toggle
     'cmap norm': _spec('check', 1.4, 0.38),
     'crop': _spec('check', 0.8, 0.38),
     'WKB background': _spec('check', 1.7, 0.32),
@@ -201,7 +201,7 @@ SHORT_LABELS = {
     'calibrate': 'cal', 'normalize': 'norm', 'auto drift': 'auto', 'manual drift': 'manual',
     'anchor to topo': 'anchor', 'broadened': 'broad', 'substack': 'sub', 'Average': 'Avg',
     'Feenstra': 'Feen', 'Feenstra (refit)': 'Feen refit', 'cmap norm': 'cmap', 'WKB background': 'WKB',
-    'step through': 'step', 'topo processing': 'topo proc', 'filters (on the current of the division)': 'filters',
+    'step through': 'step', 'topo processing': 'topo proc', 'filters (on the current)': 'filters',
     'polyorder': 'order', 'Savitzky-Golay': 'SG',
     # radio options
     'forward': 'fwd', 'reverse': 'rev', 'average': 'avg', 'experiment': 'exp', 'pulsing': 'pulse',

@@ -108,6 +108,7 @@ them.
 | `auto drift`, `manual drift` | the two velocity sources applied to every file (see [Concepts](#concepts)); off only redraws |
 | `stripe match` | the stripe window of the current grid |
 | `drift` | the manual drift window of the current file |
+| `anchor to topo` | grid and point files: the file moved rigidly to where the surface sat when the topography under it began (see [Concepts](#concepts)); off at start |
 | `load saved averages` | the saved-records window |
 | the status line | the progress of the background placing of files not yet read |
 
@@ -180,9 +181,8 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
 
 The browser's spectra panels always show the Feenstra set with no toggle; every other window has
 its own `Feenstra` toggle and its Feenstra companion window. `calibrate` and `normalize` are the two
-flags of each window's pipeline box: both off at open in the browser, the averaging, Map and
-line-average windows and the Feenstra companions; the Line window opens with both on (the setting
-`browser.main` passes it). A spectrum whose column is all zeros was never acquired and takes part in
+flags of each window's pipeline box, both off at open in every window (a saved record restores the
+flags it was saved with). A spectrum whose column is all zeros was never acquired and takes part in
 nothing.
 
 ### Drift
@@ -201,6 +201,11 @@ the surface's features per second in the absolute frame (`drift.py`).
   applies; a span is `confirmed` (the auto velocity confirmed from seeded markers), `adjusted` (fitted
   from marker pairs) or `typed`. It overrides the auto velocity wherever it covers a file and works
   with auto drift off.
+
+**Anchor to topo** (the MATLAB "drift for first point"): with the toggle on, a grid or point file is
+also moved rigidly by −v (t_0 − t_topo start), the start of the topography under it, to where the
+surface sat when that topography began; off, the recorded anchor stands. The browser's toggle sits
+under the drift toggles; the Topo window has its own.
 
 A file's anchor is its starting location at its recorded position (the first pixel of a
 topography, the first spectrum of a grid, the first sweep of a point); everything else in the file
@@ -266,7 +271,7 @@ named.
 The topography shown with the current file (the most recent loaded one; for a single point, the
 most recent loaded one whose footprint contains its position, else the most recent, said on the
 console) in its own scan frame, aspect locked, at the current file's scale, with the colour bar in
-nm; its own `auto drift` and `manual drift` toggles (set from the browser's at
+nm; its own `auto drift`, `manual drift` and `anchor to topo` toggles (set from the browser's at
 opening, independent after); the spectra file shown with it at its corrected positions with its
 drift lines; a grid's own topography pixels over the image with the `topo pass` radio; `stripe
 match` for a grid.
@@ -281,8 +286,7 @@ new` / `add existing` beside it), the E-markers (`E-markers` slider, `clear E-ma
 with ΔE; drag them on the heatmap or the curve panel, Left/Right step the selected one by one
 energy, Tab selects the next), `E range` and `x range` ("lo, hi"; the energy range is also the
 normalization range and the colour scale's), the `line` box with `< line` / `line >`, the window's
-own `Feenstra` toggle with its companion, the `calibrate` / `normalize` box (both on at open), the
-filters,
+own `Feenstra` toggle with its companion, the `calibrate` / `normalize` box, the filters,
 `sweeps` for a file with several sweeps per pixel, `profile` per topography row (the raw heights
 of the forward and reverse passes), `save` (the marker record), `line → new avg` / `line → existing
 avg`, `Send to fit`, `drift window`, and its own drift toggles. The heatmap rows are sheared by the

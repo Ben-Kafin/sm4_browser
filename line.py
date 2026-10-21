@@ -402,9 +402,8 @@ class Line:
         columns (npts, N), each step when switched on: the I(V) through the
         Hampel and Savitzky-Golay filters once (the columns themselves are
         never filtered), the calibration against that current
-        (calibration.calibrate for dI/dV, calibrate_iets for IETS, of
-        whichever calibration file is in place: calibration_zeroref,
-        calibration_gainoffset, or calibration_stretch), the
+        (calibration.calibrate for dI/dV, calibrate_iets for IETS: the
+        0 V-referenced gain-plus-offset regression), the
         division by the broadened I/V of the same current (dI/dV only;
         iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
         value at 0 V, feenstra.iv_corrected), unit-area normalization (over
@@ -687,9 +686,12 @@ class Line:
         else:
             self._int_manual_on = flag
         self._int_apply_drift_toggle()
+        sm4 = self._int_sm4()
+        stripe = (sm4.kind == 'grid' and self._int_drift.fast_state(sm4, None, self._int_auto_on, self._int_manual_on) != 'off')
         print(f"{self._int_tag()}: {which} drift {'on' if flag else 'off'}"
               + (" (rows sheared by the drift during their sweeps; the stripe untouched)."
-                 if self._int_drift_active() else " (rows plain)."))
+                 if self._int_drift_active() else
+                 (" (rows placed by the stripe matching alone)." if stripe else " (rows plain).")))
 
     def _int_on_drift_window(self):
         """'drift window': the file's before and after topos with marker pairs (drift.DriftWindow, seeding from this window's 'auto drift'); a change applied there reaches every subscriber of the Drift, this window included."""
@@ -2783,8 +2785,8 @@ if __name__ == '__main__':
     analyzer.plot_line_with_topo_interactive(
         hampel_filter_params={'window': 4, 'n_sigma': 3},
         sgolay_filter_params={'window_length': 6, 'polyorder': 3},
-        apply_calibration=True,
-        apply_normalize=True,
+        apply_calibration=False,
+        apply_normalize=False,
         marker_positions=None,              # or e.g. [5.0, 15.0, 25.0]
         #topo_lines=[(0, 'forward'),(0, 'reverse')])
         topo_lines=[(0, 'forward'),(1, 'forward')],        # or e.g. [(0, 'forward'), (1, 'reverse')]

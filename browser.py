@@ -160,7 +160,10 @@ and along the bottom left the drift controls: the 'auto drift' and
 topos' skew and the spectra's correction and drift lines on the scan area,
 see "Drift correction"), the 'stripe match' button (grid files: the
 stripe window, see "Stripe matching") and the 'drift' button, which opens
-the manual drift window of the current file (see "Manual drift"); in the
+the manual drift window of the current file (see "Manual drift"), and
+under them the 'anchor to topo' toggle (grid and point files: the rigid
+shift to the start of the topo under the file, off at start, see "Drift
+correction") beside 'load saved averages'; in the
 same row the 'channel' radio, the 'show' radio and the 'step through' box
 with its 'min (min)' duration box, and under them a status line counting
 the files placed on the scan area.  Keyboard: Ctrl+Left / Ctrl+Right step
@@ -273,9 +276,10 @@ fit's edit window carry the Savitzky-Golay / Hampel controls
 (widgets.FilterControls; every filter off by default, each switchable on
 its own); the browser, the average, Map, Line, and line-average windows
 and the Feenstra companions carry the 'calibrate' / 'normalize' box
-(widgets.PipelineBox, each step switchable on its own; both off at open,
-except in the Line window, which starts at line_window_kwargs'
-apply_calibration / apply_normalize, both on in main()).  The filters act on the
+(widgets.PipelineBox, each step switchable on its own; both off at open
+in every window: the Line window starts at line_window_kwargs'
+apply_calibration / apply_normalize, both False in main() and in the
+Spyder block).  The filters act on the
 recorded current I(V) alone, once, wherever it is used (Hampel, then
 Savitzky-Golay, filters.filter_lia: the pipeline filters the current first
 and hands it to the calibration and to the Feenstra division alike, before
@@ -284,9 +288,7 @@ IETS by the 'channel' choice of the browser and of the windows) are never
 filtered.
 Order per curve (STS.process_arrays): calibration against the filtered
 I(V) (calibration.calibrate for dI/dV, calibration.calibrate_iets for
-IETS, of whichever calibration file is in place: calibration_zeroref,
-calibration_gainoffset, or calibration_stretch renamed to
-calibration.py); the division by the
+IETS: the 0 V-referenced gain-plus-offset regression); the division by the
 filtered, broadened I/V when the window's 'Feenstra' toggle is on (on by
 default; the browser has no toggle: its spectra panels always show the
 Feenstra set; Feenstra's normalized conductance: each calibrated dI/dV
@@ -427,10 +429,11 @@ window' (see "Manual drift"), the Topo window 'stripe match'.
       point": the file is also shifted rigidly by -v (t_0 - t_topo start),
       t_topo the start of the topo under it, to where the surface sat when
       that topo began (Drift.result's `anchor`).  Off, the recorded anchor
-      stands.  It is always off today: the browser's anchor_on is False and
-      no window builds the toggle (only its specification exists, in
-      widgets.SPECS), so the Topo window, which takes the browser's state
-      at opening, never applies it.
+      stands.  The browser's 'anchor to topo' toggle, under the drift
+      toggles, starts off (anchor_on); the Topo window has a toggle of its
+      own, set from the browser's state at opening and independent after.
+      The Line and Map windows do not apply it (their frames are the
+      grid's own).
 Segments: a jump of the recorded scan centre above move_min_m (1 um)
 between consecutive topos is a long-range move; the topos between two
 moves are a segment; pairs are tracked and before/after topos looked up
@@ -667,7 +670,7 @@ class _BrowserCore:
         self.auto_on = True        # the 'auto drift' toggle starts on; off only redraws nominal positions
         self.manual_on = True      # the 'manual drift' toggle starts on (the manual velocities cover what they cover)
         self.stripe_window = None  # the stripe window opened by 'stripe match' (stripe.StripeWindow)
-        self.anchor_on = False     # 'anchor to topo' (Drift.result's anchor): always off; no window builds the toggle
+        self.anchor_on = False     # the 'anchor to topo' toggle starts off (Drift.result's anchor: the rigid shift to the topo's start)
         self.profile_window = None # the cross-section profile window (topo.ProfileWindow)
         self.measure_window = None # the section path's measure window (section.MeasureWindow)
         self.scale_window = None   # the section path's set-scale window (section.SetScaleWindow)
@@ -919,6 +922,7 @@ class _BrowserCore:
             w.show(grid)
         self.chk_auto.show(True)
         self.chk_manual.show(True)
+        self.chk_anchor.show(True)
         self.btn_stripe.show(grid and bool(self.current.topo_pages) and self.drift is not None)   # the Topo window's rule
         self.rad_channel.show(grid or point)
         self.btn_add_new.show(point)
@@ -1836,12 +1840,14 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _on_drift_toggle(self, which, flag):
-        """'auto drift' / 'manual drift': the scan area redrawn with the sources as set."""
+        """'auto drift' / 'manual drift' / 'anchor to topo': the scan area redrawn with the sources (and the anchor) as set."""
         if which == 'auto':
             self.auto_on = bool(flag)
-        else:
+        elif which == 'manual':
             self.manual_on = bool(flag)
-        print(f"{which} drift {'on' if bool(flag) else 'off'}.")
+        else:
+            self.anchor_on = bool(flag)
+        print(f"{'anchor to topo' if which == 'anchor' else which + ' drift'} {'on' if bool(flag) else 'off'}.")
         self._draw_scan_area()
         self.fig.canvas.draw_idle()
 
@@ -2064,7 +2070,7 @@ class _BrowserCore:
         if label == self.sites.flag(path):
             return
         self.sites.set_flag(path, label)
-        print(f"site: {os.path.basename(path)} flagged {label} by hand (kept in the sites file).")
+        print(f"site: {os.path.basename(path)} flagged {label} by hand (kept in the settings file).")
         self._draw_info()
         self.fig.canvas.draw_idle()
 
@@ -2959,7 +2965,7 @@ class QFilterControls(widgets.FilterControls):
         self._on = [bool(hampel_on), bool(sgolay_on)]
         self._callback = None
         self._quiet = False
-        self._title = 'filters (on the current of the division)'
+        self._title = 'filters (on the current)'
         self.qt = QtWidgets.QGroupBox(self._title)
         grid = QtWidgets.QGridLayout(self.qt)
         grid.setContentsMargins(6, 4, 6, 4)
@@ -3314,6 +3320,7 @@ class Browser(_BrowserCore):
         self.topo_box = QTopoProcessorBox(processor_labels(), self.topo_active)
         self.chk_auto = QCheck('auto drift', self.auto_on)
         self.chk_manual = QCheck('manual drift', self.manual_on)
+        self.chk_anchor = QCheck('anchor to topo', self.anchor_on)
         self.btn_stripe = QPush('stripe match')
         self.btn_drift = QPush('drift')
         self.btn_saved = QPush('load saved averages')
@@ -3325,7 +3332,7 @@ class Browser(_BrowserCore):
         nav = QtWidgets.QVBoxLayout()
         nav.addWidget(_row(self.btn_prev, self.btn_next, self.btn_topo, self.box_scale))
         nav.addWidget(_row(self.chk_auto, self.chk_manual, self.btn_stripe, self.btn_drift))
-        nav.addWidget(_row(self.btn_saved))
+        nav.addWidget(_row(self.chk_anchor, self.btn_saved))     # under the drift toggles: their row has no room for a fifth control at the design size
         self.rad_show = QRadio('show', list(SHOW_MODES), self.show_mode, title='show')
         self.chk_kinds = QChecks('step through', ['topo', 'point', 'grid', 'phase', 'fft'], [True] * 5,
                                  title='step through')
@@ -3469,6 +3476,7 @@ class Browser(_BrowserCore):
         self.btn_saved.on_change(self._on_load_saved)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
+        self.chk_anchor.on_change(lambda flag: self._on_drift_toggle('anchor', flag))
         self.btn_stripe.on_change(self._on_stripe_window)
         self.btn_drift.on_change(self._on_drift_window)
         self.btn_section.on_change(self._on_section)
@@ -3531,8 +3539,8 @@ def main(argv=None):
     sgolay_defaults = {'window_length': 6, 'polyorder': 3}
     fit_settings = {'known_features': [], 'n_jobs': -1, 'max_width_ratio': 3, 'noise_z': 2.5, 'use_cache': True}
     line_window_kwargs = {'cmap': 'jet', 'hampel_filter_params': hampel_defaults,
-                          'sgolay_filter_params': sgolay_defaults, 'apply_calibration': True,
-                          'apply_normalize': True, 'marker_positions': None, 'fit_settings': fit_settings}
+                          'sgolay_filter_params': sgolay_defaults, 'apply_calibration': False,
+                          'apply_normalize': False, 'marker_positions': None, 'fit_settings': fit_settings}
     Browser.run(a.directory, scalefactor=a.scalefactor, hampel_defaults=hampel_defaults,
                   sgolay_defaults=sgolay_defaults, line_window_kwargs=line_window_kwargs, cmap_map='jet',
                   drift_params={'sg_window': 5, 'sg_poly': 2, 'prominence_frac': 0.20})
@@ -3555,8 +3563,8 @@ if __name__ == '__main__':
     sgolay_defaults = {'window_length': 6, 'polyorder': 3}
     fit_settings = {'known_features': [], 'n_jobs': -1, 'max_width_ratio': 3, 'noise_z': 2.5, 'use_cache': True}
     line_window_kwargs = {'cmap': cmap_line, 'hampel_filter_params': hampel_defaults,
-                          'sgolay_filter_params': sgolay_defaults, 'apply_calibration': True,
-                          'apply_normalize': True, 'marker_positions': None, 'fit_settings': fit_settings}
+                          'sgolay_filter_params': sgolay_defaults, 'apply_calibration': False,
+                          'apply_normalize': False, 'marker_positions': None, 'fit_settings': fit_settings}
     drift_params = {'sg_window': 5, 'sg_poly': 2, 'prominence_frac': 0.20}
 
     browser = Browser(directory, scalefactor=2.75, hampel_defaults=hampel_defaults,

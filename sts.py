@@ -96,9 +96,7 @@ class STS:
     the Hampel and Savitzky-Golay filters once (filters; the channel's
     columns are never filtered), calibration against that current
     (calibration.calibrate / calibrate_iets: the 0 V-referenced
-    gain-plus-offset regression of calibration.py, written as one of three
-    interchangeable calibration files of which the repository carries this
-    one), the division by the broadened
+    gain-plus-offset regression of calibration.py), the division by the broadened
     I/V of the same current when divide_iv is on (feenstra; dI/dV only),
     and unit-area normalization (normalization).  Every step takes plain
     arrays, so the Line window (one chunk), the fit (its raw sets), the

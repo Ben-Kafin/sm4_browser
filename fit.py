@@ -19,9 +19,8 @@ Pipeline
    (spikes), Savitzky-Golay (filters.filter_lia; the LIA column is never
    filtered); the calibration of the LIA column against that current
    (calibration.calibrate, the Line tool's calibration: the 0 V-referenced
-   gain-plus-offset regression of calibration.py, written as one of three
-   interchangeable calibration files of which the repository carries this
-   one; it returns per sweep a, b, c and rms, and the console report of
+   gain-plus-offset regression of calibration.py; it returns per sweep a,
+   b, c and rms, and the console report of
    process prints a, c, rms and the area); for quantity 'ratio' the division by the broadened I/V of the
    same filtered current (feenstra.divide_by_iv, told not to filter again:
    the current's value at 0 V subtracted first when iv_zero_sub is on,

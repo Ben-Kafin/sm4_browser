@@ -43,6 +43,9 @@ the traceback, and exits non-zero when any failed.  One @check per feature, name
       made with another scale are noted; a marker record stores its scale.
   L   L1 the section path: editing with frozen navigation, add / drag / remove, off keeps the
       points; measure, set scale (two-way, apply), the cross section along the path, clear.
+  M   item 4: M1 'anchor to topo' (the browser's toggle and the Topo window's: the file moved by
+      the reported rigid shift, off restores it); M2 the Line window opens with 'calibrate' and
+      'normalize' off; M3 the console strings and the filter box label.
 
 The checks share one browser and tidy up after themselves (windows closed, settings removed), so
 a failed check can leave state behind for the ones after it.  smoke_sweeps.py reuses make_browser,
@@ -1531,6 +1534,122 @@ def _section_path(b, exp):
         plt.close(win.fig)
     b.scales.remove(grid)
     assert b.scale_of(grid) == 1.0
+    b._goto(0)
+
+
+@check("M1 anchor to topo: the browser's toggle and the Topo window's; the file moved rigidly by the reported shift, off restores it")
+def _anchor_to_topo(b, exp):
+    import io, contextlib
+    point = goto_kind(b, 'point')
+    assert b.anchor_on is False and b.chk_anchor.value is False, "the toggle starts off"
+    d_off = b.drift.result(point, b.loaded, None, b.auto_on, b.manual_on, False)
+    assert d_off is not None and not d_off['anchor'] and np.allclose(d_off['anchor_shift'], 0)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        b.chk_anchor.set(True)
+        b._on_drift_toggle('anchor', True)
+    assert b.anchor_on is True and "anchor to topo on." in buf.getvalue(), buf.getvalue()
+    d_on = b.drift.result(point, b.loaded, None, b.auto_on, b.manual_on, True)
+    sh = np.asarray(d_on['anchor_shift'])
+    assert d_on['anchor'] and np.linalg.norm(sh) > 0, "a velocity and an earlier topo: the rigid shift is not zero"
+    assert np.allclose(d_on['xy_corr'] - d_off['xy_corr'], sh[None, :]), "every position moved by the one shift"
+    assert any("anchor to topo: the file moved rigidly" in line for line in d_on['report']), d_on['report']
+    # the Topo window takes the browser's state and has its own toggle
+    b._on_topo_window()
+    w = b.children[-1]
+    assert w.anchor_on is True and w.chk_anchor.value is True
+    first = lambda: next(np.array([ln.get_data()[0][0], ln.get_data()[1][0]]) for ln in w.ax.lines if ln.get_label() == 'first sweep')
+    p_on = first()
+    w.chk_anchor.set(False)
+    w._on_drift_toggle('anchor', False)
+    assert w.anchor_on is False and b.anchor_on is True, "the window's toggle is independent of the browser's"
+    p_off = first()
+    k = 1e9 / w.scalefactor
+    expect = (w.topo.to_frame_m(d_on['xy_corr'][:1]) - w.topo.to_frame_m(d_off['xy_corr'][:1]))[0] * k
+    assert np.allclose(p_on - p_off, expect, atol=1e-6), (p_on - p_off, expect)
+    plt.close(w.fig)
+    # off again in the browser: the recorded anchor stands
+    b.chk_anchor.set(False)
+    b._on_drift_toggle('anchor', False)
+    assert b.anchor_on is False
+    b._goto(0)
+
+
+@check("M2 the Line window opens with 'calibrate' and 'normalize' off, like every other window")
+def _line_flags_off(b, exp):
+    import inspect
+    from sm4_Browser import browser as browser_mod
+    src = inspect.getsource(browser_mod.main)
+    assert "'apply_calibration': False" in src and "'apply_normalize': False" in src, "main() opens the Line window with both off"
+    assert b.line_window_kwargs.get('apply_calibration', False) is False and b.line_window_kwargs.get('apply_normalize', False) is False
+    w = open_line(b)
+    assert w._int_apply_calibration is False and w._int_apply_normalize is False
+    assert w._int_pipeline_box.state() == {'calibrate': False, 'normalize': False}
+    plt.close(w._int_fig)
+    b._goto(0)
+
+
+@check("M3 console strings: the settings file, the calibrated pair readout, the Line window's toggle line, the averaging filter line, the filter box label")
+def _console_strings(b, exp):
+    import io, contextlib
+    from sm4_Browser.drift import marker_pair_text
+    assert b.filters._title == 'filters (on the current)' and b.filters.qt.title() == 'filters (on the current)'
+    # the site flag line names the settings file
+    grid = goto_kind(b, 'grid')
+    was = b.sites.flag(grid.path)
+    other = 'experiment' if was != 'experiment' else 'pulsing'
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        b._on_site(other)
+    assert "kept in the settings file" in buf.getvalue() and "sites file" not in buf.getvalue(), buf.getvalue()
+    b.sites.set_flag(grid.path, was)
+    assert b.sites.flag(grid.path) == was
+    # the drift window prints every pair with the calibrated value beside the nominal
+    b._on_scale("2.0")
+    if b.drift_window is not None and b.drift_window.is_open():
+        plt.close(b.drift_window.fig)
+    b._on_drift_window()
+    d = b.drift_window
+    rec = {'dx': 1e-9, 'dy': 2e-9, 'dL': 2.236e-9, 'dt': 3600.0, 'used': True, 'vx': 1e-9 / 3600, 'vy': 2e-9 / 3600,
+           'vL': 2.236e-9 / 3600, 'alpha': 63.4, 'rx': 0.0, 'ry': 0.0}
+    assert "[+0.500 cal]" in marker_pair_text(0, rec, d.scale), marker_pair_text(0, rec, d.scale)
+    a_c = 0.5 * (d.a.corners_m()[0] + d.a.corners_m()[2])
+    k = 1e9 / b.scale_of(d.a.path)
+    click(d.fig, d.ax_a, *(a_c * k))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        d._on_set_from_markers()
+    assert "pair 1:" in buf.getvalue() and " cal]" in buf.getvalue(), buf.getvalue()
+    d.markers.set_pairs(0)
+    plt.close(d.fig)
+    b.scales.remove(grid.path)
+    # the Line window's toggle line: plain rows without a placement, the stripe matching named with one
+    w = open_line(b)
+    f = w._int_sm4()
+    setting = b.drift.slow_setting(f, False, False)
+    assert b.drift.fast_state(f, setting, False, False) == 'off'
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        w._int_on_drift_toggle('auto', False)
+        w._int_on_drift_toggle('manual', False)
+    assert "(rows plain)." in buf.getvalue(), buf.getvalue()
+    b.drift.set_fast_state(f, setting, 'auto')
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        w._int_on_drift_toggle('auto', True)
+        w._int_on_drift_toggle('auto', False)
+    assert "(rows placed by the stripe matching alone)." in buf.getvalue(), buf.getvalue()
+    b.drift.set_fast_state(f, setting, 'off')
+    plt.close(w._int_fig)
+    # the averaging window's filter line names the recorded current
+    goto_kind(b, 'point')
+    b._on_add_new_avg()
+    aw = list(b.averages.open().values())[-1]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        aw._on_filter_change()
+    assert "on the recorded current" in buf.getvalue() and "on the dI/dV" not in buf.getvalue(), buf.getvalue()
+    plt.close(aw.fig)
     b._goto(0)
 
 

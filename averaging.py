@@ -1094,7 +1094,7 @@ class MultiAverageWindow:
         """The filter controls changed: every file's sweeps rebuilt and the run repeated (_rebuild_sweeps)."""
         hp, sp = self.filters.params()
         self._rebuild_sweeps(f"Hampel {'on' if hp else 'off'}, "
-                             f"SG {'on' if sp else 'off'} on the {STS.CHANNEL_NAMES[self.channel]}")
+                             f"SG {'on' if sp else 'off'} on the recorded current")
 
     def _on_pipeline_change(self, state):
         """The 'calibrate' / 'normalize' box: every file's sweeps rebuilt with the flags and the run repeated."""
