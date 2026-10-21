@@ -1109,9 +1109,10 @@ class _BrowserCore:
         return model
 
     def _drift_state(self):
-        """A token of everything the placed images' positions depend on: the drift sources, the manual spans, the passes, the processors."""
+        """A token of everything the placed images' positions depend on: the drift sources, the manual spans, the passes, the processors, and the scale timeline (the occlusion is tested as drawn)."""
         return (self.auto_on, self.manual_on, getattr(self, '_drift_version', 0),
-                tuple(sorted(self.topo_dir.items())), tuple(bool(a) for a in self.topo_active))
+                tuple(sorted(self.topo_dir.items())), tuple(bool(a) for a in self.topo_active),
+                tuple((e['file'], e['time'], e['scale']) for e in self.scales.entries))
 
     def _clear_overlays(self):
         """Every artist of the scan area except the layer's images (the per-file overlays are redrawn)."""

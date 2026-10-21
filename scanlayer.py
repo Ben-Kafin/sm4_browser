@@ -254,9 +254,9 @@ def _covers(quads, order, complete):
     """
     For every image, the later complete images whose quadrilateral contains it entirely:
     {path: [paths in time order]} (occlusion: an image so covered is not painted).  quads
-    {path: (4, 2)} the corners in recorded metres under the drift correction (_occlusion passes
-    k = 1: the drawn quad when every file has the same scale factor; with per-file scale factors
-    a frame and its cover may be scaled differently on the scan area), order {path: rank},
+    {path: (4, 2)} the corners in drawing units under the drift correction, each file at its own
+    drawing factor (_occlusion passes k_of(path)), so the test is the scan area's own geometry
+    when files carry different scale factors; order {path: rank},
     complete {path: bool}.  A bounding-box test first, then every corner of the candidate inside
     every edge of the cover, within a small tolerance.
     """
@@ -346,15 +346,21 @@ class ScanLayer:
 
     # --- the state ---
 
-    def _occlusion(self, state, direction_of, model_of, wanted):
-        """The covers map (_covers) for the drift state `state`, recomputed when it or the image records changed, over the records whose key is the wanted one; the corners in recorded metres (k = 1), whatever each file's drawing scale."""
+    def _occlusion(self, state, direction_of, model_of, wanted, k_of):
+        """
+        The covers map (_covers) for the drift state `state` (a token that carries the scale
+        timeline too, browser._drift_state), recomputed when it or the image records changed, over
+        the records whose key is the wanted one; every record's corners in drawing units at its own
+        file's factor k_of(path), so an image is hidden only when a later complete image covers it
+        as the two are drawn.
+        """
         if not self._occ_dirty and state == self._occ_state:
             return
         quads, complete = {}, {}
         for p, rec in self.records.items():
             if 'img' not in rec or (wanted is not None and rec.get('key') != wanted(p)):
                 continue
-            quads[p] = record_corners(rec, 1.0, direction_of(p), model_of(p, rec))
+            quads[p] = record_corners(rec, k_of(p), direction_of(p), model_of(p, rec))
             complete[p] = rec.get('complete', False)
         self.covers = _covers(quads, self.rank, complete)
         self._occ_state = state
@@ -381,7 +387,7 @@ class ScanLayer:
         corners = []
         shown = set()
         if state is not None:
-            self._occlusion(state, direction_of, model_of, wanted)
+            self._occlusion(state, direction_of, model_of, wanted, k_of)
         vis_set = set(visible)
         vis_set.discard(current_path if self.records.get(current_path, {}).get('kind') == 'grid' else None)
         for p in visible:

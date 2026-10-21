@@ -45,7 +45,11 @@ the traceback, and exits non-zero when any failed.  One @check per feature, name
       points; measure, set scale (two-way, apply), the cross section along the path, clear.
   M   item 4: M1 'anchor to topo' (the browser's toggle and the Topo window's: the file moved by
       the reported rigid shift, off restores it); M2 the Line window opens with 'calibrate' and
-      'normalize' off; M3 the console strings and the filter box label.
+      'normalize' off; M3 the console strings and the filter box label; M4 the occlusion tested
+      as drawn at each file's scale; M5 tracked pairs with the files' signatures, tracked again
+      after a change, written when tracked outside the build; M7 the Map window under the stripe
+      matching alone (frame, lines, title, one label per grid cell); M8 RowHeatmap with a short
+      shear.
 
 The checks share one browser and tidy up after themselves (windows closed, settings removed), so
 a failed check can leave state behind for the ones after it.  smoke_sweeps.py reuses make_browser,
@@ -1228,7 +1232,10 @@ def _stores(b, exp):
     comp = _json(c_path)
     for sec in ('headers', 'metrics', 'pairs'):
         assert sec in comp and comp[sec]['loader_format'] == 2 and comp[sec]['content'], sec
-    assert len(comp['pairs']['content']['pairs']) == 2 and len(comp['headers']['content']['files']) == 5
+    names = [os.path.basename(p) for p in b.files if b.kinds[p] == 'topo']
+    pairs = comp['pairs']['content']['pairs']
+    assert all(f"{a}|{c}" in pairs for a, c in zip(names, names[1:])), "the consecutive pairs of the build"
+    assert all('sig' in rec for rec in pairs.values()) and len(comp['headers']['content']['files']) == 5
     bytes0 = open(c_path, 'rb').read()
     # settings: a manual span, a stripe state, a flag: the settings file holds them at once, the computed file is untouched
     topos = [p for p in b.files if b.kinds[p] == 'topo']
@@ -1254,8 +1261,13 @@ def _stores(b, exp):
     b2 = make_browser(b.directory)
     try:
         comp2 = _json(c_path)
-        for sec in ('headers', 'metrics', 'pairs'):
+        for sec in ('headers', 'metrics'):
             assert comp2[sec]['content'] == comp[sec]['content'], sec
+        # the build tracks the consecutive pairs again, the same; pairs the session tracked beyond them
+        # (the drift window stepped to one) are not part of a build
+        p2, p1 = comp2['pairs']['content']['pairs'], comp['pairs']['content']['pairs']
+        assert set(p2) <= set(p1) and all(p2[k] == p1[k] for k in p2), (set(p2), set(p1))
+        assert comp2['pairs']['content']['topos'] == comp['pairs']['content']['topos']
         assert _json(s_path) == st
     finally:
         b2._bg_shutdown()
@@ -1293,7 +1305,11 @@ def _carry_over(b, exp):
                 assert name + '.old' in names and name not in names, (name, names)
             s2, c2 = _json(os.path.join(tmp, f"settings_{stamp}.json")), _json(os.path.join(tmp, f"computed_{stamp}.json"))
             assert s2['drift']['spans'][0]['v'] == [2e-12, -1e-12] and s2['flags'] == {point: 'pulsing'}
-            assert c2['pairs']['content']['pairs'] == comp['pairs']['content']['pairs']
+            # the old cache's pairs (format 5, no signatures) are of another format: tracked again on the
+            # copied files (other signatures), the same results for the consecutive pairs
+            strip = lambda d: {k: {kk: v for kk, v in r.items() if kk != 'sig'} for k, r in d.items()}
+            c2p, cp = strip(c2['pairs']['content']['pairs']), strip(comp['pairs']['content']['pairs'])
+            assert len(c2p) >= 2 and all(c2p[k] == cp[k] for k in c2p), (c2p.keys(), cp.keys())
             # the files of the new directory have other modification times: the header scan and the
             # once-over read them again, keeping the same names
             assert set(c2['headers']['content']['files']) == set(comp['headers']['content']['files'])
@@ -1651,6 +1667,112 @@ def _console_strings(b, exp):
     assert "on the recorded current" in buf.getvalue() and "on the dI/dV" not in buf.getvalue(), buf.getvalue()
     plt.close(aw.fig)
     b._goto(0)
+
+
+@check("M4 occlusion at per-file scales: an image is hidden only when a later complete image covers it as the two are drawn")
+def _occlusion_scales(b, exp):
+    topos = [p for p in b.files if b.kinds[p] == 'topo']
+    last = b.files.index(topos[-1])
+    b._goto(last)
+    settle(b)
+    assert b.layer.covers.get(topos[0], []) == [], "at one scale no synthetic topo lies wholly inside another"
+    assert b.layer.items[topos[0]]['im'].get_visible()
+    # the first topo drawn at scale 2 (half size) under the second at scale 1: covered as drawn, not nominally
+    b._goto(b.files.index(topos[0]))
+    b._on_scale("2.0")
+    b._goto(b.files.index(topos[1]))
+    b._on_scale("1.0")
+    b._goto(last)
+    settle(b)
+    assert b.scale_of(topos[0]) == 2.0 and b.scale_of(topos[1]) == 1.0
+    assert topos[1] in b.layer.covers.get(topos[0], []), b.layer.covers
+    assert not b.layer.items[topos[0]]['im'].get_visible(), "the covered image is not painted"
+    # one scale again: nothing covered, the image back
+    b.scales.remove(topos[0])
+    b.scales.remove(topos[1])
+    b._layer_refresh()
+    settle(b)
+    assert b.layer.covers.get(topos[0], []) == [] and b.layer.items[topos[0]]['im'].get_visible()
+    b._goto(0)
+
+
+@check("M5 tracked pairs: stored with the files' signatures, tracked again when a file changed, written at once when tracked outside the build")
+def _tracked_pairs(b, exp):
+    import io, contextlib, time
+    from sm4_Browser import sm4file
+    topos = [p for p in b.files if b.kinds[p] == 'topo']
+    d = b.drift
+    names = [os.path.basename(p) for p in topos]
+    key = d.tracked.pair_key(names[0], names[1])
+    assert d.tracked.pairs[key].get('sig') == [sm4file._file_sig(topos[0]), sm4file._file_sig(topos[1])], d.tracked.pairs[key].get('sig')
+    # the later file changed (another modification time): the stored pair no longer counts, a new session tracks it again
+    now = time.time() + 5
+    os.utime(topos[1], (now, now))
+    sig1 = sm4file._file_sig(topos[1])
+    assert d.tracked.get_pair(names[0], names[1]) is not None, "without signatures the stored pair is returned"
+    assert d.tracked.get_pair(names[0], names[1], sm4file._file_sig(topos[0]), sig1) is None
+    d.pair_cache.clear()                                   # a new session's memo
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        est = d.pair(d.refs[topos[0]], d.refs[topos[1]])
+    assert est.get('v') is not None and "drift:" in buf.getvalue(), buf.getvalue()
+    assert d.tracked.pairs[key]['sig'] == [sm4file._file_sig(topos[0]), sig1]
+    comp = _json(_store_files(b.directory)[1])
+    assert comp['pairs']['content']['pairs'][key]['sig'][1] == sig1, "tracked outside the build: written at once"
+    # a pair never tracked before (not consecutive): tracked now and written
+    key2 = d.tracked.pair_key(names[0], names[2])
+    d.tracked.pairs.pop(key2, None)                       # as if never tracked (an earlier check may have stepped to it)
+    d.pair_cache.pop((topos[0], topos[2]), None)
+    with contextlib.redirect_stdout(io.StringIO()):
+        d.pair(d.refs[topos[0]], d.refs[topos[2]])
+    assert key2 in _json(_store_files(b.directory)[1])['pairs']['content']['pairs']
+
+
+@check("M7 Map window: the stripe matching alone places the pixels, widens the frame and draws the lines, the titles say 'stripe matched'; one energy label per grid cell")
+def _map_stripe_only(b, exp):
+    grid = goto_kind(b, 'grid')
+    m = open_map(b)
+    m._on_drift_toggle('auto', False)
+    m._on_drift_toggle('manual', False)
+    assert m._drift_result() is None and m._frame_lines() is None
+    assert 'drift corrected' not in m.ax_map._title_full and 'stripe matched' not in m.ax_map._title_full
+    setting = b.drift.slow_setting(grid, False, False)
+    b.drift.set_fast_state(grid, setting, 'auto')          # the Map window is a subscriber: _refresh_drift
+    plt._app().processEvents()
+    res = m._drift_result()
+    assert res is not None and str(res.get('source', '')).startswith('none'), res and res.get('source')
+    assert m._frame_lines() is not None and m._bounds is not None, "the lines and the widened frame under the stripe matching alone"
+    t = m.ax_map._title_full                                 # the panel shows the short title; the details are in the full one
+    assert 'stripe matched' in t and 'drift corrected' not in t, t
+    assert 'stripe matched' in m.ax_topo._title_full, m.ax_topo._title_full
+    # the grid view keeps one energy label per cell however often it is redrawn
+    m.toggle_view()
+    n0 = [len(ax.texts) for ax in m.grid_axes]
+    assert all(n == 1 for n in n0), n0
+    m._refresh_drift()
+    m._on_drift_toggle('auto', True)
+    m._on_drift_toggle('auto', False)
+    assert [len(ax.texts) for ax in m.grid_axes] == n0, [len(ax.texts) for ax in m.grid_axes]
+    b.drift.set_fast_state(grid, setting, 'off')
+    plt.close(m.fig)
+    b._goto(0)
+
+
+@check("M8 RowHeatmap: a shear with fewer rows than the image draws and reports its extent as the drawing pads it")
+def _row_heatmap_short_shear(b, exp):
+    from sm4_Browser import plots
+    fig, ax = plt.subplots()
+    img = np.arange(20, dtype=float).reshape(4, 5)
+    energy = np.linspace(-1.0, 1.0, 5)
+    rows = np.arange(4, dtype=float)
+    short = np.full((2, 6), -0.25)
+    hm = plots.RowHeatmap(ax, img, energy, rows, 'jet', shear=short)
+    x0, x1, y0, y1 = hm.extent()
+    full = plots.RowHeatmap(ax, img, energy, rows, 'jet', shear=np.vstack([short, np.zeros((2, 6))]))
+    assert np.allclose((x0, x1, y0, y1), full.extent()), (hm.extent(), full.extent())
+    assert abs(y0 - (float(np.min(hm.y_edges)) - 0.25)) < 1e-12 and abs(y1 - float(np.max(hm.y_edges))) < 1e-12
+    assert np.allclose(hm._quads, full._quads)
+    plt.close(fig)
 
 
 def widgets_text(lo, hi):

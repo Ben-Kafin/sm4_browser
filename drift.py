@@ -691,7 +691,7 @@ class PairDrift:
         return out + f", from {self.source}"
 
 
-PAIRS_FORMAT = 5          # the 'pairs' section of the computed store: the tracked pairs and the topo times
+PAIRS_FORMAT = 6          # the 'pairs' section of the computed store: the tracked pairs (with the files' signatures) and the topo times
 
 
 class TrackedPairs:
@@ -699,15 +699,18 @@ class TrackedPairs:
     The tracked topo pairs and the topo times of one experiment, the 'pairs'
     section of the computed store (caches.Computed, format PAIRS_FORMAT):
       pairs : every tracked topo pair (track_pair's result) by
-              '<earlier name>|<later name>', so a later startup tracks only
-              pairs not in it
+              '<earlier name>|<later name>', each with the two files'
+              signatures ('sig': [size, modification time] of each,
+              sm4file._file_sig), so a later startup tracks only pairs not
+              in it or whose files changed since
       topos : every topo loaded during a build: its start, end, and mid
               times (seconds since the epoch), so TopoRef has the times
               without loading the file again
     Computed from the files alone: no setting enters here (the manual spans
     and the stripe states live in the settings store, Drift.manual_record).
     record() is the section's content as stored; Drift.build writes it once
-    at the end of the tracking.
+    at the end of the tracking, and Drift.pair writes it again whenever a
+    pair is tracked later in the session.
     """
 
     def __init__(self, content=None):
@@ -724,10 +727,16 @@ class TrackedPairs:
         """The key of a pair in `pairs`: '<earlier name>|<later name>'."""
         return f"{a_name}|{b_name}"
 
-    def get_pair(self, a_name, b_name):
-        """The cached track_pair result of a pair as the dict track_pair returns, or None."""
+    def get_pair(self, a_name, b_name, a_sig=None, b_sig=None):
+        """
+        The cached track_pair result of a pair as the dict track_pair returns, or None: none stored,
+        or (with the files' signatures given, sm4file._file_sig) a stored signature that differs
+        from the file's now, so a file replaced under the same name is tracked again.
+        """
         rec = self.pairs.get(self.pair_key(a_name, b_name))
         if rec is None:
+            return None
+        if (a_sig is not None or b_sig is not None) and rec.get('sig') != [a_sig, b_sig]:
             return None
         out = {'delta_m': None, 'dt_s': float(rec.get('dt_s', 0.0)), 'v': None,
                'n_a': int(rec.get('n_a', 0)), 'n_b': int(rec.get('n_b', 0)), 'n_match': int(rec.get('n_match', 0)),
@@ -739,9 +748,10 @@ class TrackedPairs:
                 out['v'] = out['delta_m'] / out['dt_s']
         return out
 
-    def put_pair(self, a_name, b_name, est):
-        """A track_pair result stored under the pair's key as plain numbers and lists (JSON): the displacement, the time separation, the counts, the spread and cluster distance, the note; not the velocity (get_pair recomputes it)."""
+    def put_pair(self, a_name, b_name, est, a_sig=None, b_sig=None):
+        """A track_pair result stored under the pair's key as plain numbers and lists (JSON): the displacement, the time separation, the counts, the spread and cluster distance, the note, and the two files' signatures ('sig'); not the velocity (get_pair recomputes it)."""
         self.pairs[self.pair_key(a_name, b_name)] = {
+            'sig': [a_sig, b_sig],
             'delta_m': None if est.get('delta_m') is None else [float(x) for x in est['delta_m']],
             'dt_s': float(est.get('dt_s', 0.0)), 'n_a': int(est.get('n_a', 0)), 'n_b': int(est.get('n_b', 0)),
             'n_match': int(est.get('n_match', 0)), 'k': int(est.get('k', 0)), 'n_major': int(est.get('n_major', 0)),
@@ -1917,6 +1927,7 @@ class Drift:
         self._listeners = []       # (fn, alive) pairs told of every manual change (subscribe / notify)
         self.scale_of = None       # path -> scale factor (the browser's scale timeline), for the readouts only
         self.built = False
+        self._building = False     # True inside build(): pairs tracked there are written once at its end
         self.index_segments()
         # The two stores (caches.py): the tracked pairs and topo times in the computed one, the
         # manual spans and stripe states in the settings; opened here when the caller has none.
@@ -2351,21 +2362,27 @@ class Drift:
         """
         track_pair of a topo pair (A, B TopoRef or Sm4File, A the earlier):
         the session's result (pair_cache), else the computed store's
-        (TrackedPairs.get_pair), else the two files loaded (_topo_file) and
-        tracked now, the result put into TrackedPairs and reported.  The
-        store is written by build alone: a pair first tracked after the
-        build (the drift window stepped to a non-consecutive pair) is kept
-        for the session and tracked again at the next startup.
+        (TrackedPairs.get_pair, for the files as they are now: a stored pair
+        whose file changed is tracked again), else the two files loaded
+        (_topo_file) and tracked now, the result put into TrackedPairs with
+        the files' signatures and reported.  Inside build the store is
+        written once at its end; a pair first tracked later in the session
+        (the drift window stepped to a non-consecutive pair) is written at
+        once, so it is not tracked again at the next startup.
         """
         key = (A.path, B.path)
         if key in self.pair_cache:
             return self.pair_cache[key]
-        est = self.tracked.get_pair(A.name, B.name)
+        sa, sb = sm4file._file_sig(A.path), sm4file._file_sig(B.path)
+        est = self.tracked.get_pair(A.name, B.name, sa, sb)
         if est is None:
             fa, fb = self._topo_file(A.path), self._topo_file(B.path)
             est = track_pair(fa, fb, self.drift_params)
-            self.tracked.put_pair(A.name, B.name, est)
+            self.tracked.put_pair(A.name, B.name, est, sa, sb)
             print("drift: " + pair_text(est))
+            if not self._building:
+                self.computed.put('pairs', PAIRS_FORMAT, self.tracked.record())
+                self.computed.write()
         self.pair_cache[key] = est
         return est
 
@@ -2384,15 +2401,19 @@ class Drift:
         n_pairs0 = len(self.tracked.pairs)
         n_ok = 0
         n_all = 0
-        for n, key in enumerate(self.segment_keys, 1):
-            members = self.segment_members(key)
-            print(f"\ndrift build: segment {n} of {len(self.segment_keys)} ({len(members)} topos, "
-                  f"{max(len(members) - 1, 0)} pairs)")
-            for a, b in zip(members, members[1:]):
-                est = self.pair(self.refs[a], self.refs[b])
-                n_all += 1
-                if est.get('v') is not None:
-                    n_ok += 1
+        self._building = True
+        try:
+            for n, key in enumerate(self.segment_keys, 1):
+                members = self.segment_members(key)
+                print(f"\ndrift build: segment {n} of {len(self.segment_keys)} ({len(members)} topos, "
+                      f"{max(len(members) - 1, 0)} pairs)")
+                for a, b in zip(members, members[1:]):
+                    est = self.pair(self.refs[a], self.refs[b])
+                    n_all += 1
+                    if est.get('v') is not None:
+                        n_ok += 1
+        finally:
+            self._building = False
         # The tracked pairs and the topo times into the computed store, written once here.
         self.computed.put('pairs', PAIRS_FORMAT, self.tracked.record())
         self.computed.write()

@@ -234,12 +234,18 @@ class RowHeatmap:
         self._quads = None
         self._build()
 
-    def _geometry(self):
+    def _shear_rows(self):
+        """The shear as an (n_rows, n_e + 1) array: the given rows (a NaN counts as 0), the rows beyond a shorter shear 0, an extra row dropped."""
         n, n_e = self.img.shape
         S = np.zeros((n, n_e + 1))
         if self.shear is not None:
             m = min(n, len(self.shear))
             S[:m] = np.where(np.isfinite(self.shear[:m]), self.shear[:m], 0.0)
+        return S
+
+    def _geometry(self):
+        n, n_e = self.img.shape
+        S = self._shear_rows()
         xl, xr = self.x_edges[:-1][None, :], self.x_edges[1:][None, :]
         yb, yt = self.y_edges[:-1][:, None], self.y_edges[1:][:, None]
         sl, sr = S[:, :-1], S[:, 1:]
@@ -292,11 +298,12 @@ class RowHeatmap:
         self._build()
 
     def extent(self):
-        """(x0, x1, y0, y1): the outer edges, the shear included."""
+        """(x0, x1, y0, y1): the outer edges, the shear included (the rows as _shear_rows pads them)."""
         y0, y1 = float(np.min(self.y_edges)), float(np.max(self.y_edges))
         if self.shear is not None and np.isfinite(self.shear).any():
-            y0 = min(y0, float(np.nanmin(self.y_edges[:-1, None] + self.shear)))
-            y1 = max(y1, float(np.nanmax(self.y_edges[1:, None] + self.shear)))
+            S = self._shear_rows()
+            y0 = min(y0, float(np.min(self.y_edges[:-1, None] + S)))
+            y1 = max(y1, float(np.max(self.y_edges[1:, None] + S)))
         return float(self.x_edges[0]), float(self.x_edges[-1]), y0, y1
 
     def remove(self):

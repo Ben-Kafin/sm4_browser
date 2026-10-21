@@ -303,7 +303,9 @@ per map; one `γ` box per energy slice. The markers are the Line window's method
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
 spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
 position plus the drift within its sweep up to the shown energy, the embedded topography is drawn as
-quads at the pixels' chained positions, and the frame widens to hold every shifted pixel. `add to
+quads at the pixels' chained positions, and the frame widens to hold every shifted pixel; with both
+sources off but the grid's stripe matching set, the lines' placement alone does the same and the
+titles say "stripe matched". `add to
 plot` under the topography, the map and the curve panel copies that panel as shown into the figure
 composer (`composer.py`): one figure four square panels wide, the topography first, the maps in
 order of energy titled by bias, then the spectra, every spectrum with its own symbol drawn on every
@@ -433,7 +435,7 @@ it with the toggle off, the current, its I/V, and the ratio, following the main 
 | file | where | holds | may be deleted? |
 |---|---|---|---|
 | `settings_<stamp>.json` | the experiment directory | everything set by hand: the manual drift spans with their markers, kinds and velocities, the stripe states and points, the scale timeline, the site flags; written on every change | no: it is the experiment's hand-set state |
-| `computed_<stamp>.json` | the experiment directory | everything computed from the files: the header scan, the sites' metrics, the tracked drift pairs and topography times, each section with its own format number; written once at the end of each computation stage | yes: rebuilt at the next start |
+| `computed_<stamp>.json` | the experiment directory | everything computed from the files: the header scan, the sites' metrics, the tracked drift pairs (each with its two files' size and modification time, so a file replaced under the same name is tracked again) and topography times, each section with its own format number; written at the end of each computation stage and whenever a pair is tracked later | yes: rebuilt at the next start |
 | `scan_cache_<stamp>/` | the experiment directory | one array file per processed topography image, keyed by the file's name, size and time, the pass, the processors and the loader format; this folder's stamp also carries the first file's millisecond field | yes: rebuilt as files are placed |
 | `drift_cache_*.json.old`, `sites_*.json.old`, `headers_*.json.old` | the experiment directory | the stores of earlier versions, carried over once into the two files above and renamed | yes, once the new files exist |
 | `averages/<stem>_average.json` | the `averages` subfolder | an averaging window's record: the files, the removed sweeps, the filters, the channel, the resampling, the Feenstra state, the flags, the run | they are your results |

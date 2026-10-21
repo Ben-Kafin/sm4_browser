@@ -318,6 +318,7 @@ class Map:
             g.show(False)
             self.grid_gammas.append(g)
         self.grid_ims = [None] * self.n_e
+        self.grid_labels = [None] * self.n_e      # the grid view's energy label per cell, made once (_grid_label)
         self.maps = None
         self.fig.canvas.mpl_connect('pick_event', self._on_pick)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
@@ -398,8 +399,17 @@ class Map:
     # --- the drift (the window's own 'auto drift' / 'manual drift' toggles, the drift window) ---
 
     def _drift_active(self):
-        """True with a Drift at hand and a toggle on (the frame widening and the drift lines need this)."""
+        """True with a Drift at hand and a toggle on (a velocity source; the stripe matching alone places the pixels as well, _drift_result)."""
         return self.drift is not None and (self.auto_on or self.manual_on)
+
+    def _drift_tag(self):
+        """The titles' placement text: '' without a result, ', stripe matched' for the stripe matching alone (source 'none (...)'), else ', drift corrected (<source>)'."""
+        if self._drift_result() is None:
+            return ""
+        src = self._drift_source
+        if src and str(src).startswith('none'):
+            return ", stripe matched"
+        return ", drift corrected" + (f" ({src})" if src else "")
 
     def _drift_result(self):
         """
@@ -555,8 +565,7 @@ class Map:
                                            zorder=1.0 if p == top else 0.5))
             self._topo_maps[id(ax)] = maps
             ax.set_aspect('equal', adjustable='box')
-            what = (f"both passes, {top} on top" if len(maps) > 1 else passes[-1]) + ", drift corrected" \
-                + (f" ({self._drift_source})" if self._drift_source else "")
+            what = (f"both passes, {top} on top" if len(maps) > 1 else passes[-1]) + self._drift_tag()
         else:
             direction = 'reverse' if self.direction == 'reverse' else 'forward'      # a grid's passes are never averaged
             img = processed_topo(g, direction, self.active_procs) * 1e9
@@ -578,10 +587,11 @@ class Map:
         sweep's polyline from its corrected start through its position at
         every energy point (Drift.sweep_lines: the line's forward
         compression along the line where measured, the model otherwise),
-        with a drift toggle on; None otherwise.  Memoized per toggle state
-        (_lines_memo).
+        whenever a result places the pixels (a toggle on, or the stripe
+        matching alone); None otherwise.  Memoized per toggle state
+        (_lines_memo; a stripe change drops it through _refresh_drift).
         """
-        if not self._drift_active():
+        if self._drift_result() is None:
             return None
         key = (self.auto_on, self.manual_on)
         memo = getattr(self, '_lines_memo', None)
@@ -849,7 +859,7 @@ class Map:
                 'texts': self._curve_texts(q),
                 'avg_on': self.avg_on,
                 'extent': self.extent,
-                'limits': self._drift_bounds() if self._drift_active() else None,
+                'limits': self._drift_bounds() if self._drift_result() is not None else None,
                 'shift': self._frame_shift(self.e_index),
                 'drift_lines': self._frame_lines(),
                 'marker_points': [(self.pixel_xy(px), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
@@ -932,8 +942,7 @@ class Map:
         plots.draw_colorbar(self.fig, im, self.cax_map, label=f"{q} ({units})")
         ax.set_title(f"{q.split(',')[0]} map at {self.V[self.e_index]:.3f} V: {q}, energy {self.e_index + 1} of {self.n_e}"
                      + ("" if self.cmap_norm else ", one colour scale for every energy")
-                     + ((", drift corrected" + (f" ({self._drift_source})" if self._drift_source else ""))
-                        if shift is not None else ""), fontsize=10)
+                     + (self._drift_tag() if shift is not None else ""), fontsize=10)
         ax.set_xlabel("x (nm, scan frame)")
         ax.set_ylabel("y (nm, scan frame)")
         self.gamma_single.set(self.gammas[self.e_index])
@@ -971,19 +980,24 @@ class Map:
                 if self.grid_ims[e] is None:
                     self._frame_limits(ax)
                     ax.set_aspect('equal', adjustable='box')
-                    ax.text(0.03, 0.95, f"{self.V[e]:.2f} V", transform=ax.transAxes, fontsize=6, ha='left', va='top',
-                            bbox=dict(facecolor='white', alpha=0.75, lw=0, pad=1))
+                    self._grid_label(e, ax)
                 self.grid_ims[e] = pm
             elif self.grid_ims[e] is None:
                 self.grid_ims[e] = plots.draw_heatmap(ax, m, self.extent, self.cmap, gamma=self.gammas[e],
                                                       vmin=lo, vmax=hi, origin='lower', aspect='equal',
                                                       interpolation='none')
                 self._frame_limits(ax)
-                ax.text(0.03, 0.95, f"{self.V[e]:.2f} V", transform=ax.transAxes, fontsize=6, ha='left', va='top',
-                        bbox=dict(facecolor='white', alpha=0.75, lw=0, pad=1))
+                self._grid_label(e, ax)
             else:
                 plots.update_heatmap(self.grid_ims[e], m, gamma=self.gammas[e], vmin=lo, vmax=hi)
             plots.draw_colorbar(self.fig, self.grid_ims[e], self.grid_caxes[e], labelsize=5)
+
+    def _grid_label(self, e, ax):
+        """The energy label of grid cell e ('<bias> V', top left), made once and kept across the cell's redraws."""
+        if self.grid_labels[e] is None:
+            self.grid_labels[e] = ax.text(0.03, 0.95, f"{self.V[e]:.2f} V", transform=ax.transAxes, fontsize=6,
+                                          ha='left', va='top', bbox=dict(facecolor='white', alpha=0.75, lw=0, pad=1))
+        return self.grid_labels[e]
 
     def _on_channel(self, label):
         """The 'channel' radio: the maps are recomputed from the chosen channel; a file without it puts the radio back."""
@@ -1035,8 +1049,8 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def _frame_limits(self, ax):
-        """Axis limits of the scan frame in normal orientation (the extent itself may be reversed); with a drift source on, widened to hold every shifted pixel (_drift_bounds)."""
-        l, r, b, t = self._drift_bounds() if self._drift_active() else self.extent
+        """Axis limits of the scan frame in normal orientation (the extent itself may be reversed); whenever a result places the pixels (a drift source on, or the stripe matching alone), widened to hold every shifted pixel (_drift_bounds)."""
+        l, r, b, t = self._drift_bounds() if self._drift_result() is not None else self.extent
         ax.set_xlim(min(l, r), max(l, r))
         ax.set_ylim(min(b, t), max(b, t))
 
