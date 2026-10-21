@@ -1931,12 +1931,17 @@ class Line:
     def marker_record(self):
         """
         The marker record of this file and line (records.LINE_RECORD_FORMAT):
-        the file (path and name), the line index, the channel, the filter
-        boxes and their on / off states, the calibrate / normalize / Feenstra
-        states, the Feenstra settings, the gamma, the 'E range' and 'x range'
-        boxes (None = full), the topo rows and the
-        active processor, the group sizes and the marker positions (Å), the
-        Average / stack / substack states, and the time of writing.
+        the file (path and name), the line index, the channel, the sweep
+        view (None for one sweep per pixel), the filter boxes and their on /
+        off states, the calibrate / normalize / Feenstra states, the
+        Feenstra settings, the gamma, the 'E range' and 'x range' boxes
+        (None = full), the topo rows and the active processor, the group
+        sizes, their centres and the marker positions (Å), the E-markers
+        (V), the Average / stack / substack states, the scale factor the
+        window was made with ('scalefactor': the positions above are in
+        Å after it; the browser's loader opens the window at its
+        timeline's scale for the file and notes a difference on the
+        console, browser._record_scale), and the time of writing.
         """
         hp, sp = self._int_filters.values()
         h_on, s_on = self._int_filters.states()
@@ -1944,6 +1949,7 @@ class Line:
                 'path': os.path.abspath(self.ifile),
                 'name': os.path.basename(self.ifile),
                 'line': int(self.chunk_index),
+                'scalefactor': float(self.scalefactor),
                 'channel': self.channel,
                 'sweeps': self.sweep_mode,
                 'hampel': hp, 'sgolay': sp,

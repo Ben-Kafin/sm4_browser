@@ -1288,7 +1288,7 @@ def _flag_chain(b, exp):
     assert _json(_store_files(b.directory)[0])['flags'] == {}
 
 
-@check("K1 scale timeline: the first entry covers everything, later ones from their file's time; every file and window at its own scale; drift readouts calibrated with the nominal; records note another scale")
+@check("K1 scale timeline: the first entry covers everything, later ones from their file's time; every file and window at its own scale; drift readouts calibrated with the nominal; records note another scale and store theirs")
 def _scale_timeline(b, exp):
     import io, contextlib
     from sm4_Browser.scales import file_time
@@ -1365,6 +1365,8 @@ def _scale_timeline(b, exp):
     with contextlib.redirect_stdout(buf):
         sc = b._record_scale(b.loaded.get(grid) or b._load(grid), 2.75)
     assert sc == 2.0 and "2.75" in buf.getvalue() and "applies now" in buf.getvalue()
+    # a Line window's marker record keeps the scale it was made with (the loader reads 'scalefactor' back)
+    assert w.marker_record().get('scalefactor') == w.scalefactor == 2.0, w.marker_record().get('scalefactor')
     # back to the base scale for the checks that follow
     b.scales.remove(point)
     b.scales.remove(grid)
