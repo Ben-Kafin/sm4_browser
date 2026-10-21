@@ -2120,7 +2120,12 @@ def _edge_to_edge(b, exp):
     assert (abs(fx0 - full_box[0]) < 1e-9 and abs(fx1 - full_box[1]) < 1e-9) or (abs(fy0 - full_box[2]) < 1e-9 and abs(fy1 - full_box[3]) < 1e-9), \
         "one axis of the full extent is the drawn box exactly (the other widened to the box's aspect)"
     # the stripe window: the reference topos' frames, the stripes, the spectra, the start and the handles
-    assert b.stripe_window is None
+    if b.stripe_window is not None:                  # an earlier check's window, closed or not: a fresh one
+        try:
+            plt.close(b.stripe_window.fig)
+        except Exception:
+            pass
+        b.stripe_window = None
     b._on_stripe_window()
     w = b.stripe_window
     assert w is not None and w._handles, "handles under the stripe matching"
