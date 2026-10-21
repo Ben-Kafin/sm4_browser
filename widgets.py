@@ -6,7 +6,7 @@ sits), one wrapper per kind with one interface (value, set, on_change,
 show, enable, place), and the composite controllers that several windows
 share so that same-named controls are the same code: FilterControls,
 PipelineBox, FeenstraSettings, StackControls, MarkerGroupControls,
-TopoProcessorBox, ResampleControls, RunControls, GammaBox, RangeBox,
+TopoProcessorBox, ResampleControls, RunControls, GammaBox,
 NameBox, StepButtons, AveragePicker, ViewNavigator (the scan area's zoom
 and pan), DragPath (the browser's section path), PairMarkers (the marker
 pairs of the drift window's two topos, each topo at its own scale, the
@@ -38,7 +38,6 @@ if __package__ in (None, ''):
     # Run as a file (Spyder F5): make the package importable from wherever its folder sits.
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-import re
 import numpy as np
 from sm4_Browser import qtplot as plt
 from sm4_Browser.qtplot import QtCore, QtGui, QtWidgets, qfont, qcolor, Bbox
@@ -83,7 +82,7 @@ SPECS = {
     'stripe match': _spec('button', 1.2, 0.36),                   # grids: opens the stripe window (stripe.StripeWindow)
     'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift): the browser's and the Topo window's toggle
     'cmap norm': _spec('check', 1.4, 0.38),
-    'crop': _spec('check', 0.8, 0.38),
+    'overlapping': _spec('check', 0.85, 0.38, fs=7),              # the line-average window: average only where every member covers a pixel
     'WKB background': _spec('check', 1.7, 0.32),
     'hold': _spec('check', 0.3, 0.26, fs=7, labels=['']),           # the fit edit window's hold rows (unlabeled)
     # --- toggle boxes (several rows) ---
@@ -95,9 +94,9 @@ SPECS = {
     'topo pass': _spec('radio', 1.05, 0.85, fs=8, labels=list(TOPO_DIRECTIONS)),      # topo.TOPO_DIRECTIONS
     'site': _spec('radio', 1.3, 0.85, fs=8, labels=['pulsing', 'clean', 'experiment']),
     'cal method': _spec('radio', 1.35, 0.55, fs=8, labels=['fitted stretch', '1/V_mod']),   # calibration_stretch_vmod's if-main
-    'slow axis': _spec('radio', 1.0, 0.85, fs=8, labels=['off', 'auto', 'manual']),       # the stripe window: the velocity source
-    'fast axis': _spec('radio', 1.0, 0.85, fs=8, labels=['off', 'auto', 'manual']),       # ... and the placement along the line
-    'stripe pass': _spec('radio', 1.0, 0.6, fs=8, labels=['forward', 'reverse']),        # ... the pass drawn on top
+    'slow axis': _spec('radio', 1.0, 0.85, fs=8, labels=['off', 'auto', 'manual'], title=True),   # the stripe window: the velocity source, titled 'drift' (LABELS)
+    'fast axis': _spec('radio', 1.0, 0.85, fs=8, labels=['off', 'auto', 'manual'], title=True),   # ... the placement along the line, titled 'stripe'
+    'stripe pass': _spec('radio', 1.0, 0.6, fs=8, labels=['forward', 'reverse'], title=True),    # ... the pass drawn on top, titled 'pass'
     # --- buttons ---
     'run': _spec('button', 1.2, 0.36),
     'clear': _spec('button', 1.2, 0.36),
@@ -127,6 +126,8 @@ SPECS = {
     'cal length': _spec('text', 0.9, 0.3, fs=9),                  # the set-scale window: the calibrated length (nm)
     'clear markers': _spec('button', 1.2, 0.36),                  # the manual-drift markers removed
     'clear points': _spec('button', 1.1, 0.36),                   # the stripe window: the dragged points dropped
+    'crop': _spec('button', 0.6, 0.26, fs=7),                     # the Line and line-average windows: the view and the normalization to the cursors' ranges
+    'uncrop': _spec('button', 0.7, 0.26, fs=7),                   # ... back to the full ranges
     'set from markers': _spec('button', 1.4, 0.36, fs=7),         # the drift window's velocity box filled from the marker draft (nothing stored)
     'apply velocity': _spec('button', 1.2, 0.36),                 # the drift window's velocity box stored as the pair's span (confirmed, adjusted, or typed)
     'drift': _spec('button', 0.8, 0.36),                          # the browser: the current file's manual drift window
@@ -171,8 +172,10 @@ SPECS = {
     'spectra': _spec('slider', 1.8, 0.2, fs=9, vmin=0, vmax=1, valstep=1, valfmt='%d'),
     # --- text boxes ---
     'γ': _spec('text', 0.45, 0.24, fs=7),
-    'E range': _spec('text', 1.0, 0.26, fs=7),                       # the Line window's shown (and normalized) energy range "lo, hi" (V)
-    'x range': _spec('text', 1.0, 0.26, fs=7),                       # the Line window's shown position range "lo, hi" (Å)
+    'E lo': _spec('text', 0.55, 0.22, fs=7),                         # the Line window's crop cursors: the boxes riding with them,
+    'E hi': _spec('text', 0.55, 0.22, fs=7),                         # ... the energy ones (V, three decimals) along the heatmap's top edge,
+    'x lo': _spec('text', 0.55, 0.22, fs=7),                         # ... the position ones (Å, one decimal) along its right edge
+    'x hi': _spec('text', 0.55, 0.22, fs=7),
     'name': _spec('text', 2.1, 0.26, fs=9),
     'line': _spec('text', 0.55, 0.3, fs=8),
     'scale factor': _spec('text', 0.65, 0.3, fs=9),
@@ -188,7 +191,8 @@ LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass
           'hold': '', 'param': '', 'rows': '', 'width': '', 'file': 'file', 'spectra': 'spectra',
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
           'cal length': 'calibrated length (nm) ',
-          'γ': 'γ ', 'drift v': 'v (nm/h, cal) ', 'E range': 'E (V) ', 'x range': 'x (Å) '}
+          'γ': 'γ ', 'drift v': 'v (nm/h, cal) ', 'E lo': '', 'E hi': '', 'x lo': '', 'x hi': '',
+          'slow axis': 'drift', 'fast axis': 'stripe', 'stripe pass': 'pass'}        # the radios' titles (Radio, title=True)
 
 # The short form of every label that has one, used when a window is taller than it is wide (the
 # figure's portrait flag, qtplot.Figure.set_portrait; the browser's window, browser._WindowZoom):
@@ -201,12 +205,13 @@ SHORT_LABELS = {
     'calibrate': 'cal', 'normalize': 'norm', 'auto drift': 'auto', 'manual drift': 'manual',
     'anchor to topo': 'anchor', 'broadened': 'broad', 'substack': 'sub', 'Average': 'Avg',
     'Feenstra': 'Feen', 'Feenstra (refit)': 'Feen refit', 'cmap norm': 'cmap', 'WKB background': 'WKB',
+    'overlapping': 'overlap',
     'step through': 'step', 'topo processing': 'topo proc', 'filters (on the current)': 'filters',
     'polyorder': 'order', 'Savitzky-Golay': 'SG',
     # radio options
     'forward': 'fwd', 'reverse': 'rev', 'average': 'avg', 'experiment': 'exp', 'pulsing': 'pulse',
     'forward sweeps': 'fwd', 'reverse sweeps': 'rev', 'all sweeps': 'all', 'fitted stretch': 'stretch',
-    'slow axis': 'slow', 'fast axis': 'fast', 'stripe pass': 'pass', 'topo pass': 'pass',
+    'topo pass': 'pass',
     'up to current': 'current', 'last 25': 'last',
     # buttons
     'stripe match': 'stripe', 'Topo Window': 'Topo', 'load saved averages': 'load avgs',
@@ -220,9 +225,9 @@ SHORT_LABELS = {
     '< Prev': '<', 'Next >': '>', 'Add peak': 'peak', 'Revert fit': 'revert', 'Forward fit': 'forward',
     'Edit peaks': 'peaks', 'Save fit': 'save',
     # text-box and slider labels
-    'scale factor': 'scale', 'min (min)': 'min', 'width (V)': 'width', 'v (nm/h, cal)': 'v', 'E (V)': 'E',
+    'scale factor': 'scale', 'min (min)': 'min', 'width (V)': 'width', 'v (nm/h, cal)': 'v',
     'calibrated length (nm)': 'cal (nm)',
-    'x (Å)': 'x', 'reference': 'ref', 'E-markers': 'E-mk', 'Markers': 'mk',
+    'reference': 'ref', 'E-markers': 'E-mk', 'Markers': 'mk',
 }
 
 
@@ -465,6 +470,16 @@ class Control:
         self._rect = [x_in / float(fw), y_in / float(fh), w, h]
         self._relayout()
 
+    def place_center(self, cx, cy):
+        """
+        Move the widget so that its centre sits at the figure fraction
+        (cx, cy), kept inside the figure; its size follows the figure's
+        current size (as below_corner).
+        """
+        ww, hh = self._size()
+        self._rect[2], self._rect[3] = ww, hh
+        self.place(float(np.clip(cx - 0.5 * ww, 0.0, 1.0 - ww)), float(np.clip(cy - 0.5 * hh, 0.0, 1.0 - hh)))
+
     def below_corner(self, ax, gap_in=0.05, right_in=0.0):
         """
         Place the widget just below the bottom-right corner of `ax`, outside
@@ -652,7 +667,12 @@ class Checks(_Boxed):
 
 
 class Radio(_Boxed):
-    """A radio list: value is the selected label; set(label) never fires; callback(label)."""
+    """
+    A radio list: value is the selected label; set(label) never fires;
+    callback(label).  A spec with title=True shows the widget's label
+    (LABELS; the stripe window's 'drift' / 'stripe' / 'pass') as a title
+    just above the box.
+    """
 
     def __init__(self, fig, name, x, y, value=None, labels=None):
         super().__init__(fig, name, x, y, labels=labels)
@@ -674,11 +694,26 @@ class Radio(_Boxed):
             rb.toggled.connect(lambda on, lab=lab: on and self._fire(lab))
             self.buttons.append(rb)
         self.widget = frame
+        self._title = None
+        if self.spec.get('title') and str(self.label).strip():
+            t = self._add(QtWidgets.QLabel(self.shown(self.label)))
+            t.setFont(_font(self.spec['fs']))
+            t.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+            self._title = t
         self._finish()
 
     def _apply_labels(self):
         for rb, lab in zip(self.buttons, self.spec['labels']):
             rb.setText(self.shown(lab))
+        if self._title is not None:
+            self._title.setText(self.shown(self.label))
+
+    def _layout(self, x, y, w, h):
+        super()._layout(x, y, w, h)
+        if self._title is not None:
+            fm = QtGui.QFontMetrics(self._title.font())
+            th = fm.height() + 2
+            self._title.setGeometry(x + 4, y - th, max(w, fm.horizontalAdvance(self._title.text()) + 8), th)
 
     def _text_need(self, zoom):
         fm = QtGui.QFontMetricsF(_font(self.spec['fs'], zoom))
@@ -1688,80 +1723,6 @@ class GammaBox:
         self.gamma = g
         if self._cb is not None:
             self._cb(g)
-
-
-class RangeBox:
-    """
-    An axis range box (the Line window's 'E range' and 'x range'): the text
-    "lo, hi" (two numbers, a comma, semicolon or spaces between them), or
-    blank for the full range.  value is (lo, hi) with lo < hi, or None for
-    the full range.  A box that does not parse (not two numbers, one of
-    them not finite, or two equal ones) is reported and put back.
-    on_change(callback) runs callback(value) when the value changes; a
-    callback that returns False refuses the value, and the box goes back
-    to the previous one.  set(value) fills the box without firing.
-    """
-
-    def __init__(self, fig, name, x, y, value=None):
-        self.range = None if value is None else (float(value[0]), float(value[1]))
-        self.box = make(fig, name, x, y, value=self.text_of(self.range))
-        self._cb = None
-        self.box.on_change(self._on_submit)
-
-    @staticmethod
-    def text_of(rng):
-        """The box text of a range: "lo, hi", or '' for None (the full range)."""
-        return '' if rng is None else f"{rng[0]:g}, {rng[1]:g}"
-
-    @staticmethod
-    def parse(text):
-        """(lo, hi) sorted from "lo, hi"; None from a blank; ValueError with the reason otherwise."""
-        s = str(text).strip()
-        if not s:
-            return None
-        parts = [p for p in re.split(r'[,;\s]+', s) if p]
-        if len(parts) != 2:
-            raise ValueError("two numbers 'lo, hi' are needed")
-        try:
-            lo, hi = (float(p) for p in parts)
-        except ValueError:
-            raise ValueError("two numbers 'lo, hi' are needed")
-        if not (np.isfinite(lo) and np.isfinite(hi)):
-            raise ValueError("both numbers must be finite")
-        if lo == hi:
-            raise ValueError("the two numbers must differ")
-        return (min(lo, hi), max(lo, hi))
-
-    def on_change(self, callback):
-        self._cb = callback
-
-    def show(self, flag):
-        self.box.show(flag)
-
-    @property
-    def value(self):
-        return self.range
-
-    def set(self, rng):
-        self.range = None if rng is None else (float(rng[0]), float(rng[1]))
-        self.box.set(self.text_of(self.range))
-
-    def _on_submit(self, text):
-        try:
-            rng = self.parse(text)
-        except ValueError as exc:
-            print(f"{self.box.name}: '{text}' not applied ({exc}); the box is put back.")
-            self.box.set(self.text_of(self.range))
-            return
-        if rng == self.range:
-            self.box.set(self.text_of(rng))
-            return
-        old = self.range
-        self.range = rng
-        self.box.set(self.text_of(rng))
-        if self._cb is not None and self._cb(rng) is False:
-            self.range = old
-            self.box.set(self.text_of(old))
 
 
 class NameBox:

@@ -177,7 +177,7 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
    exponential weighting of the given width (V), else the plain I/V; dI/dV only, never IETS;
 4. the unit-area normalization (`normalization.py`), over the whole energy axis or over the Line
-   window's `E range`.
+   and line-average windows' energy crop (`crop`).
 
 The browser's spectra panels always show the Feenstra set with no toggle; every other window has
 its own `Feenstra` toggle and its Feenstra companion window. `calibrate` and `normalize` are the two
@@ -284,8 +284,11 @@ pass button, more rows in the `topo rows` pop-up), the heatmap with its `γ` box
 panel, the energy slice, the marker groups (`avgs` slider, one `Markers` slider per group with `add
 new` / `add existing` beside it), the E-markers (`E-markers` slider, `clear E-markers`, the readout
 with ΔE; drag them on the heatmap or the curve panel, Left/Right step the selected one by one
-energy, Tab selects the next), `E range` and `x range` ("lo, hi"; the energy range is also the
-normalization range and the colour scale's), the `line` box with `< line` / `line >`, the window's
+energy, Tab selects the next), the crop cursors (two per axis on the heatmap, starting at its ends;
+drag one, or type into the box riding with it, and the shade covers what lies outside each pair),
+`crop` (what lies between the cursors is kept, moved or not: the shown ranges of every panel, and
+for the energy pair the normalization range and the colour scale) and `uncrop` (the full ranges
+back), the `line` box with `< line` / `line >`, the window's
 own `Feenstra` toggle with its companion, the `calibrate` / `normalize` box, the filters,
 `sweeps` for a file with several sweeps per pixel, `profile` per topography row (the raw heights
 of the forward and reverse passes), `save` (the marker record), `line → new avg` / `line → existing
@@ -331,9 +334,11 @@ Whole grid lines sent from Line windows, aligned along position and averaged on 
 (`lineavg.py`, `align.py`): every member through the pipeline on its own raw columns, the alignment
 by dynamic time warping against the main line with the stretch equalized over every line, or by the
 marker sections of the `edit alignment` window (`apply`; `auto` returns to the DTW), the common
-position and energy grids, the mean over the members covering each pixel (`crop` on: over the pixels
-every member covers). `run`, `remove last`, `restore`, `save`; the Feenstra companion opens after
-the first run.
+position and energy grids, the mean over the members covering each pixel (`overlapping` on: over
+the pixels every member covers). `run`, `remove last`, `restore`, `save`; the Feenstra companion
+opens after the first run. The crop cursors with `crop` / `uncrop` work as in the Line window: the
+shown ranges change at once, the normalization over the energy crop applies at the next run (every
+member's columns, current and I/V, and the sent curves).
 
 ### Saved records
 
@@ -389,13 +394,13 @@ while the stepped topographies are drawn at their own. Every window redraws at o
 The stripe matching of the current grid (`stripe.py`): the earlier topographies under the grid as
 the scan area places them, everything drawn at the grid file's scale, the grid's two stripe passes at their placed positions and a handle at
 every movable point, each line's forward end (circle) and return point (diamond); the grid's start
-is anchored. `slow axis` (`off`, `auto`, `manual`) is the velocity source the window works under and
-chooses which of the grid's three stored sets is edited; `fast axis` (`off`, `auto`, `manual`) is that
-set's state: off places the lines by the velocity alone, auto by the extrema matching, manual by the
-matching with the dragged points; `stripe pass` picks the pass drawn on top; `clear points` drops the
-set's points. A drag moves a point along its line only; the first drag pins every point and sets the
-fast axis to manual. The placement applies at once in the scan area, the Topo window, the Line
-window and the Map window.
+is anchored. Three titled radio boxes: `drift` (`off`, `auto`, `manual`) is the velocity source the
+window works under and chooses which of the grid's three stored sets is edited; `stripe` (`off`,
+`auto`, `manual`) is that set's state: off places the lines by the velocity alone, auto by the
+extrema matching, manual by the matching with the dragged points; `pass` picks the pass drawn on
+top; `clear points` drops the set's points. A drag moves a point along its line only; the first
+drag pins every point and sets `stripe` to manual. The placement applies at once in the scan area,
+the Topo window, the Line window and the Map window.
 
 ### The section path and its three features
 

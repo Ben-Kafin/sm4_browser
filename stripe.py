@@ -16,15 +16,17 @@ end (where its reverse pass begins) and every line's return point (one
 point with the next line's start, the recorded separation kept).  The
 grid's start is anchored and has no handle.
 
-The three radios.  'slow axis' (off, auto, manual) chooses the velocity
-source the window works under, the same three sources the browser's drift
-toggles give, and with it which of the grid's three stored sets is shown
-and edited (Drift.stripe_sets: one fast-axis state and one set of points
-per setting), so every setting can be prepared from this one window.
-'fast axis' (off, auto, manual) is that set's state: off, the velocity
-alone places the lines (no matching); auto, the extrema matching
-(drift_correct_grid); manual, the matching with the dragged points.
-'stripe pass' (forward, reverse) chooses which pass is drawn on top.
+The three radios, each titled above its box.  'drift' (off, auto,
+manual; the 'slow axis' widget) chooses the velocity source the window
+works under, the same three sources the browser's drift toggles give, and
+with it which of the grid's three stored sets is shown and edited
+(Drift.stripe_sets: one fast-axis state and one set of points per
+setting), so every setting can be prepared from this one window.
+'stripe' (off, auto, manual; the 'fast axis' widget) is that set's state:
+off, the velocity alone places the lines (no matching); auto, the extrema
+matching (drift_correct_grid); manual, the matching with the dragged
+points.  'pass' (forward, reverse; the 'stripe pass' widget) chooses
+which pass is drawn on top.
 
 Dragging.  A press on a handle and a drag moves that point along its
 line only.  The mouse's motion is projected on the direction of the line
@@ -271,17 +273,17 @@ class StripeWindow:
         fast = self.drift.fast_state(g, self.setting)
         src = res.get('source') if res is not None else 'none'
         n_pts = len(self.drift.stripe_points(g, self.setting))
-        ax.set_title(f"Stripe matching: {g.name}  [slow axis {self.setting} ({src}); fast axis {fast}"
+        ax.set_title(f"Stripe matching: {g.name}  [drift {self.setting} ({src}); stripe {fast}"
                      + (f", {n_pts} point(s)" if n_pts else "") + f"; {self.top} pass on top]", fontsize=9)
         self.rad_fast.set(fast)
         self._status()
         self.fig.canvas.draw_idle()
 
     def _status(self, extra=''):
-        """The status text at the bottom: the slow-axis setting and its velocity source, the fast-axis state and the point count, the lines placed and factors measured, the drag hints, and `extra` (the running offset of a drag)."""
+        """The status text at the bottom: the drift setting and its velocity source, the stripe state and the point count, the lines placed and factors measured, the drag hints, and `extra` (the running offset of a drag)."""
         res = self._res
-        lines = [f"slow axis {self.setting}: " + (f"velocity {res['source']}" if res is not None else "no velocity, no placement"),
-                 f"fast axis {self.drift.fast_state(self.grid, self.setting)}; "
+        lines = [f"drift {self.setting}: " + (f"velocity {res['source']}" if res is not None else "no velocity, no placement"),
+                 f"stripe {self.drift.fast_state(self.grid, self.setting)}; "
                  f"{len(self.drift.stripe_points(self.grid, self.setting))} manual point(s)"]
         if res is not None and res.get('lines'):
             fitted = sum(1 for ln in res['lines'] if ln.get('b_f_measured'))
@@ -365,7 +367,7 @@ class StripeWindow:
         pts = self.drift.stripe_points(self.grid, self.setting)
         if key in pts:
             self.drift.set_stripe_point(self.grid, self.setting, key, pts[key], commit=True)   # the settings store + every window
-        print(f"stripe matching: {self.grid.name}, slow axis {self.setting}: {key} at "
+        print(f"stripe matching: {self.grid.name}, drift {self.setting}: {key} at "
               f"{pts.get(key, s0) * 1e10:+.2f} A along the fast axis.")
 
 

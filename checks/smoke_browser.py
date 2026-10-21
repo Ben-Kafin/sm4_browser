@@ -27,7 +27,7 @@ the traceback, and exits non-zero when any failed.  One @check per feature, name
   G   the windows: G1-G5 the drift window (marker pairs, partners seeded both ways, a typed
       velocity, arrows), G5 the stripe window (handles, a drag along the line, the sets per setting,
       the cache), G6 the pass order and the Line window's rows under the placement, G1 the Line
-      window's 'E range' / 'x range' boxes, G2 the Map window under the drift, G3 the whole map into
+      window's and the line average's crop cursors with 'crop' / 'uncrop', G2 the Map window under the drift, G3 the whole map into
       an average and the figure composer, G4 the drift window's pair stepping, G7 the drift window's
       frames, titles and one centred view.
   H   stripe matching states in the browser and the Topo window.
@@ -651,26 +651,45 @@ def _e_markers(b, exp):
     plt.close(w2._int_fig)
 
 
-@check("G1 Line window: 'E range' and 'x range' boxes (limits, normalization, colour scale, record)")
+@check("G1 Line window and line average: the crop cursors, 'crop' / 'uncrop' (limits, normalization, colour scale, record)")
 def _line_ranges(b, exp):
     from sm4_Browser import plots
+    from sm4_Browser.qtplot import MouseEvent
     w = open_line(b)
     e = w._int_e_axis()
     lo, hi = float(e[len(e) // 4]), float(e[3 * len(e) // 4])
-    # normalize on: the shown energy range is the normalized range
+    # the cursors start at the ends: four lines, no shade, the boxes showing the ends
+    assert w._int_cursors['e'] == [float(e.min()), float(e.max())], w._int_cursors['e']
+    assert len(w._int_cursor_artists) == 4 and not w._int_shade_artists
+    assert w._int_cursor_boxes[('e', 0)].value == f"{e.min():.3f}", w._int_cursor_boxes[('e', 0)].value
+    # 'crop' with every cursor at its end keeps everything as it is
+    w._int_on_crop()
+    assert w._int_e_range is None and w._int_x_range is None
+    # normalize on: the energy crop is the normalized range
     w._int_pipeline_box.set_state(calibrate=w._int_apply_calibration, normalize=True)
     w._int_on_pipeline_change({'calibrate': w._int_apply_calibration, 'normalize': True})
     assert w._int_apply_normalize
-    w._int_e_range_box._on_submit(f"{lo}, {hi}")
+    # a typed value snaps the cursor to the recorded energy; the shade covers the outside; nothing applied yet
+    w._int_on_cursor_box('e', 0, f"{lo + 0.3 * (e[1] - e[0]):.6f}")
+    w._int_set_cursor('e', 1, hi)
+    assert w._int_cursors['e'] == [lo, hi], w._int_cursors['e']
+    assert len(w._int_shade_artists) == 2 and w._int_e_range is None
+    assert w._int_cursor_boxes[('e', 0)].value == f"{lo:.3f}" and w._int_cursor_boxes[('e', 1)].value == f"{hi:.3f}"
+    # the lower cursor never passes the upper: two recorded energies stay between the pair
+    w._int_set_cursor('e', 0, hi + 1.0)
+    i_hi = int(np.argmin(np.abs(e - hi)))
+    assert w._int_cursors['e'][0] == float(e[i_hi - 1]), (w._int_cursors['e'], hi)
+    w._int_set_cursor('e', 0, lo)
+    w._int_on_crop()
     assert w._int_e_range == (lo, hi), w._int_e_range
-    assert w._int_e_range_box.box.value == widgets_text(lo, hi), w._int_e_range_box.box.value
+    assert w._int_cursors['e'] == [lo, hi] and not w._int_shade_artists          # at the new edges
     assert np.allclose(w._int_ax_didv.get_xlim(), (lo, hi)), w._int_ax_didv.get_xlim()
     assert np.allclose(w._int_ax_curve.get_xlim(), (lo, hi)), w._int_ax_curve.get_xlim()
     m = (e >= lo) & (e <= hi)
     rows = np.asarray(w._int_curves)[w._int_kept_mask()]
     areas = [abs(np.trapezoid(r[m], e[m])) for r in rows if np.isfinite(r).all()]
     assert areas and np.allclose(areas, 1.0), areas[:5]
-    # the colour scale from the cells inside the range only
+    # the colour scale from the cells inside the crop only
     vmin, vmax = plots.finite_range(rows[:, m])
     assert np.isclose(w._int_im.norm.vmin, vmin) and np.isclose(w._int_im.norm.vmax, vmax), \
         (w._int_im.norm.vmin, w._int_im.norm.vmax, vmin, vmax)
@@ -688,36 +707,90 @@ def _line_ranges(b, exp):
         top = np.asarray(v['versions']['didv']['top'])[w._int_kept_mask()]
         a2 = [abs(np.trapezoid(r[m], e[m])) for r in top if np.isfinite(r).all()]
         assert a2 and np.allclose(a2, 1.0), a2[:5]
-    # the position range: the view only
+    # the position pair: the view only
     p0, p1 = w._int_pos_bounds()
     q0, q1 = p0 + 0.25 * (p1 - p0), p0 + 0.75 * (p1 - p0)
     curves_before = np.array(w._int_curves)
-    w._int_x_range_box._on_submit(f"{q0} {q1}")
-    assert w._int_x_range == (q0, q1)
+    w._int_set_cursor('x', 0, q0)
+    w._int_set_cursor('x', 1, q1)
+    assert np.allclose(w._int_cursors['x'], (q0, q1)) and len(w._int_shade_artists) == 2
+    w._int_on_crop()
+    assert w._int_x_range == (q0, q1) and w._int_e_range == (lo, hi)
     assert np.allclose(w._int_ax_didv.get_ylim(), (q0, q1)), w._int_ax_didv.get_ylim()
     assert np.allclose(w._int_ax_topo.get_ylim(), (q0, q1)), w._int_ax_topo.get_ylim()
     assert np.allclose(curves_before, w._int_curves, equal_nan=True)
-    # the record carries both; blank boxes restore the full ranges; the record restores them
+    # the boxes ride with their cursors: the energy ones above the heatmap, the position ones right of it
+    bx, by, bw, bh = w._int_ax_didv.get_position().bounds
+    r_e = w._int_cursor_boxes[('e', 0)]._rect
+    r_x = w._int_cursor_boxes[('x', 1)]._rect
+    assert r_e[1] >= by + bh - 1e-9 and abs(r_e[0] + 0.5 * r_e[2] - bx) < 1e-6, (r_e, bx, by, bh)
+    assert r_x[0] >= bx + bw - 1e-9 and abs(r_x[1] + 0.5 * r_x[3] - (by + bh)) < 1e-6, (r_x, bx, by, bh)
+    # the record carries both; 'uncrop' restores the full ranges and the cursors; the record restores them
     rec = w.marker_record()
     assert rec['energy_range'] == [lo, hi] and rec['pos_range'] == [q0, q1], (rec['energy_range'], rec['pos_range'])
-    w._int_e_range_box._on_submit('')
-    w._int_x_range_box._on_submit('')
+    w._int_on_uncrop()
     assert w._int_e_range is None and w._int_x_range is None
     x0, x1, y0, y1 = w._int_im.extent()
     assert np.allclose(w._int_ax_didv.get_xlim(), (x0, x1)) and np.allclose(w._int_ax_didv.get_ylim(), (y0, y1))
+    assert w._int_cursors['e'] == [float(e.min()), float(e.max())]
+    assert np.allclose(w._int_cursors['x'], (min(y0, y1), max(y0, y1))), w._int_cursors['x']
     full = [abs(np.trapezoid(r, e)) for r in np.asarray(w._int_curves)[w._int_kept_mask()] if np.isfinite(r).all()]
     assert np.allclose(full, 1.0)
     w.restore_markers(rec)
     assert w._int_e_range == (lo, hi) and w._int_x_range == (q0, q1), (w._int_e_range, w._int_x_range)
     assert np.allclose(w._int_ax_didv.get_xlim(), (lo, hi)) and np.allclose(w._int_ax_didv.get_ylim(), (q0, q1))
-    # refused input leaves the ranges and puts the boxes back
-    for bad in ("abc", "1", "1, 1", "nan, 2"):
-        w._int_e_range_box._on_submit(bad)
-        assert w._int_e_range == (lo, hi), bad
-        assert w._int_e_range_box.box.value == widgets_text(lo, hi), (bad, w._int_e_range_box.box.value)
-    w._int_e_range_box._on_submit(f"{e.min() - 2}, {e.min() - 1}")            # no recorded energy inside
-    assert w._int_e_range == (lo, hi) and w._int_e_range_box.box.value == widgets_text(lo, hi)
+    assert w._int_cursors['e'] == [lo, hi] and np.allclose(w._int_cursors['x'], (q0, q1))
+    # a box text that is not a number is refused and the box put back
+    w._int_on_cursor_box('e', 0, "abc")
+    assert w._int_cursors['e'] == [lo, hi] and w._int_cursor_boxes[('e', 0)].value == f"{lo:.3f}"
+    # a cursor dragged on the heatmap: pick (the cursor's before any marker's), motion along its axis, release
+    art = next(a for a in w._int_cursor_artists if a.get_label() == '_cursor_e_1')
+    class P: pass
+    ev = P(); ev.artist = art
+    w._int_on_pick(ev)
+    assert w._int_active_obj == ('cursor', 'e', 1)
+    inside = e[(e >= lo) & (e <= hi)]
+    target = float(inside[len(inside) // 2])
+    mv = MouseEvent('motion_notify_event', w._int_fig.canvas, 0, 0, button=1)
+    mv.inaxes, mv.xdata, mv.ydata = w._int_ax_didv, target + 1e-4, q0
+    w._int_on_motion(mv)
+    w._int_on_release(mv)
+    assert w._int_cursors['e'][1] == target and len(w._int_shade_artists) == 1, w._int_cursors['e']
+    w._int_on_uncrop()
     plt.close(w._int_fig)
+    # the line average: the same cursors and buttons; the energy crop normalizes every member's columns at the next run
+    w2 = open_line(b)
+    n0 = len(b.line_averages.open())
+    w2._int_on_line_new()
+    la = list(b.line_averages.open().values())
+    assert len(la) == n0 + 1, "line average did not open"
+    lw = la[-1]
+    assert lw._int_cursor_boxes[('e', 0)].widget.isVisible() and lw._int_btn_crop.widget.isVisible()
+    assert lw.chk_overlapping.label == 'overlapping'
+    lw.run()
+    ge = lw._int_e_axis()
+    glo, ghi = float(ge[len(ge) // 4]), float(ge[3 * len(ge) // 4])
+    lw._int_pipeline_box.set_state(calibrate=lw._int_apply_calibration, normalize=True)
+    lw._int_on_pipeline_change({'calibrate': lw._int_apply_calibration, 'normalize': True})
+    lw._int_set_cursor('e', 0, glo)
+    lw._int_set_cursor('e', 1, ghi)
+    lw._int_on_crop()
+    assert lw._int_e_range == (glo, ghi) and lw.run_needed              # the view at once, the normalization at the next run
+    assert np.allclose(lw._int_ax_didv.get_xlim(), (glo, ghi)), lw._int_ax_didv.get_xlim()
+    lw.run()
+    assert not lw.run_needed
+    mem = lw.members[0]
+    me = np.asarray(mem['selection'].energy, dtype=np.float64)
+    mm = (me >= glo) & (me <= ghi)
+    cols = lw._member_columns(mem, False, lw._int_apply_calibration, True, *lw._int_filters.params())
+    a3 = [abs(np.trapezoid(cols[mm, j], me[mm])) for j in range(cols.shape[1]) if np.isfinite(cols[:, j]).all()]
+    assert a3 and np.allclose(a3, 1.0), a3[:5]
+    rec2 = lw.record()
+    assert rec2['energy_range'] == [glo, ghi] and 'overlapping' in rec2 and 'crop' not in rec2
+    lw._int_on_uncrop()
+    assert lw._int_e_range is None
+    plt.close(lw._int_fig)
+    plt.close(w2._int_fig)
 
 
 @check("G2 Map window: pixels skewed by the chain plus the sweep drift, the topo unclipped, the grid view's topo")
@@ -1840,12 +1913,6 @@ def _records_helpers(b, exp):
     assert ns['tag_of']('A_CT_2024_01_01_10_00_00_000.sm4') == '2024_01_01_10_00_00_000'
     assert ns['tag_of']('plain_2024.sm4') == 'plain_2024'
     b._goto(0)
-
-
-def widgets_text(lo, hi):
-    """The text a range box shows for (lo, hi) (widgets.RangeBox.text_of)."""
-    from sm4_Browser.widgets import RangeBox
-    return RangeBox.text_of((lo, hi))
 
 
 if __name__ == '__main__':

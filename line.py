@@ -13,8 +13,9 @@ the marker curve panel, the marker groups (widgets.MarkerGroupControls),
 the window's own 'Feenstra' toggle with its Feenstra companion
 (feenstra.FeenstraWindow), the 'calibrate' / 'normalize' box
 (widgets.PipelineBox, top right as in every window), the 'channel' radio,
-the 'sweeps' radio of a file with several sweeps per pixel, the 'E range'
-/ 'x range' boxes, the window's own 'auto drift' / 'manual drift' toggles
+the 'sweeps' radio of a file with several sweeps per pixel, the crop
+cursors on the heatmap with their riding boxes and the 'crop' / 'uncrop'
+buttons, the window's own 'auto drift' / 'manual drift' toggles
 and 'drift window', the 'line' box with its '< line' / 'line >' arrows,
 the topo-row controls (with a 'profile' button per row), 'save' (the
 marker record averages/<file stem>_line<k>_markers.json), 'line → new
@@ -408,7 +409,7 @@ class Line:
         iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
         value at 0 V, feenstra.iv_corrected), unit-area normalization (over
         the energy range norm_range (lo, hi) when one is given: the window's
-        'E range' box; else the whole axis).  A column that is
+        energy crop; else the whole axis).  A column that is
         never written (every sample the page's offset, self._unset) was never acquired: it is left out of the regression and
         comes back as NaN (never drawn); a line with no acquired column at
         all is refused, as is the calibration of a file without the I(V).
@@ -486,7 +487,7 @@ class Line:
         The displayed line's curves for given filter settings (None = off):
         the pipeline (_pipeline) with the window's calibrate / normalize
         flags, the division when the window's 'Feenstra' toggle is on, and
-        the Feenstra settings, the normalization over the 'E range' box's
+        the Feenstra settings, the normalization over the energy crop's
         range, oriented like the heatmap.  Returns an
         (n_positions, n_energies) array.
         """
@@ -749,9 +750,9 @@ class Line:
     def _int_set_heat_limits(self):
         """
         The heatmap's limits: the energy axis and the kept rows' edges (the
-        shear included), or, where typed, the 'E range' box's energy range
-        and the 'x range' box's position range (the stripe and the energy
-        slice share the position axis).
+        shear included), or, where cropped, the energy crop and the
+        position crop (the stripe and the energy slice share the position
+        axis); the cursor boxes follow.
         """
         if self._int_im is None:
             return
@@ -762,15 +763,17 @@ class Line:
             y0, y1 = self._int_x_range
         self._int_ax_didv.set_xlim(x0, x1)
         self._int_ax_didv.set_ylim(y0, y1)
+        self._int_place_cursor_boxes()
 
     def _int_draw_heatmap(self):
         """
         The heatmap from self._int_curves: the kept spectra's rows at their
         positions (plots.RowHeatmap; the colour scale from the kept rows,
-        inside the 'E range' box's range when one is typed
+        inside the energy crop when one is applied
         (plots.energy_range_scale), the 'γ' box's exponent; with the drift toggle on each row sheared
         along the position axis by the drift during its sweep), the colour
-        bar rebuilt, the title and label set.
+        bar rebuilt, the title and label set, the crop cursors redrawn on
+        it (_int_draw_cursors).
         """
         kept = self._int_kept_mask()
         img = np.asarray(self._int_curves, dtype=np.float64)[kept]
@@ -785,9 +788,10 @@ class Line:
             plots.update_heatmap(self._int_im, img, gamma=self._int_gamma_box.value, vmin=lo, vmax=hi)
         plots.draw_colorbar(self._int_fig, self._int_im, self._int_cax_didv, label=self._int_cbar_label())
         self._int_ax_didv.set_title(self._int_heat_title())
+        self._int_draw_cursors(draw=False)
 
     def _int_on_gamma(self, value):
-        """The heatmap's 'γ' box: the colour map's exponent (plots.heat_norm), over the 'E range' box's cells."""
+        """The heatmap's 'γ' box: the colour map's exponent (plots.heat_norm), over the energy crop's cells."""
         lo, hi = plots.energy_range_scale(self._int_im.get_array(), self._int_energy, self._int_e_range)
         plots.update_heatmap(self._int_im, gamma=value, vmin=lo, vmax=hi)
         plots.draw_colorbar(self._int_fig, self._int_im, self._int_cax_didv, label=self._int_cbar_label())
@@ -795,21 +799,21 @@ class Line:
 
     def _int_on_e_range(self, rng):
         """
-        The 'E range' box (widgets.RangeBox; (lo, hi) in V, None the full
-        axis): the shown energy range of the heatmap and the curve panel,
-        the normalization range (the pipeline rerun: _int_apply_feenstra,
-        the companion with it), and the colour scale's.  A range holding
-        fewer than two recorded energies is refused (False: the box goes
-        back), as is a range the line cannot be processed with.
+        The energy crop applied ((lo, hi) in V, None the full axis; the
+        'crop' / 'uncrop' buttons): the shown energy range of the heatmap
+        and the curve panel, the normalization range (the pipeline rerun:
+        _int_apply_feenstra, the companion with it), and the colour
+        scale's.  A range holding fewer than two recorded energies is
+        refused (False), as is a range the line cannot be processed with.
         """
         if rng is not None:
             e = self._int_e_axis()
             if int(np.count_nonzero((e >= rng[0]) & (e <= rng[1]))) < 2:
-                print(f"E range: {rng[0]:g}, {rng[1]:g} V holds fewer than two recorded energies; the box is put back.")
+                print(f"crop: {rng[0]:g}, {rng[1]:g} V holds fewer than two recorded energies; not applied.")
                 return False
         old = self._int_e_range
         self._int_e_range = rng
-        if not self._int_apply_feenstra("E range"):
+        if not self._int_apply_feenstra("crop"):
             self._int_e_range = old
             return False
         self._int_set_heat_limits()
@@ -817,10 +821,200 @@ class Line:
         return True
 
     def _int_on_x_range(self, rng):
-        """The 'x range' box ((lo, hi) in Å, None the kept rows): the shown position range of the stripe, the heatmap, and the energy slice; nothing is recomputed."""
+        """The position crop applied ((lo, hi) in Å, None the kept rows): the shown position range of the stripe, the heatmap, and the energy slice; nothing is recomputed."""
         self._int_x_range = rng
         self._int_set_heat_limits()
         self._int_fig.canvas.draw_idle()
+
+    # --- the crop cursors ---
+
+    CURSOR_COLOR = '#303030'       # the cursor lines
+    SHADE_COLOR = '#808080'        # the shade outside a cursor pair
+    SHADE_ALPHA = 0.45
+
+    def _int_axis_extent(self, axis):
+        """
+        The full range of a cursor axis as cropped: 'e' the applied energy
+        crop, else the recorded energies' span; 'x' the applied position
+        crop, else the kept rows' edges (the heatmap's extent).
+        """
+        if axis == 'e':
+            if self._int_e_range is not None:
+                return float(self._int_e_range[0]), float(self._int_e_range[1])
+            e = self._int_e_axis()
+            return float(np.min(e)), float(np.max(e))
+        if self._int_x_range is not None:
+            return float(self._int_x_range[0]), float(self._int_x_range[1])
+        if self._int_im is not None:
+            _, _, y0, y1 = self._int_im.extent()
+            return float(min(y0, y1)), float(max(y0, y1))
+        return self._int_pos_bounds()
+
+    def _int_reset_cursors(self):
+        """Every cursor at its axis's end (the full ranges as cropped)."""
+        self._int_cursors = {'e': list(self._int_axis_extent('e')), 'x': list(self._int_axis_extent('x'))}
+
+    def _int_cursor_value(self, axis, k, v):
+        """
+        A value for cursor k (0 the lower, 1 the upper) of axis 'e' or 'x'
+        made valid: inside the axis's extent; an energy cursor snapped to
+        the recorded energies with the pair keeping at least two of them
+        between its two cursors (a crop always holds two); a position
+        cursor continuous, the pair keeping one row spacing.
+        """
+        lo_ext, hi_ext = self._int_axis_extent(axis)
+        v = float(np.clip(float(v), lo_ext, hi_ext))
+        other = float(self._int_cursors[axis][1 - k])
+        if axis == 'e':
+            e = np.sort(np.asarray(self._int_e_axis(), dtype=np.float64))
+            inside = e[(e >= lo_ext) & (e <= hi_ext)]
+            if len(inside) >= 2:
+                e = inside
+            i = int(np.argmin(np.abs(e - v)))
+            j = int(np.argmin(np.abs(e - other)))
+            i = min(i, max(j - 1, 0)) if k == 0 else max(i, min(j + 1, len(e) - 1))
+            return float(e[i])
+        p = np.sort(self._int_kept_pos())
+        d = np.diff(p)
+        step = float(np.min(d[d > 0])) if np.any(d > 0) else 0.0
+        v = min(v, other - step) if k == 0 else max(v, other + step)
+        return float(np.clip(v, lo_ext, hi_ext))
+
+    def _int_set_cursor(self, axis, k, v, draw=True):
+        """Cursor k of axis 'e' / 'x' moved to v (made valid, _int_cursor_value); the lines, the shades and the boxes follow."""
+        if self._int_cursors is None:
+            self._int_reset_cursors()
+        self._int_cursors[axis][k] = self._int_cursor_value(axis, k, v)
+        self._int_draw_cursors(draw=draw)
+
+    @staticmethod
+    def _int_cursor_text(axis, v):
+        """A cursor's box text: V to three decimals, Å to one."""
+        return f"{v:.3f}" if axis == 'e' else f"{v:.1f}"
+
+    def _int_on_cursor_box(self, axis, k, text):
+        """A cursor's box: the typed value snaps the cursor there (made valid); a text that is not a number is reported and the box put back."""
+        try:
+            v = float(str(text).strip())
+            if not np.isfinite(v):
+                raise ValueError("not finite")
+        except ValueError:
+            print(f"{'E' if axis == 'e' else 'x'} cursor: '{text}' is not a number; the box is put back.")
+            self._int_place_cursor_boxes()
+            return
+        self._int_set_cursor(axis, k, v)
+
+    def _int_draw_cursors(self, draw=True):
+        """
+        The crop cursors on the heatmap: two vertical lines at the energy
+        cursors and two horizontal ones at the position cursors (draggable;
+        a press on one is theirs before any marker's), the grey shade
+        outside each pair, and the boxes riding with them
+        (_int_place_cursor_boxes).  Every cursor is first made valid for
+        the current extent (_int_cursor_value).  Nothing before the heatmap
+        and the boxes exist.
+        """
+        if self._int_im is None or not hasattr(self, '_int_cursor_boxes'):
+            return
+        if self._int_cursors is None:
+            self._int_reset_cursors()
+        for axis in ('e', 'x'):
+            for k in (0, 1):
+                self._int_cursors[axis][k] = self._int_cursor_value(axis, k, self._int_cursors[axis][k])
+        for a in self._int_cursor_artists + self._int_shade_artists:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        self._int_cursor_artists, self._int_shade_artists = [], []
+        ax = self._int_ax_didv
+        for axis in ('e', 'x'):
+            lo_ext, hi_ext = self._int_axis_extent(axis)
+            lo, hi = self._int_cursors[axis]
+            span = ax.axvspan if axis == 'e' else ax.axhspan
+            for a, b in ((lo_ext, lo), (hi, hi_ext)):
+                if b > a:
+                    self._int_shade_artists.append(span(a, b, color=self.SHADE_COLOR, alpha=self.SHADE_ALPHA,
+                                                        zorder=1.5))
+            line = ax.axvline if axis == 'e' else ax.axhline
+            for k, v in enumerate((lo, hi)):
+                h = line(v, color=self.CURSOR_COLOR, ls='-', lw=1.8, alpha=0.9, label=f'_cursor_{axis}_{k}',
+                         picker=6, zorder=4.0)
+                self._int_cursor_artists.append(h)
+        self._int_place_cursor_boxes()
+        if draw:
+            self._int_fig.canvas.draw_idle()
+
+    def _int_place_cursor_boxes(self):
+        """
+        The cursor boxes placed and filled: the energy ones centred on
+        their cursors just above the heatmap's top edge, the position ones
+        centred on theirs just right of its right edge (the spacer column
+        before the colour bar), each showing its cursor's value.
+        """
+        boxes = getattr(self, '_int_cursor_boxes', None)
+        if boxes is None or self._int_cursors is None or self._int_im is None:
+            return
+        fig = self._int_fig
+        x0, y0, w, h = self._int_ax_didv.get_position().bounds
+        xl0, xl1 = self._int_ax_didv.get_xlim()
+        yl0, yl1 = self._int_ax_didv.get_ylim()
+        gap = 0.004
+        for (axis, k), box in boxes.items():
+            v = float(self._int_cursors[axis][k])
+            bw, bh = widgets.size_of(fig, box.name)
+            if axis == 'e':
+                f = (v - xl0) / (xl1 - xl0) if xl1 != xl0 else 0.5
+                cx = x0 + w * float(np.clip(f, 0.0, 1.0))
+                cy = y0 + h + gap + 0.5 * bh
+            else:
+                f = (v - yl0) / (yl1 - yl0) if yl1 != yl0 else 0.5
+                cx = x0 + w + gap + 0.5 * bw
+                cy = y0 + h * float(np.clip(f, 0.0, 1.0))
+            box.set(self._int_cursor_text(axis, v))
+            box.place_center(cx, cy)
+
+    def _int_crop_ranges(self):
+        """(energy range, position range) the cursors mean for a crop: a pair left at its axis's ends keeps that axis's crop as it is."""
+        out = []
+        for axis in ('e', 'x'):
+            lo_ext, hi_ext = self._int_axis_extent(axis)
+            lo, hi = self._int_cursors[axis]
+            tol = 1e-9 * max(abs(hi_ext - lo_ext), 1.0)
+            full = abs(lo - lo_ext) <= tol and abs(hi - hi_ext) <= tol
+            cur = self._int_e_range if axis == 'e' else self._int_x_range
+            out.append(cur if full else (float(lo), float(hi)))
+        return out[0], out[1]
+
+    def _int_on_crop(self):
+        """
+        'crop': whatever lies between the cursors is kept, on every axis
+        and whether or not a cursor was moved: the view of the heatmap,
+        the stripe, the energy slice and the curve panel to the cursors'
+        ranges, the normalization and the colour scale over the energy pair
+        (_int_on_e_range, _int_on_x_range); the cursors then sit at the new
+        edges.
+        """
+        if self._int_cursors is None:
+            self._int_reset_cursors()
+        e_rng, x_rng = self._int_crop_ranges()
+        if x_rng != self._int_x_range:
+            self._int_on_x_range(x_rng)
+        if e_rng != self._int_e_range and not self._int_on_e_range(e_rng):
+            return
+        self._int_reset_cursors()
+        self._int_draw_cursors()
+
+    def _int_on_uncrop(self):
+        """'uncrop': both axes back to their full ranges (the normalization over every energy), the cursors back at the ends."""
+        if self._int_x_range is None and self._int_e_range is None:
+            print("uncrop: nothing is cropped.")
+        if self._int_x_range is not None:
+            self._int_on_x_range(None)
+        if self._int_e_range is not None:
+            self._int_on_e_range(None)
+        self._int_reset_cursors()
+        self._int_draw_cursors()
 
     # --- topo stripe source: rows (line index, forward / reverse) ---
 
@@ -1018,6 +1212,7 @@ class Line:
             self._int_panel_bottom = bottom
             self._int_fig.subplots_adjust(bottom=bottom)
             self._int_gamma_box.attach(self._int_ax_didv)
+            self._int_place_cursor_boxes()
 
     def _int_n_chunks(self):
         """Number of lines (chunks) in the file for the current scan mode."""
@@ -1322,7 +1517,7 @@ class Line:
                                  self._int_stack_on, self._int_substack_on, self._int_curve_texts(),
                                  offset_frac=self.STACK_OFFSET_FRAC)
         if self._int_e_range is not None:
-            self._int_ax_curve.set_xlim(*self._int_e_range)       # the 'E range' box (the panel was cleared above)
+            self._int_ax_curve.set_xlim(*self._int_e_range)       # the energy crop (the panel was cleared above)
 
         # The 'Markers' slider stack follows the groups' order on the stripe.
         self._int_refresh_group_sliders()
@@ -1510,7 +1705,7 @@ class Line:
         return {k: dict(v) for k, v in versions.items()}, q
 
     def _int_feenstra_versions_compute(self, calibrate, normalize, hp, sp, raw, iv):
-        """The four versions of _int_feenstra_versions, computed (every normalization over the 'E range' box's range)."""
+        """The four versions of _int_feenstra_versions, computed (every normalization over the window's energy crop)."""
         q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
         nn = "" if normalize else ", not normalized"
         zs, width = self._int_iv_zero_sub, self._int_iv_width()
@@ -1564,7 +1759,7 @@ class Line:
         lock-in output as recorded, and the ratio of that output by the filtered I/V);
         with `normalize` on the current and the I/V are unit area per
         location (normalization.normalize_abs); off, no panel is normalized.
-        Every normalization is over the 'E range' box's range, handed over
+        Every normalization is over the window's energy crop, handed over
         as 'e_range' ((lo, hi) or None): the companion shows that range and
         scales its colours over it.
         """
@@ -1603,6 +1798,12 @@ class Line:
         label = getattr(artist, 'get_label', lambda: '')()
         if not isinstance(label, str):
             return
+        if label.startswith('_cursor_'):                      # a crop cursor: its press is its own (before any marker's)
+            _, _, axis, k = label.split('_')
+            self._int_active_obj = ('cursor', axis, int(k))
+            return
+        if self._int_active_obj is not None and self._int_active_obj[0] == 'cursor':
+            return
         if label.startswith('_emarker_'):                     # (a leading '_' keeps it out of the legends)
             k = int(label.split('_')[2])
             if k < len(self._int_e_markers):
@@ -1625,6 +1826,12 @@ class Line:
         start or the end of the line.
         """
         if self._int_active_obj is None or event.ydata is None:
+            return
+        if self._int_active_obj[0] == 'cursor':
+            # A crop cursor follows the mouse on the heatmap along its own axis (made valid as it goes).
+            if event.inaxes is self._int_ax_didv and event.xdata is not None:
+                _, axis, k = self._int_active_obj
+                self._int_set_cursor(axis, k, event.xdata if axis == 'e' else event.ydata)
             return
         if self._int_active_obj[0] == 'emarker':
             # An E-marker follows the cursor along the energy axis (heatmap or curve panel), snapped to
@@ -1982,7 +2189,7 @@ class Line:
         the file (path and name), the line index, the channel, the sweep
         view (None for one sweep per pixel), the filter boxes and their on /
         off states, the calibrate / normalize / Feenstra states, the
-        Feenstra settings, the gamma, the 'E range' and 'x range' boxes
+        Feenstra settings, the gamma, the applied energy and position crops
         (None = full), the topo rows and the active processor, the group
         sizes, their centres and the marker positions (Å), the E-markers
         (V), the Average / stack / substack states, the scale factor the
@@ -2038,8 +2245,9 @@ class Line:
         loader, browser.load_line_record, after
         plot_line_with_topo_interactive on the record's file, line and sweep
         view): the filter boxes and states, the calibrate / normalize /
-        Feenstra states and settings, the gamma, the 'E range' and 'x range'
-        boxes (when the record has them), the topo rows and processor, the
+        Feenstra states and settings, the gamma, the energy and position
+        crops (when the record has them; the cursors at their edges), the
+        topo rows and processor, the
         group sizes, centres and marker positions (clipped to the line),
         the E-markers (snapped to the recorded energies), Average / stack /
         substack; then the pipeline rerun and the stripe redrawn.  Every
@@ -2079,11 +2287,10 @@ class Line:
                       "the window keeps its own.")
             else:
                 self._int_e_range = rng
-                self._int_e_range_box.set(rng)
         if 'pos_range' in rec:
             r = rec.get('pos_range')
             self._int_x_range = None if r is None else (float(min(r)), float(max(r)))
-            self._int_x_range_box.set(self._int_x_range)
+        self._int_reset_cursors()                     # the cursors at the crops' edges (drawn with the heatmap below)
         rows = rec.get('topo_lines')
         if rows:
             try:
@@ -2164,7 +2371,7 @@ class Line:
         with that group's marker positions) to the single-point
         fit.  The sent curves are always rebuilt with calibration and
         normalization on, using the display's filter settings (Hampel, SG on
-        the LIA) and the 'E range' box's normalization range (the full
+        the LIA) and the window's energy crop as the normalization range (the full
         curves, their areas over that range; the fit refits over the same
         range); a console line says so when either is off in the window.
         A group average is the plain mean of its members.  The unsmoothed
@@ -2297,20 +2504,23 @@ class Line:
         fig.subplots_adjust(bottom=self.PANEL_BOTTOM_MIN)
         gs_main = gridspec.GridSpec(2, 1, height_ratios=[1, 0.001], hspace=0.3)
         gs_top = gridspec.GridSpecFromSubplotSpec(
-            1, 7, subplot_spec=gs_main[0],
-            width_ratios=[0.175, 3, 0.15, 0.1, 0.9, 0.3, 1.5], wspace=0.05)
+            1, 8, subplot_spec=gs_main[0],
+            width_ratios=[0.175, 3, 0.3, 0.15, 0.1, 0.9, 0.3, 1.5], wspace=0.05)
         self._int_ax_topo = fig.add_subplot(gs_top[0])
         self._int_ax_didv = fig.add_subplot(gs_top[1], sharey=self._int_ax_topo)
-        self._int_cax_didv = fig.add_subplot(gs_top[2])
-        ax_spacer = fig.add_subplot(gs_top[3])
+        # The column right of the heatmap is left to the position cursors' boxes (_int_place_cursor_boxes).
+        ax_cursor_col = fig.add_subplot(gs_top[2])
+        ax_cursor_col.axis('off')
+        self._int_cax_didv = fig.add_subplot(gs_top[3])
+        ax_spacer = fig.add_subplot(gs_top[4])
         ax_spacer.axis('off')
         # The energy slice (E-markers): the quantity against position at each E-marker, on the heatmap's
         # position axis (shared y), as MATLAB's line script showed it beside its heatmaps.
-        self._int_ax_slice = fig.add_subplot(gs_top[4], sharey=self._int_ax_topo)
+        self._int_ax_slice = fig.add_subplot(gs_top[5], sharey=self._int_ax_topo)
         self._int_ax_slice.tick_params(axis='y', left=False, labelleft=False)
-        ax_spacer2 = fig.add_subplot(gs_top[5])
+        ax_spacer2 = fig.add_subplot(gs_top[6])
         ax_spacer2.axis('off')
-        self._int_ax_curve = fig.add_subplot(gs_top[6])
+        self._int_ax_curve = fig.add_subplot(gs_top[7])
         # The heatmap's positions are the stripe's (shared y): no y ticks, values, or label of its own.
         self._int_ax_didv.tick_params(axis='y', left=False, labelleft=False)
         # The slice and the marker curve panel never run into the heatmap colour bar's ticks and labels.
@@ -2354,13 +2564,19 @@ class Line:
         self._int_btn_e_clear = widgets.make(fig, 'clear E-markers', 0.30, 0.918)
         self._int_btn_e_clear.on_change(lambda: self._int_on_e_count(0))
         self._int_txt_e = fig.text(0.375, 0.932, '', fontsize=8, ha='left', va='center')
-        # The 'x range' and 'E range' boxes (widgets.RangeBox, "lo, hi", blank = full), right of the
-        # readout: the shown position range, and the shown energy range, which is also the
-        # normalization range and the colour scale's (_int_on_x_range, _int_on_e_range).
-        self._int_x_range_box = widgets.RangeBox(fig, 'x range', 0.72, 0.925, value=self._int_x_range)
-        self._int_x_range_box.on_change(self._int_on_x_range)
-        self._int_e_range_box = widgets.RangeBox(fig, 'E range', 0.84, 0.925, value=self._int_e_range)
-        self._int_e_range_box.on_change(self._int_on_e_range)
+        # The crop cursors' boxes (one per cursor, riding with it: _int_place_cursor_boxes, placed with
+        # the first heatmap) and the 'crop' / 'uncrop' buttons right of the readout (_int_on_crop,
+        # _int_on_uncrop).
+        self._int_cursor_boxes = {}
+        for axis in ('e', 'x'):
+            for k, part in enumerate(('lo', 'hi')):
+                box = widgets.make(fig, f"{'E' if axis == 'e' else 'x'} {part}", 0.0, 0.0, value='')
+                box.on_change(lambda text, axis=axis, k=k: self._int_on_cursor_box(axis, k, text))
+                self._int_cursor_boxes[(axis, k)] = box
+        self._int_btn_crop = widgets.make(fig, 'crop', 0.72, 0.918)
+        self._int_btn_crop.on_change(self._int_on_crop)
+        self._int_btn_uncrop = widgets.make(fig, 'uncrop', 0.775, 0.918)
+        self._int_btn_uncrop.on_change(self._int_on_uncrop)
         self._int_rad_sweeps = None
         if self.spectra_all is not None:
             from sm4_Browser import sweeps as sweeps_mod
@@ -2439,6 +2655,11 @@ class Line:
         fig.canvas.mpl_connect('motion_notify_event', self._int_on_motion)
         fig.canvas.mpl_connect('button_release_event', self._int_on_release)
         fig.canvas.mpl_connect('key_press_event', self._int_on_key)
+        # The heatmap's view changed by the toolbar (pan, zoom, Home): the cursor boxes follow their cursors.
+        try:
+            self._int_ax_didv.vb.sigRangeChanged.connect(lambda *args: self._int_place_cursor_boxes())
+        except Exception:
+            pass
         # Every manual change of the drift (a span applied or cleared in a drift window), made
         # in any drift window, re-shears this window's rows (Drift.subscribe); the subscription
         # ends with the window.
@@ -2517,9 +2738,12 @@ class Line:
         heatmap and the curve panel, draggable along the energy axis, the
         selected one moved by Left / Right and chosen by Tab; the energy
         slice shows the heatmap's quantity against position at every
-        E-marker (_int_redraw_e_markers).  The 'E range' box ((lo, hi) V)
-        is the shown energy range, the normalization range and the colour
-        scale's; the 'x range' box ((lo, hi) Å) the shown position range.
+        E-marker (_int_redraw_e_markers).  The crop cursors (two per axis
+        on the heatmap, starting at the ends, draggable, each with a box
+        riding along that shows its value and takes a typed one) shade
+        what lies outside each pair; 'crop' keeps what lies between them:
+        the shown energy range (also the normalization range and the colour
+        scale's) and the shown position range; 'uncrop' restores both.
         The 'avgs' slider (0 to MAX_GROUPS) is the number of average
         groups; every group has its own 'Markers' slider (0 to 10 markers;
         a group at 0 keeps its centre),
@@ -2678,8 +2902,11 @@ class Line:
         self._int_apply_calibration = bool(apply_calibration)
         self._int_apply_normalize = bool(apply_normalize)
         self._int_gamma0 = float(gamma)
-        self._int_e_range = None              # the 'E range' box: (lo, hi) V shown and normalized over, None = all
-        self._int_x_range = None              # the 'x range' box: (lo, hi) Å shown, None = the kept rows
+        self._int_e_range = None              # the applied energy crop: (lo, hi) V shown and normalized over, None = all
+        self._int_x_range = None              # the applied position crop: (lo, hi) Å shown, None = the kept rows
+        self._int_cursors = None              # the crop cursors {'e': [lo, hi], 'x': [lo, hi]} (set at the first heatmap)
+        self._int_cursor_artists = []         # their lines on the heatmap
+        self._int_shade_artists = []          # the shades outside each pair
         self._int_drift = drift
         self._int_auto_on = bool(auto_on and drift is not None)
         self._int_manual_on = bool(manual_on and drift is not None)

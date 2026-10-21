@@ -2065,7 +2065,7 @@ class Drift:
         st['fast'] = state
         self._invalidate()
         self._save_manual()
-        print(f"stripe matching: {f.name}, slow axis {setting}: fast axis {state}.")
+        print(f"stripe matching: {f.name}, drift {setting}: stripe {state}.")
         self.notify()
 
     def set_stripe_point(self, f, setting, key, s, commit=True):
@@ -2114,7 +2114,7 @@ class Drift:
         st['points'] = {}
         self._invalidate()
         self._save_manual()
-        print(f"stripe matching: {f.name}, slow axis {setting}: the points cleared.")
+        print(f"stripe matching: {f.name}, drift {setting}: the points cleared.")
         self.notify()
 
     def _save_manual(self):

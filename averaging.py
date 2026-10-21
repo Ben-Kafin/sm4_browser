@@ -428,7 +428,7 @@ def compare_with_cache(state, V, data_unfiltered):
 
 
 def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, divide_iv, iv_width,
-                        iv_zero_sub, resample, fit_settings, cache, tag, describe, removed_text=''):
+                        iv_zero_sub, resample, fit_settings, cache, tag, describe, removed_text='', norm_range=None):
     """
     Send an average built from several files' raw columns to the
     single-point fit (Fit); the one send of the averaging and the
@@ -448,6 +448,8 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
       cache            : the fit history path of this average (records.cache_path_of)
       tag              : the window's tag for the console
       describe         : a one-line description of the send for the console
+      norm_range       : (lo, hi) in V when the sender normalized over an energy range (the line-average
+                         window's energy crop), kept in the fit history; None for the whole axis
     Per kept sweep, in pooled order: the normalization area (amps) as the
     drawn pipeline gives it (calibration and normalization on: the fit's
     pipeline) and I(V_bias) - I(V_ref) (amps, raw current); and one raw set
@@ -544,7 +546,7 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
                                     quantity='ratio' if divide_iv else 'didv',
                                     iv_broadening=iv_width, iv_zero_sub=iv_zero_sub,
                                     raw_sets=raw_sets,
-                                    resample=resample)
+                                    resample=resample, norm_range=norm_range)
             an.select_model(**settings)
         an.plot()
     except Exception as exc:

@@ -21,8 +21,9 @@ The average, per run (LineAverage.run):
   - the common grids (the finest position step; the finest energy step
     over the common energy range), every member's heatmap and stripe
     resampled onto them, the mean over the members covering each pixel
-    ('crop' off) or over the pixels every member covers ('crop' on).
-A filter, pipeline, Feenstra, channel, crop, or alignment change needs
+    ('overlapping' off) or over the pixels every member covers
+    ('overlapping' on).
+A filter, pipeline, Feenstra, channel, overlapping, crop, or alignment change needs
 'run' again (the title says so); 'apply' in the editor runs; 'remove
 last' does not; 'restore' reruns when a run exists.  The Feenstra
 companion opens after the first run with the averaged dI/dV (division
@@ -194,7 +195,7 @@ class LineAverage(Line):
     panel, 'γ', the window's own 'Feenstra' toggle and companion, the
     'calibrate' / 'normalize' box, the 'channel' radio, the filter box)
     over the aligned average of its members (see the module docstring),
-    plus 'name', 'run', 'edit alignment', 'crop', 'save', 'remove last',
+    plus 'name', 'run', 'edit alignment', 'overlapping', 'save', 'remove last',
     'restore', the members line, and 'Send to fit'.  Before the first
     run the panels show the main member's own line (unaligned) and the
     title says run needed; after a run the heatmap's rows are the common
@@ -202,8 +203,11 @@ class LineAverage(Line):
     window controls: the 'line' box and its arrows, 'line → new avg' /
     'line → existing avg', the Line window's 'save' (this window's own
     'save' writes the line-average record), the topo-row controls ('rows'
-    boxes, f/r and 'profile' buttons, '+' / '-'), and the 'E range' / 'x
-    range' boxes.  The 'calibrate' / 'normalize' box starts with both off.
+    boxes, f/r and 'profile' buttons, '+' / '-').  The crop cursors with
+    'crop' / 'uncrop' work as in the Line window: the view at once, the
+    normalization over the energy crop at the next run (every member's
+    columns, current and I/V, and the sent curves).  The 'calibrate' /
+    'normalize' box starts with both off.
     The drift toggles and 'drift window' are built but have no Drift (none
     is handed over): they report "no drift model at hand" and stay off.
     The E-markers and the energy slice work on the displayed array.
@@ -230,7 +234,7 @@ class LineAverage(Line):
         self.removed = []                  # removed members, the last removed last
         self.reference = 0                 # the main member (the DTW target)
         self.mode = 'auto'                 # 'auto' (DTW maps) or 'markers' (marker-section maps)
-        self.crop = False
+        self.overlapping = False           # 'overlapping': average only where every member covers a pixel
         self.run_needed = True
         self.run_state = None              # the last run (grids, maps, the averaged quantities)
         self._saved_stem = None
@@ -312,11 +316,11 @@ class LineAverage(Line):
         return f"{self.name}: line average of {len(self.members)} line(s)"
 
     def _int_heat_title(self):
-        """The heatmap title: the quantity, the name, the member count, ' aligned (DTW|markers to <reference>)' after a run, ', crop', ' (run needed)'."""
+        """The heatmap title: the quantity, the name, the member count, ' aligned (DTW|markers to <reference>)' after a run, ', overlapping', ' (run needed)'."""
         return (f"{self._int_quantity()}, {self.name}, {len(self.members)} line(s)"
                 + (f" aligned ({'DTW' if self.mode == 'auto' else 'markers'} to {self.reference + 1})"
                    if self.run_state is not None else "")
-                + (", crop" if self.crop else "")
+                + (", overlapping" if self.overlapping else "")
                 + (" (run needed)" if self.run_needed else ""))
 
     def _int_directory(self):
@@ -498,18 +502,18 @@ class LineAverage(Line):
             self._load_member_axes(self.reference)
         self._int_apply_feenstra(f"channel {label}")
 
-    def _on_crop(self, flag):
-        """The 'crop' toggle: the next run averages only where every member covers a pixel (align.average_stack, common_positions); run needed."""
-        self.crop = bool(flag)
+    def _on_overlapping(self, flag):
+        """The 'overlapping' toggle: the next run averages only where every member covers a pixel (align.average_stack, common_positions); run needed."""
+        self.overlapping = bool(flag)
         self.run_needed = True
-        print(f"crop {'on' if self.crop else 'off'}: run needed.")
+        print(f"overlapping {'on' if self.overlapping else 'off'}: run needed.")
         self._int_ax_didv.set_title(self._int_heat_title())
         self._int_fig.canvas.draw_idle()
 
     # --- the pipeline per member ---
 
     def _member_columns(self, m, divide_iv, calibrate, normalize, hampel, sgolay, channel=None):
-        """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings, the window's Feenstra settings and the channel; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
+        """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings, the window's Feenstra settings, the channel, and the normalization over the window's energy crop; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
         sel = m['selection']
         channel = self.channel if channel is None else channel
         raw = np.asarray(sel.spectra.channel(channel), dtype=np.float64)
@@ -522,7 +526,8 @@ class LineAverage(Line):
             raise ValueError(f"{m['name']}: no I(V) current channel; the division cannot be applied.")
         c = STS.process_arrays(sel.energy, raw, sel.iv, hampel, sgolay, divide_iv, self._int_iv_width(),
                                channel=channel, acquired=acquired, iv_zero_sub=self._int_iv_zero_sub,
-                               normalize=normalize, calibrate=calibrate, vmod=sel.vmod)
+                               normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
+                               norm_range=self._int_e_range)
         c = np.array(c, dtype=np.float64)
         c[:, ~acquired] = np.nan
         return c
@@ -535,7 +540,7 @@ class LineAverage(Line):
         iv = iv_corrected(sel.energy, sel.iv, self._int_iv_zero_sub,
                           self._int_hampel_params, self._int_sgolay_params)
         if normalize:
-            iv = normalize_abs(sel.energy, iv)[0]
+            iv = normalize_abs(sel.energy, iv, energy_range=self._int_e_range)[0]
         iv = np.array(iv, dtype=np.float64)
         iv[:, ~np.asarray(sel.acquired, dtype=bool)] = np.nan
         return iv
@@ -548,7 +553,7 @@ class LineAverage(Line):
         ivv = iv_broadened(sel.energy, sel.iv, self._int_iv_width(), self._int_iv_zero_sub,
                            self._int_hampel_params, self._int_sgolay_params)
         if normalize:
-            ivv = normalize_abs(sel.energy, ivv)[0]
+            ivv = normalize_abs(sel.energy, ivv, energy_range=self._int_e_range)[0]
         ivv = np.array(ivv, dtype=np.float64)
         ivv[:, ~np.asarray(sel.acquired, dtype=bool)] = np.nan
         return ivv
@@ -628,13 +633,13 @@ class LineAverage(Line):
             m['align_markers'] = [float(v) for v in align.inverse_map_at(common, m['pos'], m['common'])]
 
     def _average_of(self, member_arrays, state):
-        """Member columns (one (npts, N) array per member on its own energy axis) resampled onto the run's grids through the maps (align.resample_columns) and averaged (align.average_stack with crop), (n_grid_e, n_grid_pos); None when any member's array is None."""
+        """Member columns (one (npts, N) array per member on its own energy axis) resampled onto the run's grids through the maps (align.resample_columns) and averaged (align.average_stack with 'overlapping'), (n_grid_e, n_grid_pos); None when any member's array is None."""
         stack = []
         for m, c in zip(self.members, member_arrays):
             if c is None:
                 return None
             stack.append(align.resample_columns(c, m['selection'].energy, state['grid_e'], m['common'], state['grid_pos']))
-        return align.average_stack(np.stack(stack), self.crop)
+        return align.average_stack(np.stack(stack), self.overlapping)
 
     def _stripe_of(self, state):
         """The members' stripes through the maps (each the Line window's stripe rule, topo.stripe_profile with the window's processor) resampled onto the position grid, range matched (topo.match_ranges), averaged where any covers, minus the minimum."""
@@ -657,7 +662,7 @@ class LineAverage(Line):
         """
         'run': the alignment (_align) and the average with the current
         settings (the module docstring): the position grid
-        (align.common_positions with crop), the average of every member's
+        (align.common_positions with 'overlapping'), the average of every member's
         pipeline columns (_average_of); then the display replaced by the
         average (energy = the common energy grid, pos = the position grid,
         the array transposed so row j = common position j), the markers
@@ -672,7 +677,7 @@ class LineAverage(Line):
         try:
             grid_e = self._align(hp, sp)
             positions = [np.asarray(m['pos'], dtype=np.float64) for m in self.members]
-            grid_pos = align.common_positions([m['common'] for m in self.members], positions, self.crop)
+            grid_pos = align.common_positions([m['common'] for m in self.members], positions, self.overlapping)
             state = {'grid_e': grid_e, 'grid_pos': grid_pos}
             avg = self._average_of([self._member_columns(m, self._int_divide_iv, self._int_apply_calibration,
                                                          self._int_apply_normalize, hp, sp)
@@ -697,7 +702,7 @@ class LineAverage(Line):
         costs = ", ".join(f"{self.member_label(k)}: {m.get('cost', 0.0):.3g}" for k, m in enumerate(self.members))
         print(f"{self.name}: {len(self.members)} lines aligned ({'DTW' if self.mode == 'auto' else 'markers'} to "
               f"{self.member_label(self.reference)}; costs {costs}); grid {len(grid_pos)} positions x "
-              f"{len(grid_e)} energies{', cropped' if self.crop else ''}.")
+              f"{len(grid_e)} energies{', overlapping pixels only' if self.overlapping else ''}.")
         self._redraw_curves()
         if self._int_feenstra is None:
             self._int_feenstra = FeenstraWindow(self, self._int_source_label())
@@ -906,7 +911,7 @@ class LineAverage(Line):
             data = Averages.mean_rows(cf_rows[rows, :])
             unf = Averages.mean_rows(cu_rows[rows, :])
             if np.any(~np.isfinite(data)):
-                print("Send to fit: the average has gaps at this marker ('crop' or the gaps' members); not sent.")
+                print("Send to fit: the average has gaps at this marker ('overlapping' or the gaps' members); not sent.")
                 continue
             parts = []
             for m in self.members:
@@ -928,7 +933,7 @@ class LineAverage(Line):
                         + (", the group's plain mean" if self._int_avg_on else ""))
             an = send_sets_to_fit(label, state['grid_e'], data, unf, parts, hp, sp, div, self._int_iv_width(),
                                      self._int_iv_zero_sub, 'interp', self._int_fit_settings, cache, self.tag,
-                                     describe)
+                                     describe, norm_range=self._int_e_range)
             if an is not None:
                 self._int_fits.append(an)
 
@@ -941,7 +946,8 @@ class LineAverage(Line):
         stripe rows, the Line window's markers and centres, the editor's
         markers in the member's own axis, the scale factor the member was
         made with, the sweep view), the reference, the alignment mode,
-        crop, the channel, the filter boxes and states, the calibrate /
+        overlapping, the channel, the filter boxes and states, the energy and
+        position crops (None = full), the calibrate /
         normalize / Feenstra states and settings, the gamma, the topo
         processor flags, the averaged line's group sizes, marker positions
         and E-markers, Average / stack / substack, the last run's grid
@@ -965,8 +971,10 @@ class LineAverage(Line):
                 'members': members,
                 'reference': int(self.reference),
                 'mode': self.mode,
-                'crop': bool(self.crop),
+                'overlapping': bool(self.overlapping),
                 'channel': self.channel,
+                'energy_range': None if self._int_e_range is None else [float(v) for v in self._int_e_range],
+                'pos_range': None if self._int_x_range is None else [float(v) for v in self._int_x_range],
                 'hampel': hp, 'sgolay': sp,
                 'hampel_on': bool(h_on), 'sgolay_on': bool(s_on),
                 'calibrate': bool(self._int_apply_calibration),
@@ -1002,7 +1010,7 @@ class LineAverage(Line):
         """
         Put a record's state into the window (the browser's loader, after
         the members are added): the reference, the mode and the editor's
-        markers, crop, then the Line window's record keys through
+        markers, overlapping (an older record's 'crop'), then the Line window's record keys through
         Line.restore_markers (the filter boxes and states, the calibrate /
         normalize / Feenstra states and settings, the gamma, the topo
         processor, the group sizes and marker positions, the E-markers,
@@ -1014,8 +1022,8 @@ class LineAverage(Line):
         for m, rm in zip(self.members, rec.get('members', [])):
             am = rm.get('align_markers')
             m['align_markers'] = [float(p) for p in am] if am else None
-        self.crop = bool(rec.get('crop', False))
-        self.chk_crop.set(self.crop)
+        self.overlapping = bool(rec.get('overlapping', rec.get('crop', False)))
+        self.chk_overlapping.set(self.overlapping)
         Line.restore_markers(self, rec)
         if self.run_state is None:
             self.run()
@@ -1082,11 +1090,11 @@ class LineAverage(Line):
     # --- the figure ---
 
     def _int_build_controls(self):
-        """The Line window's controls, the Line-only ones hidden (the 'line' box and arrows, the 'line → ...' buttons, 'save', '+' / '-', the 'E range' / 'x range' boxes, the topo row controls and their labels), plus this window's own: the name box, the members line, 'run', 'edit alignment', 'save', 'remove last', 'restore' (widgets.RunControls) and 'crop'; the window title is the name."""
+        """The Line window's controls, the Line-only ones hidden (the 'line' box and arrows, the 'line → ...' buttons, 'save', '+' / '-', the topo row controls and their labels), plus this window's own: the name box, the members line, 'run', 'edit alignment', 'save', 'remove last', 'restore' (widgets.RunControls) and 'overlapping'; the window title is the name."""
         Line._int_build_controls(self)
         fig = self._int_fig
         for w in (self._int_box_line, self._int_btn_line_new, self._int_btn_line_exist, self._int_btn_save,
-                  self._int_btn_topo_add, self._int_btn_topo_remove, self._int_e_range_box, self._int_x_range_box):
+                  self._int_btn_topo_add, self._int_btn_topo_remove):
             w.show(False)
         self._int_line_steps.show(False)
         for row in self._int_topo_row_widgets:            # (box, pass button, profile button) per row
@@ -1105,8 +1113,8 @@ class LineAverage(Line):
         self.buttons.on('save', self._int_on_save)
         self.buttons.on('remove last', self._on_remove_last)
         self.buttons.on('restore', self._on_restore)
-        self.chk_crop = widgets.make(fig, 'crop', 0.945, 0.01, value=self.crop)
-        self.chk_crop.on_change(self._on_crop)
+        self.chk_overlapping = widgets.make(fig, 'overlapping', 0.943, 0.01, value=self.overlapping)
+        self.chk_overlapping.on_change(self._on_overlapping)
         try:
             fig.canvas.manager.set_window_title(self.name)
         except Exception:
