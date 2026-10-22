@@ -3,7 +3,7 @@ Calibration of the lock-in channels against the co-acquired I(V) current:
 one gain for the file from the modulation amplitude (1 / V_mod for the
 first harmonic, 4 / V_mod² for the second; the joint fit over the columns
 when none is recorded, and printed beside it as a check either way), one
-offset per sweep from the regression anchored at the setpoint (the point
+offset per curve from the regression anchored at the setpoint (the sample
 at the setpoint bias, whose current is the setpoint current: the feedback
 loop was opened there), and its double-derivative counterpart for the
 IETS (second-harmonic) channel.  Nothing refers to 0 V.  A sweep
@@ -11,26 +11,13 @@ that does not pass the setpoint bias is refused (anchor_index); a pixel's
 reverse sweeps, which start at the far end, take the a, b of its forward
 sweeps (the `ref` columns).  calibrate and calibrate_iets return
 (calibrated, fits), every fit entry carrying a, b, c, rms, X / Z, model
-and residual.
-
-For the dI/dV channel the regressed offsets are a diagnostic, not the
-offset applied: the lock-in's offset is one number for the file, the
-1 / rms²-weighted mean of the sweeps' b, raised to the bound below which
-some calibrated point is negative (file_offset); and a gap that moves
-during a sweep (creep after the loop opened) multiplies the current and
-the lock-in by the same factor s(V), the junction's transmission relative
-to the setpoint gap, which the two channels fix together: ln s = ln(I /
-I_ref) − ∫ (a·LIA + b) / I dV from the sweep's start.  gap_factor reads
-it from every point of the sweep; (a·LIA + b) / s is the dI/dV at the
-setpoint gap and I / s the current there.  The IETS channel keeps its
-regression (s needs the first
-harmonic).  Plain arrays in, columns = spectra; the pipeline
+and residual.  Plain arrays in, columns = spectra; the pipeline
 (sts.STS.process_arrays) calls these on the acquired columns only, after
 the channel and the current have been through their filters and before
 the Feenstra division.  Run as a file, the __main__
-block draws one file's calibration (its inputs, the fit in the I(V) frame
-with the corrected current, the corrected curve in the dI/dV frame, and
-the gap factor), one sweep at a time.
+block draws one file's calibration (its inputs, the fit in the I(V) frame,
+the calibrated curve in the dI/dV frame, and the cost surface), one sweep
+at a time.
 """
 
 if __package__ in (None, ''):
@@ -80,29 +67,6 @@ class IetsColumnFit(NamedTuple):
 
 
 ANCHOR_TOL = 0.5     # the setpoint bias must lie within this fraction of the energy step of a sample
-
-# The steps after the regression (dI/dV channel): the file's offset and the gap factor.
-
-
-class FileOffset(NamedTuple):
-    """The lock-in's offset for a file (file_offset): the one b applied to every sweep of the dI/dV channel."""
-    b: float          # the offset applied: b_mean, raised to `bound` when the floor is on and b_mean lies below it
-    b_mean: float     # the 1 / rms²-weighted mean of the sweeps' regressed b (I units per V)
-    bound: float      # −min(a·LIA) over the columns: below this b some calibrated point is negative
-    floored: bool     # True when b is the bound rather than b_mean
-    n: int            # the sweeps in the mean
-    noise: float      # the file's current noise: the median rms residual of the regressions (I units)
-
-
-class GapFactor(NamedTuple):
-    """One sweep's gap factor s(V) (gap_factor); the arrays in the column's original energy order (npts,)."""
-    s: np.ndarray         # the junction's transmission at each point relative to the setpoint gap (1 at the start)
-    lns: np.ndarray       # ln s (−2κ·δz, κ the decay constant of the current with the gap)
-    iv_corr: np.ndarray   # the current at the setpoint gap: (I − I(0 V)) / s + I(0 V) (I units)
-    s_end: float          # s at the sweep's last point
-    lns_max: float        # the largest |ln s| over the sweep
-    n_skipped: int        # the steps skipped (a current of zero, not finite, or of the other sign): s held across them
-    anchored: bool        # False when the sweep does not start at an end of the window: s ≡ exp(lns0)
 
 
 def anchor_index(energy, V_bias):
@@ -190,9 +154,7 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     """
     Calibrate dI/dV (LIA) curves against the co-acquired I(V) current
     channel: one gain for the file, one offset per curve, anchored at the
-    setpoint.  For the dI/dV channel the pipeline applies the file's
-    offset (file_offset) and the gap factor (gap_factor) after this
-    regression; the per-curve b_j are then the diagnostic of each sweep.
+    setpoint.
 
     Physics
     -------
@@ -329,149 +291,6 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     return calibrated, fits
 
 
-def file_offset(fits, lia, floor=True):
-    """
-    The lock-in's offset for a file: one b for every sweep of the dI/dV
-    channel.  The lock-in's offset does not change from sweep to sweep,
-    while a per-sweep b also absorbs a gap that moved during that sweep
-    (gap_factor), so the file's b is the mean of the regressed b_j
-    (calibrate's fits) weighted by 1 / rms_j², the inverse variance of
-    each (the standard error of b_j is rms_j over the same factor for
-    every sweep).  With `floor` on, a b_mean below −min(a·LIA) over the
-    given columns `lia` (the filtered lock-in columns the offset is
-    applied to) is raised to that bound: the lowest calibrated point of
-    the file then sits at zero and none is negative; the result says when
-    that acted.  Returns a FileOffset (b applied, b_mean, bound, floored,
-    n sweeps, noise = the median rms residual, the file's current noise).
-    Raises ValueError without a finite fit.
-    """
-    b = np.array([f.b for f in fits], dtype=np.float64)
-    r = np.array([f.rms for f in fits], dtype=np.float64)
-    ok = np.isfinite(b) & np.isfinite(r)
-    if not ok.any():
-        raise ValueError("no regressed sweep: the file's offset cannot be formed.")
-    b, r = b[ok], r[ok]
-    w = np.where(r > 0, 1.0 / np.maximum(r, 1e-300) ** 2, 0.0)
-    b_mean = float(np.sum(w * b) / np.sum(w)) if np.sum(w) > 0 else float(np.mean(b))
-    a = float(fits[0].a)
-    lia = np.asarray(lia, dtype=np.float64)
-    al = a * lia[np.isfinite(lia)] if lia.size else lia
-    bound = float(-np.min(al)) if al.size else float('-inf')
-    floored = bool(floor and np.isfinite(bound) and b_mean < bound)
-    return FileOffset(bound if floored else b_mean, b_mean, bound, floored, int(b.size), float(np.median(r)))
-
-
-def gap_factor(energy, g, iv, V_bias, start='setpoint', lns0=0.0, iv_zero=None):
-    """
-    The gap factor s(V) of every column: the junction's transmission at
-    the moment the sweep passed V relative to the setpoint gap, read from
-    the two channels together.
-
-    Physics
-    -------
-    A gap that moves during a sweep (creep after the loop opened; the
-    tip was not moved on purpose) multiplies the current and the lock-in
-    by the same factor s, exp(−2κ·δz) to lowest order, the lock-in
-    tracking the current's change with bias at the instantaneous gap.
-    With g = a·LIA + b the calibrated dI/dV at the instantaneous gap and
-    I₀ the current the sweep would have had at a still gap,
-
-        I = s · I₀,    g = s · dI₀/dV,    I₀ = I_ref + ∫ g / s dV,
-
-    so the log of the first line, differentiated and combined with the
-    second, gives the gap's log-rate as the channels' disagreement,
-    (dI/dV − g) / I, and integrating it from the sweep's start removes
-    the derivative:
-
-        ln s(V) = ln( I(V) / I_ref ) − ∫ g / I dV'    (from the start),
-
-    I_ref the current at the start.  (a·LIA + b) / s is the dI/dV at the
-    setpoint gap and I / s the current there, which is then the integral
-    of that dI/dV by construction.  The Feenstra ratio is unchanged by s.
-
-    ln s accumulates over every point of the sweep, one increment per
-    step between consecutive points: with the current linear across the
-    step and g at its mean ḡ there, ∫ g / I dV over the step is
-    ḡ·ΔV/ΔI · ln(I_k / I_{k−1}), so the increment is ln(I_k / I_{k−1}) ·
-    (1 − ḡ·ΔV/ΔI), zero for a still sweep (ΔI = ḡ·ΔV) however small the
-    current, which a trapezoid of g / I is not (a step with ΔI = 0 takes
-    −ḡ·ΔV/I).  A step is skipped, s held across it, only where the
-    arithmetic does not exist: a current of zero, not finite, or
-    changing sign (the one step through 0 V).  The current at 0 V (`iv_zero`, per column: the current
-    channel's offset, what '0Vsub' subtracts) is removed before the ratio
-    when given; the corrected current keeps it: (I − I(0 V)) / s + I(0 V).
-
-    A sweep that starts at the setpoint (`start` 'setpoint': a forward
-    sweep) starts at the anchor, which must be at an end of the window;
-    its ln s starts at `lns0` (0).  A reverse sweep (`start` 'far') starts
-    at the other end of the window, right after its forward sweep ended
-    there: it is anchored to it, `lns0` its forward's ln s_end (per
-    column, or one value), and its ln s continues from there.  A column
-    whose anchor lies inside the window is not corrected (s ≡ exp(lns0),
-    anchored False).
-
-    Parameters: energy (npts,) any order; g (npts, N) the calibrated
-    dI/dV a·LIA + b at the instantaneous gap; iv (npts, N) the recorded
-    current through the pipeline's filters; V_bias the setpoint bias;
-    start, lns0, iv_zero as above.  Returns a list of GapFactor, one per
-    column, the arrays in the original energy order.
-    """
-    energy = np.asarray(energy, dtype=np.float64)
-    g = np.asarray(g, dtype=np.float64)
-    iv = np.asarray(iv, dtype=np.float64)
-    if g.ndim == 1:
-        g = g[:, None]
-    if iv.ndim == 1:
-        iv = iv[:, None]
-    if g.shape != iv.shape or g.shape[0] != energy.size:
-        raise ValueError(f"gap_factor: dI/dV {g.shape}, current {iv.shape} and energy ({energy.size}) must agree.")
-    if start not in ('setpoint', 'far'):
-        raise ValueError(f"start must be 'setpoint' or 'far' (got '{start}').")
-    n, N = g.shape
-    sort_idx = np.argsort(energy)
-    e_sorted = energy[sort_idx]
-    i_a = anchor_index(e_sorted, V_bias)
-    lns0 = np.broadcast_to(np.asarray(lns0, dtype=np.float64), (N,))
-    zero = (np.zeros(N) if iv_zero is None
-            else np.broadcast_to(np.asarray(iv_zero, dtype=np.float64), (N,)))
-    anchored = n >= 2 and i_a in (0, n - 1)
-    from_low = (i_a == 0) == (start == 'setpoint')      # the sweep runs up the sorted axis
-    seq = np.arange(n) if from_low else np.arange(n - 1, -1, -1)
-    out = []
-    for j in range(N):
-        z = float(zero[j]) if np.isfinite(zero[j]) else 0.0
-        gj = g[sort_idx, j]
-        Ij = iv[sort_idx, j] - z
-        l0 = float(lns0[j]) if np.isfinite(lns0[j]) else 0.0
-        lns_s = np.full(n, l0)
-        n_skipped = 0
-        if anchored:
-            Vq, Iq, gq = e_sorted[seq], Ij[seq], gj[seq]
-            valid = np.isfinite(Iq) & np.isfinite(gq) & (Iq != 0)
-            # The increments of ln s between consecutive points, from the sweep's start: the current
-            # linear across the step, g at its mean there (the docstring); a step across a sign change
-            # of the current (through 0 V) has no log and is skipped.
-            kk = np.arange(1, n)
-            both = valid[kk] & valid[kk - 1] & (np.sign(Iq[kk]) == np.sign(Iq[kk - 1]))
-            dI = Iq[kk] - Iq[kk - 1]
-            gV = 0.5 * (gq[kk] + gq[kk - 1]) * (Vq[kk] - Vq[kk - 1])
-            with np.errstate(divide='ignore', invalid='ignore'):
-                ratio = np.log(Iq[kk] / Iq[kk - 1])
-                inc = np.where(dI != 0, ratio * (1.0 - gV / dI), -gV / Iq[kk])
-            ok = both & np.isfinite(inc)
-            d = np.zeros(n)
-            d[kk] = np.where(ok, inc, 0.0)
-            n_skipped = int(np.sum(~ok))
-            lns_s[seq] = l0 + np.cumsum(d)
-        lns = np.empty(n)
-        lns[sort_idx] = lns_s
-        s = np.exp(lns)
-        iv_corr = (iv[:, j] - z) / s + z
-        s_end = float(np.exp(lns_s[seq[-1]])) if anchored else float(np.exp(l0))
-        out.append(GapFactor(s, lns, iv_corr, s_end, float(np.max(np.abs(lns))), n_skipped, bool(anchored)))
-    return out
-
-
 # vmod: the gain's source, 4 / V_mod² for the second harmonic (gain_from_modulation).
 def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None):
     """
@@ -579,15 +398,13 @@ if __name__ == '__main__':
     # in file order, point, line, or map alike).  Row 1, the calibration's inputs: the raw LIA, its
     # integral X referenced at the anchor (the sample at the setpoint bias), the recorded current
     # (every acquired column faint, the shown sweep bold; the filtered current when the filters are
-    # on).  Row 2: the fit in the I(V) frame with its parts a·X, b·(V − V_bias), c = I_set, the
-    # residual, and the corrected current I / s (a the file's gain from V_mod, b the sweep's regressed
-    # offset); the dI/dV frame with a·LIA + b_file (the file's offset) and its correction (a·LIA +
-    # b_file) / s beside the numerical derivative of the (filtered) current; the gap factor s(V).
-    # The file's lines (the gain, the offset, the gap factors and the negative columns) and every
-    # column's parameters printed once; the shown sweep's on every step.
+    # on).  Row 2: the fit in the I(V) frame with its parts a·X, b·(V − V_bias), c = I_set and the
+    # residual (a the file's gain from V_mod, b the sweep's offset); the calibrated a·LIA + b in the
+    # browser's dI/dV frame
+    # with the numerical derivative of the (filtered) current; the least-squares cost S(a, b)
+    # around its minimum.  Parameters of every column printed once; the shown sweep's on every step.
     from sm4_Browser import qtplot as plt
     from sm4_Browser import sm4file, widgets, filters
-    from sm4_Browser.feenstra import iv_zero_offset
     path = r'experiment_dir/file.sm4'
     column = 0        # the starting sweep: an index among the acquired columns (0 = the first)
     hampel = None     # the current filters as the windows set them (None = off), e.g. {'window': 4, 'n_sigma': 3}
@@ -607,13 +424,6 @@ if __name__ == '__main__':
     filtered = hampel is not None or sgolay is not None
     iv = filters.filter_lia(iv_raw, hampel, sgolay)   # the recorded current through the filters (a copy when off)
     cal, fits = calibrate(V, lia, iv, f.vmod, V_bias=f.V_bias, I_setpoint=f.I_setpoint, ref=(f.lia_ref, f.iv_ref))
-    # The file's offset (the floor on), the gap factor of every sweep, the corrected channel and current.
-    off = file_offset(fits, lia, floor=True)
-    g = fits[0].a * lia + off.b
-    gfs = gap_factor(V, g, iv, f.V_bias, iv_zero=iv_zero_offset(V, iv))
-    s_all = np.column_stack([gf.s for gf in gfs])
-    corrected = g / s_all
-    iv_corr = np.column_stack([gf.iv_corr for gf in gfs])
     uL = f.units_lia or 'no units'                    # the LIA page's RHK_Zunits (the loader's data are in it)
     uI = f.units_iv or 'no units'                     # the Current page's RHK_Zunits
     ua = "1/V" if uI == uL else f"{uI}/({uL}·V)"      # the units of the stretch a
@@ -630,27 +440,37 @@ if __name__ == '__main__':
                                                 f"{f.vmod * 1e3:.3g} mV)" if fits[0].gain == 'modulation'
                                                 else "from the joint fit over the columns (no modulation amplitude recorded)")
           + f"; the joint fit gives {fits[0].a_joint:.4g} {ua}; the offset b per sweep")
-    print(f"offset b = {sm4file.si_text(off.b, uI + '/V')} for the file: the 1/rms²-weighted mean of the "
-          f"{off.n} regressed b is {sm4file.si_text(off.b_mean, uI + '/V')}, the bound −min(a·LIA) "
-          f"{sm4file.si_text(off.bound, uI + '/V')}" + (" (the floor acted)" if off.floored else "")
-          + f"; current noise {sm4file.si_text(off.noise, uI)}")
-    s_ends = np.array([gf.s_end for gf in gfs])
-    n_neg = int(np.sum(np.any(corrected < 0, axis=0)))
-    n_skip = sum(gf.n_skipped for gf in gfs)
-    print(f"gap correction: s_end from {s_ends.min():.3f} to {s_ends.max():.3f} (median {np.median(s_ends):.3f}); "
-          f"{n_skip} step(s) skipped (a current of zero, not finite, or of the other sign); "
-          f"{n_neg} of {n_sweeps} corrected columns dip below zero")
-    for j, cf, gf in zip(cols, fits, gfs):
+    for j, cf in zip(cols, fits):
         print(f"column {j}: b = {sm4file.si_text(cf.b, uI + '/V')}, "
-              f"I_set = {sm4file.si_text(cf.c, uI)}, rms residual = {sm4file.si_text(cf.rms, uI)}; "
-              f"s_end = {gf.s_end:.4f}, largest |ln s| = {gf.lns_max:.4f}"
-              + (f"; {gf.n_skipped} step(s) skipped" if gf.n_skipped else "")
-              + ("" if gf.anchored else "; not anchored (the sweep does not start at an end of the window)"))
+              f"I_set = {sm4file.si_text(cf.c, uI)}, rms residual = {sm4file.si_text(cf.rms, uI)}")
 
     X_all = np.column_stack([c.X for c in fits])
     faint = dict(color='0.6', lw=0.5, alpha=0.5)
     bold = dict(color='C0', lw=1.2)
     to_pA = (lambda y: y * pA, lambda y: y / pA)      # the right-hand axes in pA (a Current page in A)
+
+    def cost_surface(k):
+        """
+        This method's least-squares cost S(a, b) = Σ (ΔI − a·X − b·U)² of
+        sweep k, ΔI = I − I_set and X referenced at the anchor, U = V − V_bias,
+        on a window of ±4 standard errors of a and b around the minimum (from
+        rms² · M⁻¹).  (a grid, b grid, S[b, a], S at the fit).
+        """
+        cf = fits[k]
+        Xs = cf.X[order]
+        dI = iv[order, k] - cf.c
+        M = np.array([[Xs @ Xs, Us @ Xs], [Us @ Xs, Us @ Us]])
+        cov = cf.rms ** 2 * np.linalg.inv(M)
+        sa, sb = np.sqrt(abs(cov[0, 0])), np.sqrt(abs(cov[1, 1]))
+        ha = 4 * sa if np.isfinite(sa) and sa > 0 else 0.1 * (abs(cf.a) or 1.0)
+        hb = 4 * sb if np.isfinite(sb) and sb > 0 else 0.1 * (abs(cf.b) or 1.0)
+        aa = np.linspace(cf.a - ha, cf.a + ha, 121)
+        bb = np.linspace(cf.b - hb, cf.b + hb, 121)
+        S = np.empty((bb.size, aa.size))
+        for ia, a_ in enumerate(aa):
+            r = (dI - a_ * Xs)[None, :] - bb[:, None] * Us[None, :]
+            S[:, ia] = np.sum(r * r, axis=1)
+        return aa, bb, S, float(np.sum(cf.residual * cf.residual))
 
     DESIGN = (17, 9.5)        # the demo window's design size (inches)
     fig = plt.figure(figsize=DESIGN)
@@ -664,11 +484,10 @@ if __name__ == '__main__':
             ax.remove()
         state['axes'] = []
         cf = fits[k]
-        gf = gfs[k]
         lia_k = lia[:, k]
         iv_k = iv[:, k]
-        print(f"column {cols[k]}: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g} (file's b {off.b:.4g}), "
-              f"s_end = {gf.s_end:.4f}, largest |ln s| = {gf.lns_max:.4f}")
+        print(f"column {cols[k]}: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}")
+        aa, bb, S, S_min = cost_surface(k)
 
         axes = fig.subplots(2, 3)
         state['axes'].extend(axes.flat)
@@ -711,10 +530,9 @@ if __name__ == '__main__':
         ax.plot(V, cf.a * cf.X, '--', color='C0', lw=1, label="a·X")
         ax.plot(V, cf.b * (V - Vs[i0]), ':', color='C2', lw=1, label="b·(V − V_bias)")
         ax.axhline(cf.c, ls='-.', color='C1', lw=1, label="c = I_set")
-        ax.plot(V, iv_corr[:, k], color='C4', lw=1.0, label="I / s: the current at the setpoint gap")
         ax.axvline(Vs[i0], color='0.5', lw=0.8, ls=':')
         ax.set_ylabel(f"I ({uI})")
-        ax.set_title("the fit in the I(V) frame: I − I_set = a·X + b·(V − V_bias); the corrected current")
+        ax.set_title("the fit in the I(V) frame: I − I_set = a·X + b·(V − V_bias)")
         ax.legend(loc='upper left', fontsize=8)
         ax.text(0.02, 0.03, f"a = {cf.a:.4g} {ua}\nb = {sm4file.si_text(cf.b, uI + '/V')}\n"
                             f"I_set = {sm4file.si_text(cf.c, uI)}\nrms = {sm4file.si_text(cf.rms, uI, 3)}",
@@ -730,28 +548,26 @@ if __name__ == '__main__':
         didv_num[order] = np.gradient(iv_k[order], Vs)
         ax.plot(V, didv_num, color='0.6', lw=0.6, alpha=0.7,
                 label="numerical dI/dV of the " + ("filtered" if filtered else "recorded") + " I(V)")
-        ax.plot(V, g[:, k], '--', color='C3', lw=1.0, label="a·LIA + b_file (the file's offset)")
-        ax.plot(V, corrected[:, k], color='C3', lw=1.3, label="(a·LIA + b_file) / s: dI/dV at the setpoint gap")
-        ax.axhline(0, color='k', lw=0.5)
+        ax.plot(V, cal[:, k], color='C3', lw=1.3, label="a·LIA + b (anchored at the setpoint)")
         ax.set_ylabel(f"dI/dV ({uI}/V)")
-        ax.set_title("the dI/dV frame: a scales the LIA, b_file shifts it, s undoes the gap's motion")
+        ax.set_title("the dI/dV frame: a scales the LIA, b shifts it")
         ax.legend(fontsize=8)
         if uI == 'A':
             ax.secondary_yaxis('right', functions=to_pA).set_ylabel("pA/V")
 
         ax = axes[1, 2]
-        ax.plot(V, gf.s, color='C0', lw=1.3, label="s(V)")
-        ax.axhline(1, color='k', lw=0.5)
-        ax.axvline(Vs[i0], color='0.5', lw=0.8, ls=':')
-        ax.set_ylabel("s = exp(ln(I / I_ref) − ∫ (a·LIA + b_file) / I dV)")
-        ax.set_title("the gap factor: the junction's transmission relative to the sweep's start")
+        with np.errstate(divide='ignore', invalid='ignore'):
+            logS = np.log10(S / S_min)
+        cs = ax.contourf(aa, bb, logS, levels=30, cmap='viridis')
+        cb = fig.colorbar(cs, ax=ax, label="log10(S / S_min)")
+        state['axes'].append(cb.ax)
+        ax.plot(cf.a, cf.b, 'o', color='w', mec='k', label=f"used: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}")
+        ax.set_xlabel(f"a ({ua})")
+        ax.set_ylabel(f"b ({uI}/V)")
+        ax.set_title("least-squares cost S(a, b) of this sweep alone (±4 standard errors of a free fit)")
         ax.legend(fontsize=8, loc='upper right')
-        ax.text(0.02, 0.03, f"s_end = {gf.s_end:.4f}\nlargest |ln s| = {gf.lns_max:.4f}"
-                            + (f"\n{gf.n_skipped} step(s) skipped" if gf.n_skipped else "")
-                            + ("" if gf.anchored else "\nnot anchored"),
-                transform=ax.transAxes, fontsize=8, va='bottom', bbox=dict(boxstyle='round', fc='w', alpha=0.8))
 
-        for ax in list(axes[0]) + list(axes[1]):
+        for ax in list(axes[0]) + list(axes[1, :2]):
             ax.set_xlabel("Energy (eV)")
         sweep_text.set_text(f"sweep {k + 1} of {n_sweeps} (file column {cols[k]})")
         fig.canvas.draw_idle()

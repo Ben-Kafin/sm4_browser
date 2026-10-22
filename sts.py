@@ -408,31 +408,6 @@ class STS:
         s.view_mode = mode
         s.view_cols = chosen
         s.parent = self
-        s.source = getattr(self, 'source', self)       # the file's own spectra: the file's offset is formed on it
-        # The sweeps behind every column of the view (the pipeline's `members`): per pixel its k sweeps in
-        # acquisition order, each with its direction and whether the view chose it; a never-acquired
-        # sweep is NaN.  With calibrate on, the pipeline corrects each sweep on its own (the reverse ones
-        # anchored at their forward) and averages the corrected sweeps the view chose.
-        k = int(info['k'])
-        dirs = np.asarray(info['dir'])
-        lia_m = np.full((npts, n_pix, k), np.nan)
-        iv_m = np.full((npts, n_pix, k), np.nan)
-        dir_m = np.zeros((n_pix, k), dtype=int)
-        chosen_m = np.zeros((n_pix, k), dtype=bool)
-        acq_m = np.zeros((n_pix, k), dtype=bool)
-        for p in range(n_pix):
-            cs = np.asarray(info['cols_of'][p], dtype=int)[:k]
-            ch = set(int(x) for x in chosen[p])
-            for m, cidx in enumerate(cs):
-                dir_m[p, m] = dirs[cidx]
-                chosen_m[p, m] = int(cidx) in ch
-                if self.acquired[cidx]:
-                    acq_m[p, m] = True
-                    if self.lia is not None:
-                        lia_m[:, p, m] = self.lia[:, cidx]
-                    if self.iv is not None:
-                        iv_m[:, p, m] = self.iv[:, cidx]
-        s.members = {'lia': lia_m, 'iv': iv_m, 'dir': dir_m, 'chosen': chosen_m, 'acquired': acq_m}
         # The calibration's reference (calibration.calibrate's `ref`) for a view that is not the
         # forward one: per pixel the mean raw columns of its kept forward sweeps, the sweeps that left
         # the setpoint; NaN for a pixel without one.  The forward view regresses on its own columns.
@@ -797,11 +772,6 @@ class STS:
         s.energy = self.energy
         s.energy_units = getattr(self, 'energy_units', None)
         s.adc_period = getattr(self, 'adc_period', None)
-        s.source = getattr(self, 'source', self)
-        m = getattr(self, 'members', None)
-        s.members = None if m is None else {'lia': m['lia'][:, cols, :].copy(), 'iv': m['iv'][:, cols, :].copy(),
-                                            'dir': m['dir'][cols].copy(), 'chosen': m['chosen'][cols].copy(),
-                                            'acquired': m['acquired'][cols].copy()}
         s.V_bias = self.V_bias
         s.I_setpoint = self.I_setpoint
         s.n_spectra = int(cols.size)
@@ -840,163 +810,11 @@ class STS:
         return (f"{name}: no modulation amplitude recorded; the calibration gain is the joint fit over the "
                 f"columns, a = {fit.a:.4g} {unit}; the offset per sweep.")
 
-    def file_offset(self, channel='didv', hampel=None, sgolay=None, hampel_didv=None, sgolay_didv=None):
-        """
-        The file's lock-in offset for the dI/dV channel
-        (calibration.file_offset: the 1 / rms²-weighted mean of the
-        regressed b of every acquired forward sweep of the file, through
-        the given filters, the floor on), formed once per filter setting on the file's own
-        spectra (self.source: the all-sweeps spectroscopy a view or a
-        subset came from, else this object) and cached there.  None for
-        the IETS channel, without the current, without a forward sweep,
-        or when the regression is refused.  The pipeline applies it to
-        every sweep (process_arrays' b_file).
-        """
-        if channel != 'didv':
-            return None
-        src = getattr(self, 'source', None) or self
-        if getattr(src, 'lia', None) is None or getattr(src, 'iv', None) is None:
-            return None
-        key = (repr(hampel), repr(sgolay), repr(hampel_didv), repr(sgolay_didv))
-        cache = src.__dict__.setdefault('_offset_cache', {})
-        if key in cache:
-            return cache[key]
-        acq = np.asarray(src.acquired, dtype=bool)
-        info = getattr(src, 'sweep_info', None)
-        fwd = acq if info is None else acq & (np.asarray(info['dir']) > 0)
-        cols = np.flatnonzero(fwd)
-        off = None
-        if cols.size:
-            c = filters.filter_lia(np.asarray(src.lia, dtype=np.float64)[:, cols], hampel_didv, sgolay_didv)
-            iv = filters.filter_lia(np.asarray(src.iv, dtype=np.float64)[:, cols], hampel, sgolay)
-            try:
-                _, fits = calibration.calibrate(src.energy, c, iv, getattr(src, 'vmod', None), V_bias=src.V_bias,
-                                                I_setpoint=src.I_setpoint)
-                off = calibration.file_offset(fits, c, floor=True)
-            except ValueError:
-                off = None
-        cache[key] = off
-        return off
-
-    @classmethod
-    def _didv_corrected(cls, energy, c, iv, cols, vmod, V_bias, I_setpoint, ref_f, members, b_file, filt, name):
-        """
-        The dI/dV channel's calibration on the acquired columns `cols`
-        (process_arrays): the regression (calibration.calibrate), the file's offset (b_file, a
-        calibration.FileOffset from file_offset, else formed over the
-        regressed sweeps here), the gap factor of every sweep
-        (calibration.gap_factor; with `members` every sweep behind each
-        column on its own, the reverse ones anchored at the nearest earlier
-        forward sweep of their pixel, and the column the mean of the
-        corrected sweeps the view chose), the corrected channel (a·LIA +
-        b) / s and the corrected current I / s.  `filt` = (hampel, sgolay,
-        hampel_didv, sgolay_didv) for the members' columns.  A view's
-        columns that average several sweeps, handed over without their
-        members, take the regression on the forward reference as before
-        and no gap factor.  Returns (corrected columns, corrected current,
-        the file's console lines).  ValueError when nothing can be
-        regressed.
-        """
-        hp, sp, hd, sd = filt
-        lines = []
-        unanchored = 0
-        if members is None:
-            if ref_f is not None:
-                cal, fits = calibration.calibrate(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
-                                                  I_setpoint=I_setpoint, ref=ref_f)
-                if name:
-                    lines.append(cls._gain_text(name, fits[0], vmod, 'didv'))
-                    lines.append(f"{name}: the view's columns average several sweeps and the sweeps were not "
-                                 f"handed over: the regressed offsets are applied and no gap factor is formed.")
-                return cal, iv[:, cols].copy(), lines
-            cal, fits = calibration.calibrate(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
-                                              I_setpoint=I_setpoint)
-            off = b_file if b_file is not None else calibration.file_offset(fits, c[:, cols], floor=True)
-            a = fits[0].a
-            zero = feenstra.iv_zero_offset(energy, iv[:, cols])
-            g = a * c[:, cols] + off.b
-            gfs = calibration.gap_factor(energy, g, iv[:, cols], V_bias, iv_zero=zero)
-            corrected = g / np.column_stack([gf.s for gf in gfs])
-            iv_corr = np.column_stack([gf.iv_corr for gf in gfs])
-            n_sweeps = len(gfs)
-        else:
-            lia_m = np.array(members['lia'][:, cols, :], dtype=np.float64)
-            iv_m = np.array(members['iv'][:, cols, :], dtype=np.float64)
-            dir_m, chosen_m, acq_m = members['dir'][cols], members['chosen'][cols], members['acquired'][cols]
-            n_c, k = dir_m.shape
-            for m in range(k):
-                lia_m[:, :, m] = filters.filter_lia(lia_m[:, :, m], hd, sd)
-                iv_m[:, :, m] = filters.filter_lia(iv_m[:, :, m], hp, sp)
-            fw = [(p, m) for p in range(n_c) for m in range(k) if acq_m[p, m] and dir_m[p, m] > 0]
-            if not fw:
-                raise ValueError("no forward sweep behind these columns: no sweep starts at the setpoint.")
-            L = np.column_stack([lia_m[:, p, m] for p, m in fw])
-            Iw = np.column_stack([iv_m[:, p, m] for p, m in fw])
-            cal, fits = calibration.calibrate(energy, L, Iw, vmod, V_bias=V_bias, I_setpoint=I_setpoint)
-            off = b_file if b_file is not None else calibration.file_offset(fits, L, floor=True)
-            a = fits[0].a
-            gf_f = calibration.gap_factor(energy, a * L + off.b, Iw, V_bias, iv_zero=feenstra.iv_zero_offset(energy, Iw))
-            corr_m = np.full((len(energy), n_c, k), np.nan)
-            ivc_m = np.full((len(energy), n_c, k), np.nan)
-            lns_end = {}
-            for i, (p, m) in enumerate(fw):
-                corr_m[:, p, m] = (a * L[:, i] + off.b) / gf_f[i].s
-                ivc_m[:, p, m] = gf_f[i].iv_corr
-                lns_end[(p, m)] = float(np.log(gf_f[i].s_end))
-            gfs = list(gf_f)
-            rv = [(p, m) for p in range(n_c) for m in range(k) if acq_m[p, m] and dir_m[p, m] <= 0 and chosen_m[p, m]]
-            if rv:
-                L2 = np.column_stack([lia_m[:, p, m] for p, m in rv])
-                I2 = np.column_stack([iv_m[:, p, m] for p, m in rv])
-                l0 = []
-                for p, m in rv:
-                    prev = [mm for mm in range(m) if acq_m[p, mm] and dir_m[p, mm] > 0]
-                    if prev:
-                        l0.append(lns_end[(p, prev[-1])])
-                    else:
-                        l0.append(0.0)
-                        unanchored += 1
-                gf_r = calibration.gap_factor(energy, a * L2 + off.b, I2, V_bias, start='far', lns0=np.array(l0),
-                                              iv_zero=feenstra.iv_zero_offset(energy, I2))
-                for i, (p, m) in enumerate(rv):
-                    corr_m[:, p, m] = (a * L2[:, i] + off.b) / gf_r[i].s
-                    ivc_m[:, p, m] = gf_r[i].iv_corr
-                gfs.extend(gf_r)
-            corrected = np.full((len(energy), n_c), np.nan)
-            iv_corr = np.full((len(energy), n_c), np.nan)
-            for p in range(n_c):
-                sel = chosen_m[p] & acq_m[p]
-                if sel.any():
-                    corrected[:, p] = np.nanmean(corr_m[:, p, sel], axis=1)
-                    iv_corr[:, p] = np.nanmean(ivc_m[:, p, sel], axis=1)
-                else:
-                    corrected[:, p] = a * c[:, cols[p]] + off.b
-                    iv_corr[:, p] = iv[:, cols[p]]
-            n_sweeps = len(fw) + len(rv)
-        if name:
-            lines.append(cls._gain_text(name, fits[0], vmod, 'didv'))
-            lines.append(f"{name}: offset b = {off.b * 1e12:.4g} pA/V for the file: the 1/rms²-weighted mean of "
-                         f"{off.n} forward sweep(s)' regressed b is {off.b_mean * 1e12:.4g} pA/V"
-                         + (f", raised to the floor −min(a·LIA) = {off.bound * 1e12:.4g} pA/V" if off.floored
-                            else f" (the floor −min(a·LIA) = {off.bound * 1e12:.4g} pA/V did not act)")
-                         + f"; current noise {off.noise * 1e12:.3g} pA")
-            s_ends = np.array([gf.s_end for gf in gfs])
-            n_skip = sum(gf.n_skipped for gf in gfs)
-            n_neg = int(np.sum(np.any(corrected < 0, axis=0)))
-            lines.append(f"{name}: gap correction over {len(cols)} column(s), {n_sweeps} sweep(s): s_end from "
-                         f"{s_ends.min():.3f} to {s_ends.max():.3f} (median {np.median(s_ends):.3f})"
-                         + (f"; {n_skip} step(s) skipped (a current of zero, not finite, or of the other sign)"
-                            if n_skip else "")
-                         + f"; {n_neg} corrected column(s) dip below zero"
-                         + (f"; {unanchored} reverse sweep(s) with no forward sweep before them are not "
-                            f"corrected" if unanchored else ""))
-        return corrected, iv_corr, lines
-
     @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
                        calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
-                       hampel_didv=None, sgolay_didv=None, name=None, b_file=None, members=None, return_iv=False):
+                       hampel_didv=None, sgolay_didv=None, name=None):
         """
         Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
@@ -1025,22 +843,9 @@ class STS:
         others (see the comment below), are left out of the calibration,
         and come back as zero columns (area 0).  With return_areas, returns
         (curves, areas).  vmod (the file's modulation amplitude,
-        RHK_CH1Drive_Amplitude) is the calibration gain's source.
-
-        For the dI/dV channel with calibrate on, the steps after the
-        regression (_didv_corrected): the file's offset (`b_file`, a
-        calibration.FileOffset from STS.file_offset, else formed over the
-        regressed sweeps of this call) replaces the per-sweep b; the gap
-        factor s of every sweep (calibration.gap_factor) is read from the
-        current (its value at 0 V removed when the window reaches 0 V) and
-        divides the channel and the current; with `members` (a sweep
-        view's sweeps behind every column, STS.sweep_view) every sweep is
-        corrected on its own, the reverse ones anchored at their forward,
-        and the column is the mean of the corrected sweeps the view chose.
-        The division then works on the corrected current.  With return_iv
-        the current the division worked on (filtered; corrected with
-        calibrate on) is returned as well: (curves, iv) or (curves, areas,
-        iv).  The IETS channel keeps the regression alone.
+        RHK_CH1Drive_Amplitude) is handed to the calibration, which accepts
+        it and does not use it (calibration.py's regression needs none; a
+        calibration written to divide by the modulation amplitude would).
         """
         lia = np.asarray(lia, dtype=np.float64)
         if acquired is None:
@@ -1056,36 +861,25 @@ class STS:
             # The recorded current through the I(V) filters once (a copy when both are off): the
             # calibration and the division both work on this current.
             iv = filters.filter_lia(np.asarray(iv, dtype=np.float64), hampel, sgolay)
-        iv_used = iv            # the current the division works on: corrected below with calibrate on (dI/dV)
         if calibrate and iv is not None:
             ref_f = None
             if ref is not None and ref[0] is not None and ref[1] is not None:
                 # The reference columns through the same filters as the columns they stand for.
                 ref_f = (filters.filter_lia(np.asarray(ref[0], dtype=np.float64), hampel_didv, sgolay_didv)[:, cols],
                          filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
+            fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
             try:
-                if channel == 'iets':
-                    cal, fits = calibration.calibrate_iets(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
-                                                           I_setpoint=I_setpoint, ref=ref_f)
-                    c[:, cols] = cal
-                    if name and fits:
-                        cls._note_once(cls._gain_text(name, fits[0], vmod, channel))
-                elif cols.size:
-                    cal, iv_c, lines = cls._didv_corrected(energy, c, iv, cols, vmod, V_bias, I_setpoint, ref_f,
-                                                           members, b_file,
-                                                           (hampel, sgolay, hampel_didv, sgolay_didv), name)
-                    c[:, cols] = cal
-                    iv_used = iv.copy()
-                    iv_used[:, cols] = iv_c
-                    for text in lines:
-                        cls._note_once(text)
+                cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f)
+                c[:, cols] = cal
+                if name and fits:
+                    cls._note_once(cls._gain_text(name, fits[0], vmod, channel))
             except ValueError as exc:
                 cls._note_once(f"calibration not applied: {exc}")
         if divide_iv and channel != 'iets':
             if iv is None:
                 raise ValueError("Feenstra needs the 'Current' channel, which this file does not have.")
             with np.errstate(divide='ignore', invalid='ignore'):
-                c = feenstra.divide_by_iv(energy, c, iv_used, iv_broadening, iv_zero_sub, None, None)
+                c = feenstra.divide_by_iv(energy, c, iv, iv_broadening, iv_zero_sub, None, None)
         if normalize:
             with np.errstate(invalid='ignore'):
                 c, areas = normalization.normalize(energy, c, energy_range=norm_range)
@@ -1093,24 +887,20 @@ class STS:
             areas = np.full(c.shape[1], np.nan)
         c[:, ~acquired] = 0.0
         areas[~acquired] = 0.0
-        if return_iv:
-            return (c, areas, iv_used) if return_areas else (c, iv_used)
         return (c, areas) if return_areas else c
 
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                 return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,
-                hampel_didv=None, sgolay_didv=None, return_iv=False):
-        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint, a sweep view's forward reference and its sweeps, and the file's offset (file_offset) from the file)."""
+                hampel_didv=None, sgolay_didv=None):
+        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint and a sweep view's forward reference from the file)."""
         ref = (getattr(self, 'iets_ref' if channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
-        b_file = self.file_offset(channel, hampel, sgolay, hampel_didv, sgolay_didv) if calibrate else None
         return self.process_arrays(self.energy, self.channel(channel), self.iv, hampel, sgolay, divide_iv,
                                    iv_broadening, return_areas=return_areas, channel=channel,
                                    acquired=self.acquired, iv_zero_sub=iv_zero_sub, normalize=normalize,
                                    calibrate=calibrate, vmod=getattr(self, 'vmod', None),
                                    V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None),
                                    ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                   name=getattr(self, 'name', None),
-                                   b_file=b_file, members=getattr(self, 'members', None), return_iv=return_iv)
+                                   name=getattr(self, 'name', None))
 
 
 if __name__ == '__main__':

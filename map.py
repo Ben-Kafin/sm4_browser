@@ -903,18 +903,13 @@ class Map:
         return self._feenstra_view_dict(g, at, versions, q)
 
     def _feenstra_cubes(self, calibrate, normalize, zs, width):
-        """The companion's cubes (n_e, n_lines, n_fast) per version; with calibrate on the current and I/V cubes come from the current the pipeline corrected by the gap factor (the 0 V subtraction and the broadening on it without filtering again)."""
+        """The companion's cubes (n_e, n_lines, n_fast) per version."""
         g = self.grid
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        didv, iv_used = g.curves(hp, sp, False, self.iv_width(), channel=self.channel, iv_zero_sub=self.iv_zero_sub,
-                                 normalize=normalize, calibrate=calibrate, hampel_didv=hd, sgolay_didv=sd,
-                                 return_iv=True)
-        cubes = {'didv': self._cube_of(didv)}
+        cubes = {'didv': self._cube(False, calibrate, normalize)}
         if g.iv is not None:
-            iv_src, fh, fs = (iv_used, None, None) if calibrate else (g.iv, hp, sp)
-            iv_a = iv_corrected(g.energy, iv_src, zs, fh, fs)
-            ivv = iv_broadened(g.energy, iv_src, width, zs, fh, fs)
+            hp, sp = self.filters.params()
+            iv_a = iv_corrected(g.energy, g.iv, zs, hp, sp)
+            ivv = iv_broadened(g.energy, g.iv, width, zs, hp, sp)
             if normalize:
                 iv_a = normalize_abs(g.energy, iv_a)[0]
                 ivv = normalize_abs(g.energy, ivv)[0]
@@ -1733,27 +1728,15 @@ class Map:
                 return None, None
             return g.lia_ref[:, cols], g.iv_ref[:, cols]
 
-        def members_of(cols):
-            # The sweeps behind these pixels (STS.sweep_view's members), None for one sweep per pixel.
-            mem = getattr(g.spectra, 'members', None)
-            if mem is None:
-                return None
-            return {'lia': mem['lia'][:, cols, :], 'iv': mem['iv'][:, cols, :], 'dir': mem['dir'][cols],
-                    'chosen': mem['chosen'][cols], 'acquired': mem['acquired'][cols]}
-
         def processed(cols, hampel, sgolay, hampel_didv, sgolay_didv):
             # The pipeline on the raw columns with calibrate and normalize at their defaults (both on: the
-            # fit's pipeline), energy ascending; areas: the normalization areas per column (amps).  The
-            # calibration gets the file's offset and the pixels' sweeps.
+            # fit's pipeline), energy ascending; areas: the normalization areas per column (amps).
             lia = g.lia[:, cols]
             iv = g.iv[:, cols]
-            spc = g.spectra
             c, areas = STS.process_arrays(energy, lia, iv, hampel, sgolay, div, self.iv_width(),
                                           return_areas=True, channel='didv', iv_zero_sub=self.iv_zero_sub,
                                           vmod=g.vmod, V_bias=g.V_bias, I_setpoint=g.I_setpoint, ref=refs(cols),
-                                          hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=g.name,
-                                          b_file=spc.file_offset('didv', hampel, sgolay, hampel_didv, sgolay_didv),
-                                          members=members_of(cols))
+                                          hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=g.name)
             return c[e_order, :], areas
 
         sends = []

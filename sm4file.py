@@ -693,6 +693,8 @@ class Sm4File:
             self.n_lines = 1
             self.self_check_text = None
 
+    # --- identity for the averages (an entry of an avgN window) ---
+
     @property
     def key(self):
         """What identifies this entry in an averaging window: the file path (a Selection adds its columns)."""
@@ -1334,17 +1336,14 @@ class Sm4File:
         return fast, slow
 
     def curves(self, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0, channel='didv',
-               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None,
-               return_iv=False):
+               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None):
         """
         Every spectrum of the channel ('didv' or 'iets') through the pipeline
         (npts, N), original energy order (STS.process; hampel / sgolay the
         I(V) filters, hampel_didv / sgolay_didv the channel's own;
         iv_zero_sub: the current's value at 0 V subtracted before the
         division's I/V; normalize and calibrate: the two switchable steps);
-        never-acquired spectra come back as zero columns.  With return_iv,
-        (curves, iv): the current the division worked on as well (filtered;
-        corrected by the gap factor with calibrate on).
+        never-acquired spectra come back as zero columns.
         """
         if self.spectra is None:
             raise ValueError(f"{self.name} has no spectra.")
@@ -1352,7 +1351,7 @@ class Sm4File:
             print(f"{self.name}: no 'Current' channel, curves shown without calibration.")
         return self.spectra.process(channel, hampel, sgolay, divide_iv, iv_broadening, iv_zero_sub=iv_zero_sub,
                                     normalize=normalize, calibrate=calibrate,
-                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, return_iv=return_iv)
+                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
 
     # --- images ---
 

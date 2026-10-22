@@ -408,7 +408,7 @@ class Line:
 
     def _pipeline(self, raw, iv, hampel_filter_params, sgolay_filter_params, apply_calibration,
                   divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False,
-                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None, return_iv=False):
+                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None):
         """
         The package's one pipeline (STS.process_arrays) on this line's
         columns (npts, N), each step when switched on: the columns through
@@ -426,14 +426,10 @@ class Line:
         comes back as NaN (never drawn); a line with no acquired column at
         all is refused, as is the calibration of a file without the I(V).
         With return_areas, returns (curves, areas), the areas of the
-        normalization (NaN for never-acquired columns); with return_iv the
-        current the division worked on (filtered; corrected by the gap
-        factor with the calibration on) is returned last.  The kept columns are
+        normalization (NaN for never-acquired columns).  The kept columns are
         the file's (STS.acquired, this line's slice in self.kept: no column
         never written or ending in never-written samples); for columns of
-        another width the never-written test alone.  The calibration gets the
-        file's offset (STS.file_offset) and the sweeps behind the view's
-        columns (self._int_members) when the columns are the displayed line's.
+        another width the never-written test alone.
         """
         raw = np.asarray(raw, dtype=np.float64)
         kept = getattr(self, 'kept', None)
@@ -448,28 +444,20 @@ class Line:
                 "No I(V) current channel found in this SM4 file. "
                 "Cannot perform linear-regression calibration."
             )
-        sp = self.spectra
-        mem = getattr(self, '_int_members', None)
-        if mem is not None and mem['dir'].shape[0] != raw.shape[1]:
-            mem = None                                     # columns of another width: not the line's
-        b_file = (sp.file_offset(self.channel, hampel_filter_params, sgolay_filter_params, hampel_didv, sgolay_didv)
-                  if apply_calibration and hasattr(sp, 'file_offset') else None)
-        curves, areas, iv_used = STS.process_arrays(self.energy, raw, iv, hampel_filter_params, sgolay_filter_params,
-                                                    divide_iv, iv_broadening, return_areas=True, channel=self.channel,
-                                                    acquired=acquired, iv_zero_sub=iv_zero_sub,
-                                                    normalize=apply_normalize, calibrate=apply_calibration,
-                                                    vmod=getattr(self, 'vmod', None), norm_range=norm_range,
-                                                    V_bias=getattr(self, 'V_bias', None),
-                                                    I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
-                                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                                    name=os.path.basename(str(self.ifile)), b_file=b_file,
-                                                    members=mem, return_iv=True)
+        curves, areas = STS.process_arrays(self.energy, raw, iv, hampel_filter_params, sgolay_filter_params,
+                                           divide_iv, iv_broadening, return_areas=True, channel=self.channel,
+                                           acquired=acquired, iv_zero_sub=iv_zero_sub,
+                                           normalize=apply_normalize, calibrate=apply_calibration,
+                                           vmod=getattr(self, 'vmod', None), norm_range=norm_range,
+                                           V_bias=getattr(self, 'V_bias', None),
+                                           I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
+                                           hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
+                                           name=os.path.basename(str(self.ifile)))
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)
         curves[:, ~acquired] = np.nan
         areas[~acquired] = np.nan
-        out = (curves, areas) if return_areas else curves
-        return (out + (iv_used,) if return_areas else (curves, iv_used)) if return_iv else out
+        return (curves, areas) if return_areas else curves
 
     def _topo_profiles(self, topo_lines):
         """
@@ -509,15 +497,6 @@ class Line:
             if self._ref_pairs:
                 la, ia = (la[:, 0::2] + la[:, 1::2]) / 2.0, (ia[:, 0::2] + ia[:, 1::2]) / 2.0
             self._int_ref = (la, ia)
-        # The sweeps behind the view's columns (STS.sweep_view's members), sliced like the reference; the
-        # pipeline corrects each on its own with calibrate on.  Not for the paired scan modes, whose
-        # columns are pairs averaged here.
-        self._int_members = None
-        mem = getattr(self.spectra, 'members', None) if self.channel != 'iets' else None
-        if mem is not None and not self._ref_pairs:
-            sl = self._ref_sl
-            self._int_members = {'lia': mem['lia'][:, sl, :], 'iv': mem['iv'][:, sl, :], 'dir': mem['dir'][sl],
-                                 'chosen': mem['chosen'][sl], 'acquired': mem['acquired'][sl]}
 
     def _int_orient(self, c):
         """Columns (npts, N) of the line oriented like the heatmap (row j = spectrum j at self.pos[j], energy ascending)."""
@@ -1880,25 +1859,21 @@ class Line:
             'ivv': {'title': t['ivv'], 'ylabel': "I/V (unit area)" if normalize else "I/V (A/V)"},
             'ratio': {'title': t['ratio'] + f" (division on){nn}", 'ylabel': "(dI/dV)/(I/V) (arb. units)"},
         }
-        didv, iv_used = self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize, norm_range=self._int_e_range,
-                                       hampel_didv=hd, sgolay_didv=sd, ref=ref, return_iv=True)
-        versions['didv']['top'] = self._int_orient(didv)
+        versions['didv']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize,
+                                                                  norm_range=self._int_e_range, hampel_didv=hd,
+                                                                  sgolay_didv=sd, ref=ref))
         if iv is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
         else:
             acquired = self._int_kept_mask() if np.asarray(raw).shape[1] == len(self._int_pos) \
                 else np.any(np.asarray(raw) != self._unset, axis=0)
-            # With calibrate on, the current the division works on: filtered and corrected by the gap
-            # factor (the pipeline's); the 0 V subtraction and the broadening then run on it without
-            # filtering again.  Off, the recorded current through the filters as before.
-            iv_src, fh, fs = (iv_used, None, None) if calibrate else (iv, hp, sp)
-            iv_a = iv_corrected(self.energy, iv_src, zs, fh, fs)
+            iv_a = iv_corrected(self.energy, iv, zs, hp, sp)
             if normalize:
                 iv_a = normalize_abs(self.energy, iv_a, energy_range=self._int_e_range)[0]
             iv_a[:, ~acquired] = np.nan
             versions['iv']['top'] = self._int_orient(iv_a)
-            ivv = iv_broadened(self.energy, iv_src, width, zs, fh, fs)
+            ivv = iv_broadened(self.energy, iv, width, zs, hp, sp)
             if normalize:
                 ivv = normalize_abs(self.energy, ivv, energy_range=self._int_e_range)[0]
             ivv[:, ~acquired] = np.nan

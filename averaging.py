@@ -231,12 +231,11 @@ class Selection:
         return self.spectra.channels()
 
     def curves(self, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0, channel='didv',
-               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None,
-               return_iv=False):
-        """The chosen columns through the pipeline (npts, n), original energy order (STS.process); with return_iv (curves, iv), the current the division worked on as well."""
+               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None):
+        """The chosen columns through the pipeline (npts, n), original energy order (STS.process)."""
         return self.spectra.process(channel, hampel, sgolay, divide_iv, iv_broadening, iv_zero_sub=iv_zero_sub,
                                     normalize=normalize, calibrate=calibrate,
-                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, return_iv=return_iv)
+                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
 
     @property
     def where_text(self):
@@ -864,16 +863,12 @@ class MultiAverageWindow:
             color = colors[i % len(colors)]
             label = e['label']
             per = {}
-            didv, iv_used = f.curves(hp, sp, False, width, channel=self.channel, iv_zero_sub=zs,
-                                     normalize=normalize, calibrate=calibrate,
-                                     hampel_didv=hd, sgolay_didv=sd, return_iv=True)
-            per['didv'] = didv[order, :][:, f.acquired][:, kept]
+            per['didv'] = f.curves(hp, sp, False, width, channel=self.channel, iv_zero_sub=zs,
+                                   normalize=normalize, calibrate=calibrate,
+                                   hampel_didv=hd, sgolay_didv=sd)[order, :][:, f.acquired][:, kept]
             if f.iv is not None:
-                # With calibrate on, the current the pipeline corrected by the gap factor (filtered), the
-                # 0 V subtraction and the broadening on it without filtering again.
-                iv_src, fh, fs = (iv_used, None, None) if calibrate else (f.iv, hp, sp)
-                iv_a = iv_corrected(f.energy, iv_src, zs, fh, fs)
-                ivv = iv_broadened(f.energy, iv_src, width, zs, fh, fs)
+                iv_a = iv_corrected(f.energy, f.iv, zs, hp, sp)
+                ivv = iv_broadened(f.energy, f.iv, width, zs, hp, sp)
                 if normalize:
                     iv_a = normalize_abs(f.energy, iv_a)[0]
                     ivv = normalize_abs(f.energy, ivv)[0]

@@ -515,7 +515,7 @@ class LineAverage(Line):
     # --- the pipeline per member ---
 
     def _member_columns(self, m, divide_iv, calibrate, normalize, hampel, sgolay, channel=None,
-                        hampel_didv=None, sgolay_didv=None, return_iv=False):
+                        hampel_didv=None, sgolay_didv=None):
         """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings (the I(V) pair, then the dI/dV pair; the window's dI/dV settings when the latter are not given), the member's setpoint and forward-sweep reference, the window's Feenstra settings, the channel, and the normalization over the window's energy crop; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
         sel = m['selection']
         channel = self.channel if channel is None else channel
@@ -531,49 +531,35 @@ class LineAverage(Line):
             raise ValueError(f"{m['name']}: no I(V) current channel; the division cannot be applied.")
         ref = (getattr(sel.spectra, 'iets_ref' if channel == 'iets' else 'lia_ref', None),
                getattr(sel.spectra, 'iv_ref', None))
-        spc = sel.spectra
-        c, iv_used = STS.process_arrays(sel.energy, raw, sel.iv, hampel, sgolay, divide_iv, self._int_iv_width(),
-                                        channel=channel, acquired=acquired, iv_zero_sub=self._int_iv_zero_sub,
-                                        normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
-                                        norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
-                                        ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'],
-                                        b_file=(spc.file_offset(channel, hampel, sgolay, hampel_didv, sgolay_didv)
-                                                if calibrate and hasattr(spc, 'file_offset') else None),
-                                        members=getattr(spc, 'members', None) if channel != 'iets' else None,
-                                        return_iv=True)
+        c = STS.process_arrays(sel.energy, raw, sel.iv, hampel, sgolay, divide_iv, self._int_iv_width(),
+                               channel=channel, acquired=acquired, iv_zero_sub=self._int_iv_zero_sub,
+                               normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
+                               norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
+                               ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'])
         c = np.array(c, dtype=np.float64)
         c[:, ~acquired] = np.nan
-        return (c, iv_used) if return_iv else c
+        return c
 
-    def _member_source_current(self, m, calibrate):
-        """The current a member's I(V) and I/V panels start from and the filters to run on it: with `calibrate` the current the pipeline corrected by the gap factor (filtered; the window's dI/dV filters as its heatmap), no filters again; else the recorded current and the window's I(V) filters."""
-        sel = m['selection']
-        if calibrate:
-            _, iv_used = self._member_columns(m, False, True, False, self._int_hampel_params, self._int_sgolay_params,
-                                              return_iv=True)
-            return iv_used, None, None
-        return sel.iv, self._int_hampel_params, self._int_sgolay_params
-
-    def _member_current(self, m, normalize, calibrate=False):
-        """A member's current in amps (filters and 0Vsub as set; with `calibrate` the current corrected by the gap factor, _member_source_current), unit area per location with `normalize`; None without the channel."""
+    def _member_current(self, m, normalize):
+        """A member's current in amps (filters and 0Vsub as set), unit area per location with `normalize`; None without the channel."""
         sel = m['selection']
         if sel.iv is None:
             return None
-        src, fh, fs = self._member_source_current(m, calibrate)
-        iv = iv_corrected(sel.energy, src, self._int_iv_zero_sub, fh, fs)
+        iv = iv_corrected(sel.energy, sel.iv, self._int_iv_zero_sub,
+                          self._int_hampel_params, self._int_sgolay_params)
         if normalize:
             iv = normalize_abs(sel.energy, iv, energy_range=self._int_e_range)[0]
         iv = np.array(iv, dtype=np.float64)
         iv[:, ~np.asarray(sel.acquired, dtype=bool)] = np.nan
         return iv
 
-    def _member_ivv(self, m, normalize, calibrate=False):
-        """A member's broadened I/V in A/V (the division's denominator; with `calibrate` from the current corrected by the gap factor, _member_source_current); None without the channel."""
+    def _member_ivv(self, m, normalize):
+        """A member's broadened I/V in A/V (the division's denominator); None without the channel."""
         sel = m['selection']
         if sel.iv is None:
             return None
-        src, fh, fs = self._member_source_current(m, calibrate)
-        ivv = iv_broadened(sel.energy, src, self._int_iv_width(), self._int_iv_zero_sub, fh, fs)
+        ivv = iv_broadened(sel.energy, sel.iv, self._int_iv_width(), self._int_iv_zero_sub,
+                           self._int_hampel_params, self._int_sgolay_params)
         if normalize:
             ivv = normalize_abs(sel.energy, ivv, energy_range=self._int_e_range)[0]
         ivv = np.array(ivv, dtype=np.float64)
@@ -786,8 +772,8 @@ class LineAverage(Line):
 
         versions['didv']['top'] = orient(self._average_of(
             [self._member_columns(m, False, calibrate, normalize, hp, sp) for m in self.members], state))
-        iv_avg = self._average_of([self._member_current(m, normalize, calibrate) for m in self.members], state)
-        ivv_avg = self._average_of([self._member_ivv(m, normalize, calibrate) for m in self.members], state)
+        iv_avg = self._average_of([self._member_current(m, normalize) for m in self.members], state)
+        ivv_avg = self._average_of([self._member_ivv(m, normalize) for m in self.members], state)
         if iv_avg is None or ivv_avg is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "a member has no Current channel"
