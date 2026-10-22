@@ -472,6 +472,107 @@ def gap_factor(energy, g, iv, V_bias, start='setpoint', lns0=0.0, iv_zero=None):
     return out
 
 
+# vmod: the gain's source, 4 / V_mod² for the second harmonic (gain_from_modulation).
+def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None):
+    """
+    Calibrate IETS (second-harmonic lock-in) curves against the co-acquired
+    I(V) current channel, the double-derivative counterpart of calibrate:
+    one gain for the file, the offset and the anchor slope per curve,
+    anchored at the setpoint.
+
+    The true d2I/dV2 relates to the raw second-harmonic signal S by
+
+        true d2I/dV2(V) = a · S(V) + b
+
+    Integrating twice from the anchor sample (the setpoint bias V_bias,
+    where the current is I_set), with U = V − V_bias:
+
+        I(V) − I_set = a · Z(V) + b · U² / 2 + c · U
+
+    where Z(V) is the double cumulative trapezoidal integral of S, both
+    integrations referenced at the anchor, and c absorbs the unknown dI/dV
+    at the anchor.  The gain a is 4 / V_mod² from the recorded modulation
+    amplitude (gain_from_modulation; the lock-in's second harmonic is
+    V_mod² / 4 times d2I/dV2), or the joint fit of one a over every
+    regressed column with its own (b, c) (_joint_gain) when none is
+    recorded; the joint fit is computed either way for the console
+    comparison.  For each spectrum j the least squares in (b, c) with a
+    fixed gives the 2 by 2 normal equations
+
+        [[Σ(U²/2)², ΣU²/2·U], [ΣU²/2·U, ΣU²]] · [b; c] = [Σ(ΔI − a·Z)·U²/2 ; Σ(ΔI − a·Z)·U]
+
+    The calibrated curve is a · S_j(V) + b_j (in the Current page's units
+    per V²), in the original energy ordering.  As in calibrate the relation
+    is exact in U, so nothing refers to 0 V, and a sweep that does not pass
+    V_bias is refused (anchor_index).
+
+    Parameters: as calibrate (energy in V, any order; curves the
+    second-harmonic page's data as the loader gives it, through the dI/dV
+    filters when they are on; iv the recorded current through the
+    pipeline's filters, None raises ValueError; vmod the modulation
+    amplitude; V_bias, I_setpoint the setpoint; ref the reference columns
+    of the sweeps that started at the setpoint).
+
+    Returns
+    -------
+    calibrated : ndarray, same shape as *curves*, float64
+    fits : list of IetsColumnFit, one per column (a, b, c, d = I_set, Z,
+        model, residual, rms, a_joint, gain; the arrays in the original
+        energy ordering)
+    """
+    if iv is None:
+        raise ValueError(
+            "No I(V) current channel found in this SM4 file. "
+            "Cannot perform linear-regression calibration."
+        )
+    e_sorted, sort_idx, i_a, U = _anchor(energy, V_bias, I_setpoint)
+    energy = np.asarray(energy, dtype=np.float64)
+    curves = np.asarray(curves, dtype=np.float64)
+    iv_data = np.asarray(iv, dtype=np.float64)
+    I_set = float(I_setpoint)
+    n_curves = curves.shape[1]
+    Q = 0.5 * U * U
+    B = np.column_stack([Q, U])
+    M2 = B.T @ B
+
+    Zs, dIs, srcs = [], [], []
+    for j in range(n_curves):
+        rc = _ref_column(ref, j, curves.shape[0])
+        src_s = curves[:, j] if rc is None else rc[0]
+        src_iv = iv_data[:, j] if rc is None else rc[1]
+        # Y(V) = cumulative integral of S, referenced at the anchor; Z(V) = its integral, referenced too.
+        Y_raw = cumulative_trapezoid(src_s[sort_idx], e_sorted, initial=0)
+        Y = Y_raw - Y_raw[i_a]
+        Z_raw = cumulative_trapezoid(Y, e_sorted, initial=0)
+        Zs.append(Z_raw - Z_raw[i_a])
+        dIs.append(src_iv[sort_idx] - I_set)
+        srcs.append(src_iv)
+
+    a_joint = _joint_gain(Zs, dIs, B)
+    g = gain_from_modulation(vmod, 2)
+    a, source = (g, 'modulation') if g is not None else (a_joint, 'joint')
+    if not np.isfinite(a):
+        raise ValueError("the calibration gain cannot be determined: no modulation amplitude recorded and "
+                         "every column's double integral is in the span of U²/2 and U.")
+
+    calibrated = np.empty_like(curves, dtype=np.float64)
+    fits = []
+    U_orig = np.empty_like(U)
+    U_orig[sort_idx] = U
+    for j in range(n_curves):
+        rhs = B.T @ (dIs[j] - a * Zs[j])
+        b_j, c_j = np.linalg.solve(M2, rhs)
+        calibrated[:, j] = a * curves[:, j] + b_j
+        Z_orig = np.empty_like(Zs[j])
+        Z_orig[sort_idx] = Zs[j]
+        model = a * Z_orig + b_j * 0.5 * U_orig * U_orig + c_j * U_orig + I_set
+        residual = srcs[j] - model
+        fits.append(IetsColumnFit(float(a), float(b_j), float(c_j), I_set, Z_orig, model, residual,
+                                  float(np.sqrt(np.mean(residual * residual))), float(a_joint), source))
+
+    return calibrated, fits
+
+
 if __name__ == '__main__':
     # One file's dI/dV calibration by this method drawn, one sweep at a time (the file, the starting
     # sweep, and the current filters set here; '< sweep' / 'sweep >' step through the acquired columns
