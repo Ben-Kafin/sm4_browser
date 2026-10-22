@@ -16,7 +16,9 @@ PySide6 / pyqtgraph:
                                              bare ViewBox placed exactly at its
                                              figure-fraction rectangle, its
                                              tick axes outside it (as in
-                                             matplotlib)
+                                             matplotlib), every tick drawn
+                                             where the view box maps its
+                                             value (_Axis, the tick rule)
   gridspec.GridSpec, GridSpecFromSubplotSpec the subplot grids
   Normalize, PowerNorm, TwoSlopeNorm         colour normalizations
   Colormap, LinearSegmentedColormap,         colour maps; to_cmap(c) turns any
@@ -237,9 +239,12 @@ pg.setConfigOptions(imageAxisOrder='row-major', background='w', foreground='k', 
 
 def screen_scale():
     """
-    How many times larger than 96 dpi the screen's logical resolution is (1 under Qt 6, whose
-    high-DPI scaling already works in logical pixels; e.g. 1.5 for a 4K screen at 150 % under Qt 5
-    without scaling): figure windows open this much larger, and their text follows (font_zoom).
+    How many times larger than 96 dpi the primary screen's logical resolution is: figure windows
+    open this much larger, and their text follows (font_zoom).  1 under Qt 6's default high-DPI
+    scaling, which passes the scale factor through unrounded and reports 96 dpi; the monitor's own
+    dpi, e.g. 1.5 for a 4K screen at 150 %, under Qt 5 without scaling or with Qt's scaling off,
+    and then per monitor (QScreen::logicalDotsPerInch; the tick axes, _Axis, are drawn so that no
+    such dpi difference between monitors reaches them).
     """
     try:
         scr = QtGui.QGuiApplication.primaryScreen()
@@ -2518,7 +2523,8 @@ class Axes:
     """
     One axes: a pyqtgraph ViewBox placed exactly at its figure-fraction
     rectangle (`rect`, or a SubplotSpec `spec`, or inside `inset_parent`;
-    matplotlib's axes box, framed), its x and y tick axes outside the box,
+    matplotlib's axes box, framed), its x and y tick axes outside the box
+    (_Axis: every tick drawn where the view box maps its value),
     the title above it.  The plotting methods return artists with
     matplotlib's interface (remove, set_visible, get_label, ...).  sharex /
     sharey link the view to another axes' (a shared-y axes shows no y tick

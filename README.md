@@ -565,7 +565,13 @@ fractions, `Line2D`, `AxesImage`, `QuadMesh`, `Text`, `Annotation`, `Colorbar`, 
 mouse, key, pick and close events, `NavigationToolbar`, `FigureManager`), plus the row rule
 (`Figure.align_row`: the panels of one row take one height, the one a locked aspect among them
 asks for, spatial panels keeping their aspect and colour bars, ramps and curve panels stretching
-or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row).
+or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row)
+and the tick rule (`_Axis`: a tick is a value of the panel's range, labelled from that value, and
+its mark and label are drawn where the panel's view box maps the value, read when the axis is
+painted and drawn straight into the painter, with no cached drawing, so the ticks sit on the data
+on every monitor whatever its display scaling; pyqtgraph's own axis replays a `QPicture`, which Qt
+scales by the monitor's logical dpi over the primary screen's, and on a second monitor at another
+scaling its ticks shrank toward the axis's origin while the data stayed).
 It also holds the
 text-size rule (`window_zoom`, `ZOOM_MIN`, `ZOOM_MAX`, `FONT_SCALE`), the title rule
 (`short_title`, `is_file_name`, `file_stamp`), the saving dialog and the CSV export, the crash log
