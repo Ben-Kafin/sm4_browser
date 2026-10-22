@@ -1108,6 +1108,21 @@ class _Axis(pg.AxisItem):
     'func' shows the values of a function of the view coordinate (the
     secondary y axis), mode 'norm' the data values of a colour bar whose
     view runs over the normalized [0, 1].
+
+    The tick rule (generateDrawSpecs, paint): a tick is a value of the
+    linked view box's range, labelled from that value, and its mark and
+    label sit where the view box maps the value (ViewBox.mapViewToScene,
+    the one mapping every artist in the box is drawn with), read at the
+    moment the axis is painted and drawn straight into the painter the
+    axis is given; the axis line spans the box's edge as the view box
+    maps it.  Nothing between a value and its mark depends on the axis
+    item's own geometry (which only gives the strip's thickness), on a
+    range kept from a signal, or on a cached drawing.  pyqtgraph's
+    AxisItem draws from a QPicture, which Qt replays scaled by the paint
+    device's logical dpi over the primary screen's (QPicture::play), so
+    on a monitor whose dpi differs from the primary's its ticks shrank
+    toward the axis's origin while the data stayed in place; no picture
+    is kept here.
     """
 
     def __init__(self, orientation, owner):
@@ -1168,16 +1183,196 @@ class _Axis(pg.AxisItem):
         vals = [0.0 if abs(v) < step * 1e-9 else v for v in vals]
         return [(step, vals)]
 
+    # --- the tick rule: the view box's mapping, drawn afresh at every paint ---
+
+    def _view_edge(self, view):
+        """The linked view box's rectangle in this item's coordinates: the edge the axis sits on."""
+        return view.mapRectToItem(self, view.rect())
+
+    def _view_pos(self, view, v):
+        """Where the view box maps the view coordinate `v` along this axis, in this item's coordinates (x of a horizontal axis, y of a vertical one)."""
+        if self.orientation in ('top', 'bottom'):
+            return self.mapFromScene(view.mapViewToScene(QtCore.QPointF(float(v), 0.0))).x()
+        return self.mapFromScene(view.mapViewToScene(QtCore.QPointF(0.0, float(v)))).y()
+
+    def _strip(self, view):
+        """The axis's strip: its own thickness (its geometry across the axis) over the view box's extent along it; the geometry alone without a view."""
+        own = self.mapRectFromParent(self.geometry())
+        if view is None:
+            return own
+        edge = self._view_edge(view)
+        if self.orientation in ('top', 'bottom'):
+            return QtCore.QRectF(edge.left(), own.top(), edge.width(), own.height())
+        return QtCore.QRectF(own.left(), edge.top(), own.width(), edge.height())
+
+    def _view_specs(self, p, view):
+        """
+        pyqtgraph's generateDrawSpecs with the view box's mapping in place of the item's own: the
+        axis line along the box's edge, every tick mark at the view box's position of its value
+        (_view_pos), the labels laid out as pyqtgraph lays them out (the same offsets, alignment,
+        crowding rule and measured text size), the grid lines across the box when the grid is on.
+        None when the item is not on a device yet.
+        """
+        if self.style['tickFont'] is not None:
+            p.setFont(self.style['tickFont'])
+        own = self.mapRectFromParent(self.geometry())      # across the axis: where the marks and labels sit
+        edge = self._view_edge(view)                        # along the axis: the box's extent
+        far = edge if self.grid is not False else own       # the grid lines start at the box's far edge
+        P = QtCore.QPointF
+        if self.orientation == 'left':
+            span = (P(own.right() - 1.0, edge.top() - 1.0), P(own.right() - 1.0, edge.bottom() + 1.0))
+            tickStart, tickStop, tickDir, axis = far.right(), own.right(), -1, 0
+        elif self.orientation == 'right':
+            span = (P(own.left() + 1.0, edge.top() - 1.0), P(own.left() + 1.0, edge.bottom() + 1.0))
+            tickStart, tickStop, tickDir, axis = far.left(), own.left(), 1, 0
+        elif self.orientation == 'top':
+            span = (P(edge.left() - 1.0, own.bottom() - 1.0), P(edge.right() + 1.0, own.bottom() - 1.0))
+            tickStart, tickStop, tickDir, axis = far.bottom(), own.bottom(), -1, 1
+        else:
+            span = (P(edge.left() - 1.0, own.top() + 1.0), P(edge.right() + 1.0, own.top() + 1.0))
+            tickStart, tickStop, tickDir, axis = far.top(), own.top(), 1, 1
+        points = [self.mapToDevice(q) for q in span]
+        if None in points:
+            return None
+        length = pg.Point(points[1] - points[0]).length()     # the axis's length in device pixels: how many ticks fit
+        if length == 0:
+            return None
+        rng = view.viewRange()[1 - axis]                    # the view's range along the axis (x of a horizontal one)
+        lo, hi = (rng[0], rng[1]) if rng[0] <= rng[1] else (rng[1], rng[0])
+        if self._tickLevels is None:
+            levels = self.tickValues(lo, hi, length)
+            given = None
+        else:                                               # set_xticks / set_yticks: the values with their labels
+            levels, given = [], []
+            for level in self._tickLevels:
+                levels.append((None, [val for val, s in level]))
+                given.append([s for val, s in level])
+        pos_lo, pos_hi = (edge.left(), edge.right()) if axis == 1 else (edge.top(), edge.bottom())
+        tol = 0.5                                           # a tick at the very end of the range is drawn
+        positions, tickSpecs = [], []
+        for i, (spacing, vals) in enumerate(levels):
+            positions.append([])
+            tickLength = self.style['tickLength'] / ((i * 0.5) + 1.0)
+            lineAlpha = self.style['tickAlpha']
+            if lineAlpha is None:
+                lineAlpha = 255 / (i + 1)
+                if self.grid is not False:
+                    lineAlpha *= self.grid / 255. * pg.functions.clip_scalar(0.05 * length / (len(vals) + 1), 0., 1.)
+            elif isinstance(lineAlpha, float):
+                lineAlpha = min(255, max(0, int(round(lineAlpha * 255))))
+            elif isinstance(lineAlpha, int):
+                if not 0 <= lineAlpha <= 255:
+                    raise ValueError("lineAlpha should be [0..255]")
+            else:
+                raise TypeError("Line Alpha should be of type None, float or int")
+            tickPen = self.tickPen()
+            if tickPen.brush().style() == Qt.BrushStyle.SolidPattern:
+                tickPen = QtGui.QPen(tickPen)
+                color = QtGui.QColor(tickPen.color())
+                color.setAlpha(int(lineAlpha))
+                tickPen.setColor(color)
+            for v in vals:
+                x = self._view_pos(view, v)
+                if not (pos_lo - tol <= x <= pos_hi + tol):
+                    positions[i].append(None)
+                    continue
+                positions[i].append(x)
+                p1, p2 = [x, x], [x, x]
+                p1[axis] = tickStart
+                p2[axis] = tickStop
+                if self.grid is False:
+                    p2[axis] += tickLength * tickDir
+                tickSpecs.append((tickPen, pg.Point(p1), pg.Point(p2)))
+        drawn = [x for level in positions for x in level if x is not None]
+        if drawn and self.style['stopAxisAtTick'][0] is True:
+            if axis == 0:
+                span[0].setY(max(span[0].y(), min(drawn)))
+            else:
+                span[0].setX(max(span[0].x(), min(drawn)))
+        if drawn and self.style['stopAxisAtTick'][1] is True:
+            if axis == 0:
+                span[1].setY(min(span[1].y(), max(drawn)))
+            else:
+                span[1].setX(min(span[1].x(), max(drawn)))
+        axisSpec = (self.pen(), span[0], span[1])
+        textSpecs = []
+        if not self.style['showValues']:
+            return axisSpec, tickSpecs, textSpecs
+        textOffset = self.style['tickTextOffset'][axis]
+        textRects, lastTextSize2 = [], 0
+        br = self.boundingRect()
+        for i in range(min(len(levels), self.style['maxTextLevel'] + 1)):
+            if given is None:
+                spacing, vals = levels[i]
+                strings = self.tickStrings(vals, self.autoSIPrefixScale * self.scale, spacing)
+            else:
+                strings = list(given[i])
+            if len(strings) == 0:
+                continue
+            for j in range(len(strings)):
+                if positions[i][j] is None:                 # a tick out of the box: no label
+                    strings[j] = None
+            rects = []
+            for s in strings:
+                if s is None:
+                    rects.append(None)
+                else:
+                    r = p.boundingRect(QtCore.QRectF(0, 0, 100, 100), Qt.AlignmentFlag.AlignCenter, s)
+                    r.setHeight(r.height() * 0.8)           # pyqtgraph: the bounding rect is a bit too tall
+                    rects.append(r)
+                    textRects.append(r)
+            if textRects:
+                if axis == 0:
+                    textSize = sum(r.height() for r in textRects)
+                    textSize2 = max(r.width() for r in textRects)
+                else:
+                    textSize = sum(r.width() for r in textRects)
+                    textSize2 = max(r.height() for r in textRects)
+            else:
+                textSize = textSize2 = 0
+            if i > 0:                                       # the first level is always labelled; a crowded further level is not
+                textFillRatio = float(textSize) / length
+                if any(len(textSpecs) >= nTexts and textFillRatio >= limit
+                       for nTexts, limit in self.style['textFillLimits']):
+                    break
+            lastTextSize2 = textSize2
+            for j in range(len(strings)):
+                vstr = strings[j]
+                if vstr is None:
+                    continue
+                x = positions[i][j]
+                width, height = rects[j].width(), rects[j].height()
+                offset = max(0, self.style['tickLength']) + textOffset
+                if self.orientation == 'left':
+                    alignFlags = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    rect = QtCore.QRectF(tickStop - offset - width, x - height / 2., width, height)
+                elif self.orientation == 'right':
+                    alignFlags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    rect = QtCore.QRectF(tickStop + offset, x - height / 2., width, height)
+                elif self.orientation == 'top':
+                    alignFlags = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
+                    rect = QtCore.QRectF(x - width / 2., tickStop - offset - height, width, height)
+                else:
+                    alignFlags = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop
+                    rect = QtCore.QRectF(x - width / 2., tickStop + offset, width, height)
+                if br & rect != rect:                       # a label running out of the strip is not drawn
+                    continue
+                textSpecs.append((rect, alignFlags | Qt.TextFlag.TextDontClip, vstr))
+        self._updateMaxTextSize(lastTextSize2)
+        return axisSpec, tickSpecs, textSpecs
+
     def generateDrawSpecs(self, p):
-        # pyqtgraph's draw specs (tickStrings sets self._sci on the way) plus, when the tick labels are
-        # mantissas, the power of ten '1e<n>' once: above a vertical axis, at the right end of a horizontal one.
+        # The draw specs from the view box's mapping (_view_specs; pyqtgraph's own without a linked view;
+        # tickStrings sets self._sci on the way) plus, when the tick labels are mantissas, the power of
+        # ten '1e<n>' once: above a vertical axis, at the right end of a horizontal one.
         self._sci = None
-        specs = super().generateDrawSpecs(p)
+        view = self.linkedView()
+        specs = self._view_specs(p, view) if view is not None else super().generateDrawSpecs(p)
         self._note_sci()
         if specs is None or self._sci is None or not self.style['showValues']:
             return specs
         axisSpec, tickSpecs, textSpecs = specs
-        b = self.mapRectFromParent(self.geometry())
+        b = self._strip(view)
         txt = f"1e{self._sci}"
         if self.orientation in ('left', 'right'):
             rect = QtCore.QRectF(b.right() - 12 if self.orientation == 'left' else b.left() + 2, b.top() - 15, 90, 14)
@@ -1187,6 +1382,23 @@ class _Axis(pg.AxisItem):
             flags = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom
         textSpecs = list(textSpecs) + [(rect, flags | Qt.TextFlag.TextDontClip, txt)]
         return axisSpec, tickSpecs, textSpecs
+
+    def paint(self, p, opt, widget):
+        # Drawn afresh at every paint, straight into the painter given: no QPicture (the class docstring).
+        specs = self.generateDrawSpecs(p)
+        if specs is None:
+            return
+        p.save()
+        try:
+            self.drawPicture(p, *specs)
+        finally:
+            p.restore()
+
+    def linkedViewChanged(self, view, newRange=None):
+        super().linkedViewChanged(view, newRange)
+        if newRange is None:                       # the view box's size changed (sigResized): the strip follows its edge
+            self.prepareGeometryChange()
+            self.update()
 
     def set_tick_pt(self, pt):
         self._tick_pt = font_pt(pt)
@@ -1223,7 +1435,25 @@ class _Axis(pg.AxisItem):
                 self._owner._request_place()
 
     def boundingRect(self):
-        br = super().boundingRect()
+        # pyqtgraph's bounding rect on the strip (_strip: the box's extent along the axis, so no mark or
+        # label of the box's edge is cut): widened along the axis for the labels at its ends (15 px
+        # unless hideOverlappingLabels gives another margin), across it for ticks pointing inward, over
+        # the box when the grid is on, and over a power-of-ten label above a vertical axis.
+        view = self.linkedView()
+        br = self._strip(view)
+        if view is not None and self.grid is not False:
+            br = br | self._view_edge(view)
+        hide = self.style['hideOverlappingLabels']
+        m = 0 if hide is True else (15 if hide is False else int(hide))
+        tl = self.style['tickLength']
+        if self.orientation == 'left':
+            br = br.adjusted(0, -m, -min(0, tl), m)
+        elif self.orientation == 'right':
+            br = br.adjusted(min(0, tl), -m, 0, m)
+        elif self.orientation == 'top':
+            br = br.adjusted(-m, 0, m, -min(0, tl))
+        else:
+            br = br.adjusted(-m, min(0, tl), m, 0)
         if getattr(self, '_had_sci', False):
             br = br.united(QtCore.QRectF(br.left(), br.top() - 16, br.width() + 80, 16))
         return br
