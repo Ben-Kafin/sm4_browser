@@ -810,6 +810,20 @@ class STS:
         return (f"{name}: no modulation amplitude recorded; the calibration gain is the joint fit over the "
                 f"columns, a = {fit.a:.4g} {unit}; the offset per sweep.")
 
+    @staticmethod
+    def _gate_text(name, gate, fits, cols):
+        """One console line: the offset gate's width and the sweeps it replaced (the file's column indices)."""
+        n = len(fits)
+        if not np.isfinite(gate.tol):
+            return (f"{name}: offset gate not run ({n} column(s), fewer than {calibration.GATE_MIN_COLUMNS}); "
+                    f"every sweep keeps its own offset.")
+        what = "; ".join(f"column {int(cols[k])}: {fits[k].b * 1e12:.4g} → the touching sweeps' mean {gate.ref[k] * 1e12:.4g}"
+                         + (f" × {gate.ratio[k]:.3g}" if k not in gate.plain else " (plain: the far end disturbed too)")
+                         + f" = {gate.b[k] * 1e12:.4g}" for k in gate.replaced)
+        return (f"{name}: offset gate ±{gate.tol * 1e12:.3g} pA/V ({calibration.GATE_FACTOR:g} × the robust scale of the "
+                f"departures from the two touching sweeps' mean) over {n} column(s): "
+                f"{gate.replaced.size} sweep(s) replaced" + (f" ({what})" if what else "") + ".")
+
     @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
@@ -837,7 +851,14 @@ class STS:
         feenstra.iv_corrected; the division is told not to filter again),
         unit-area normalization (normalization.normalize; skipped with
         `normalize` off: the areas are then NaN; norm_range (lo, hi) limits
-        the area to the samples inside that energy range).  The filters reach every
+        the area to the samples inside that energy range).  The dI/dV offsets
+        pass the safety calibration.gate_offsets on the call's acquired
+        columns in their order: a sweep whose regressed b departs from the
+        two sweeps touching it beyond the file's scatter takes their mean b
+        scaled by its relation to them in the second regression anchored
+        at the sample nearest 0 V (calibration.far_offsets; said once per
+        file with the gate's width and the replaced sweeps; a call with
+        fewer columns than the gate needs says so).  The filters reach every
         use of the current here, the calibration included.  Columns flagged
         as never acquired in `acquired` run through the division with the
         others (see the comment below), are left out of the calibration,
@@ -870,6 +891,15 @@ class STS:
             fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
             try:
                 cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f)
+                if channel != 'iets' and fits:
+                    # The safety on the offsets: the second regression at the other end of the window, the
+                    # gate on the two touching sweeps, the replaced sweeps' curves recomputed.
+                    b2 = calibration.far_offsets(energy, c[:, cols], iv[:, cols], fits[0].a, ref=ref_f)
+                    gate = calibration.gate_offsets([ft.b for ft in fits], b2)
+                    for k in gate.replaced:
+                        cal[:, k] = fits[k].a * c[:, cols[k]] + gate.b[k]
+                    if name:
+                        cls._note_once(cls._gate_text(name, gate, fits, cols))
                 c[:, cols] = cal
                 if name and fits:
                     cls._note_once(cls._gain_text(name, fits[0], vmod, channel))

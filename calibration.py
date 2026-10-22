@@ -11,10 +11,15 @@ that does not pass the setpoint bias is refused (anchor_index); a pixel's
 reverse sweeps, which start at the far end, take the a, b of its forward
 sweeps (the `ref` columns).  calibrate and calibrate_iets return
 (calibrated, fits), every fit entry carrying a, b, c, rms, X / Z, model
-and residual.  Plain arrays in, columns = spectra; the pipeline
-(sts.STS.process_arrays) calls these on the acquired columns only, after
-the channel and the current have been through their filters and before
-the Feenstra division.  Run as a file, the __main__
+and residual.  The dI/dV offsets then pass the safety gate_offsets: a
+sweep whose regressed b departs from the two sweeps touching it by more
+than the file's own scatter allows (a sweep with a disturbed current)
+takes their mean b, scaled by its relation to them in a second
+regression anchored at the sample nearest 0 V (far_offsets).  Plain
+arrays in, columns = spectra;
+the pipeline (sts.STS.process_arrays) calls these on the acquired
+columns only, after the channel and the current have been through
+their filters and before the Feenstra division.  Run as a file, the __main__
 block draws one file's calibration (its inputs, the fit in the I(V) frame,
 the calibrated curve in the dI/dV frame, and the cost surface), one sweep
 at a time.
@@ -67,6 +72,132 @@ class IetsColumnFit(NamedTuple):
 
 
 ANCHOR_TOL = 0.5     # the setpoint bias must lie within this fraction of the energy step of a sample
+
+# The safety on the dI/dV offsets (gate_offsets): a sweep whose regressed offset departs from the two
+# sweeps touching it beyond the file's own scatter takes theirs, carried over by its relation to them
+# in a second regression anchored at the other end of the window (far_offsets).
+GATE_FACTOR = 3.0        # the tolerance: this many times the robust scale of the departures from the touching sweeps' mean
+GATE_MIN_COLUMNS = 5     # fewer columns than this: no gate (not enough neighbours)
+
+
+class OffsetGate(NamedTuple):
+    """The offsets of a set of sweeps through the safety (gate_offsets); arrays (N,) in the sweeps' order."""
+    b: np.ndarray          # the offsets applied: the regressed b, the replacement for the replaced sweeps
+    ref: np.ndarray        # every sweep's reference: the mean of the regressed b of the touching sweeps it was tested against
+    tol: float             # the tolerance (I units per V); NaN when the gate did not run
+    replaced: np.ndarray   # the indices of the sweeps that took the replacement
+    ratio: np.ndarray      # per sweep the ratio applied, b2 / mean b2 of the neighbours used; NaN where the plain mean was
+    plain: np.ndarray      # the replaced sweeps that took the plain mean: the second regression disturbed there too
+
+
+def far_offsets(energy, curves, iv, a, ref=None):
+    """
+    The second regression of the dI/dV channel: the same model as
+    calibrate, I(V) − I(V_far) = a·X(V) + b·(V − V_far), the gain `a` the
+    file's, each sweep anchored at the sample nearest 0 V (V_far) with its
+    recorded current there as the known value, X the cumulative integral
+    of the lock-in referenced there.  Returns the offsets (N,) in I units
+    per V.  `ref` as in calibrate: the regression of column j runs on the
+    reference columns when they are finite.  Only the gate uses these
+    offsets (gate_offsets): a sweep's relation to its neighbours at the
+    other end of the window.
+    """
+    energy = np.asarray(energy, dtype=np.float64)
+    curves = np.asarray(curves, dtype=np.float64)
+    iv = np.asarray(iv, dtype=np.float64)
+    sort_idx = np.argsort(energy)
+    e_sorted = energy[sort_idx]
+    i_far = int(np.argmin(np.abs(e_sorted)))
+    U = e_sorted - e_sorted[i_far]
+    UU = float(np.dot(U, U))
+    out = np.empty(curves.shape[1])
+    for j in range(curves.shape[1]):
+        rc = _ref_column(ref, j, curves.shape[0])
+        src_lia = curves[:, j] if rc is None else rc[0]
+        src_iv = iv[:, j] if rc is None else rc[1]
+        X = cumulative_trapezoid(src_lia[sort_idx], e_sorted, initial=0)
+        X = X - X[i_far]
+        dI = src_iv[sort_idx] - src_iv[sort_idx][i_far]
+        out[j] = float(np.dot(dI - a * X, U) / UU) if UU > 0 else 0.0
+    return out
+
+
+def gate_offsets(b1, b2, factor=GATE_FACTOR, min_columns=GATE_MIN_COLUMNS):
+    """
+    The safety on the per-sweep offsets: one sweep with a disturbed
+    current must not break the calibration.  `b1` are the main
+    regression's offsets (calibrate, anchored at the setpoint), `b2` the
+    second regression's (far_offsets, anchored at the sample nearest
+    0 V), both (N,) in the sweeps' order.
+
+    The gate works on b1 with the two sweeps touching each sweep (one at
+    the ends).  A sweep's reference is the mean of their b1; a sweep
+    whose own b1 departs from it by more than the tolerance is flagged;
+    the tolerance is `factor` times the robust scale of the departures
+    over the set, 1.4826 times their median absolute deviation about
+    their median.  A flagged sweep is then tested once more against its
+    touching sweeps that were not flagged, so a sweep that merely touches
+    an outlier is not dragged along; with none left it stays flagged.
+    A sweep still flagged takes, as its b1, the mean b1 of the touching
+    sweeps used, scaled by the ratio of its own b2 to their mean b2, its
+    relation to those sweeps at the other end of the window, when the
+    second regression itself passes the same tolerance there (its own b2
+    within `tol` of their mean b2); when the far end is disturbed too,
+    the plain mean b1 of those sweeps (listed in `plain`).  A ratio that
+    is not finite (their mean b2 zero) counts as the far end disturbed.
+    Every other sweep keeps its own b1.  With fewer than `min_columns`
+    sweeps, or no scatter in the departures, nothing is replaced (tol NaN
+    or 0).  Returns an OffsetGate.
+    """
+    b1 = np.asarray(b1, dtype=np.float64)
+    b2 = np.asarray(b2, dtype=np.float64)
+    n = b1.size
+    empty = np.zeros(0, dtype=int)
+    ratio = np.full(n, np.nan)
+    if n < max(1, int(min_columns)) or b2.size != n:
+        return OffsetGate(b1.copy(), b1.copy(), float('nan'), empty, ratio, empty)
+    touching = [[i for i in (j - 1, j + 1) if 0 <= i < n] for j in range(n)]
+
+    def mean_of(idx, arr):
+        vals = arr[idx]
+        vals = vals[np.isfinite(vals)]
+        return float(np.mean(vals)) if vals.size else float('nan')
+
+    ref = np.array([mean_of(touching[j], b1) for j in range(n)])
+    d = b1 - ref
+    ok = np.isfinite(d)
+    if not ok.any():
+        return OffsetGate(b1.copy(), ref, float('nan'), empty, ratio, empty)
+    scale = 1.4826 * float(np.median(np.abs(d[ok] - np.median(d[ok]))))
+    tol = float(factor) * scale
+    if not (np.isfinite(tol) and tol > 0):
+        return OffsetGate(b1.copy(), ref, tol, empty, ratio, empty)
+    first = set(np.flatnonzero(ok & (np.abs(d) > tol)).tolist())
+    out = b1.copy()
+    replaced, plain = [], []
+    for j in sorted(first):
+        used = [i for i in touching[j] if i not in first]
+        if used:
+            r1 = mean_of(used, b1)
+            if np.isfinite(r1) and abs(b1[j] - r1) <= tol:
+                ref[j] = r1
+                continue                       # it fits the sweeps that passed: a false alarm
+        else:
+            used = touching[j]                 # every touching sweep flagged too: tested against them as they are
+            r1 = ref[j]
+        m2 = mean_of(used, b2)
+        ref[j] = r1
+        if not np.isfinite(r1):
+            continue                           # no finite reference: the sweep keeps its own b
+        far_ok = np.isfinite(m2) and m2 != 0 and np.isfinite(b2[j]) and abs(b2[j] - m2) <= tol
+        if far_ok:
+            ratio[j] = b2[j] / m2
+            out[j] = r1 * ratio[j]
+        else:
+            out[j] = r1
+            plain.append(j)
+        replaced.append(j)
+    return OffsetGate(out, ref, tol, np.array(replaced, dtype=int), ratio, np.array(plain, dtype=int))
 
 
 def anchor_index(energy, V_bias):
@@ -424,6 +555,12 @@ if __name__ == '__main__':
     filtered = hampel is not None or sgolay is not None
     iv = filters.filter_lia(iv_raw, hampel, sgolay)   # the recorded current through the filters (a copy when off)
     cal, fits = calibrate(V, lia, iv, f.vmod, V_bias=f.V_bias, I_setpoint=f.I_setpoint, ref=(f.lia_ref, f.iv_ref))
+    # The safety on the offsets: the second regression at the other end, the gate on the touching sweeps,
+    # the replaced sweeps' curves recomputed.
+    b2 = far_offsets(V, lia, iv, fits[0].a, ref=(f.lia_ref, f.iv_ref))
+    gate = gate_offsets([cf.b for cf in fits], b2)
+    for k in gate.replaced:
+        cal[:, k] = fits[k].a * lia[:, k] + gate.b[k]
     uL = f.units_lia or 'no units'                    # the LIA page's RHK_Zunits (the loader's data are in it)
     uI = f.units_iv or 'no units'                     # the Current page's RHK_Zunits
     ua = "1/V" if uI == uL else f"{uI}/({uL}·V)"      # the units of the stretch a
@@ -440,9 +577,19 @@ if __name__ == '__main__':
                                                 f"{f.vmod * 1e3:.3g} mV)" if fits[0].gain == 'modulation'
                                                 else "from the joint fit over the columns (no modulation amplitude recorded)")
           + f"; the joint fit gives {fits[0].a_joint:.4g} {ua}; the offset b per sweep")
-    for j, cf in zip(cols, fits):
+    print("offset gate: " + (f"±{sm4file.si_text(gate.tol, uI + '/V')} ({GATE_FACTOR:g} × the robust scale of the "
+                              f"departures from the two touching sweeps' mean); "
+                              f"{gate.replaced.size} of {n_sweeps} sweep(s) replaced"
+                              + (f", {gate.plain.size} of them by the plain mean (the far end disturbed too)" if gate.plain.size else "")
+                              if np.isfinite(gate.tol) else
+                              f"not run ({n_sweeps} sweeps, fewer than {GATE_MIN_COLUMNS})"))
+    for k, (j, cf) in enumerate(zip(cols, fits)):
         print(f"column {j}: b = {sm4file.si_text(cf.b, uI + '/V')}, "
-              f"I_set = {sm4file.si_text(cf.c, uI)}, rms residual = {sm4file.si_text(cf.rms, uI)}")
+              f"I_set = {sm4file.si_text(cf.c, uI)}, rms residual = {sm4file.si_text(cf.rms, uI)}; "
+              f"at the other end b2 = {sm4file.si_text(b2[k], uI + '/V')}"
+              + ((f"; replaced: the touching sweeps' mean {sm4file.si_text(gate.ref[k], uI + '/V')}"
+                  + (f" × {gate.ratio[k]:.3g}" if k not in gate.plain else " (plain: the far end disturbed too)")
+                  + f" = {sm4file.si_text(gate.b[k], uI + '/V')}") if k in gate.replaced else ""))
 
     X_all = np.column_stack([c.X for c in fits])
     faint = dict(color='0.6', lw=0.5, alpha=0.5)
@@ -486,7 +633,9 @@ if __name__ == '__main__':
         cf = fits[k]
         lia_k = lia[:, k]
         iv_k = iv[:, k]
-        print(f"column {cols[k]}: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}")
+        print(f"column {cols[k]}: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}"
+              + ((" (replaced: the touching sweeps' mean" + (f" × {gate.ratio[k]:.3g}" if k not in gate.plain else ", plain")
+                  + f" = {gate.b[k]:.4g})") if k in gate.replaced else ""))
         aa, bb, S, S_min = cost_surface(k)
 
         axes = fig.subplots(2, 3)
@@ -534,8 +683,9 @@ if __name__ == '__main__':
         ax.set_ylabel(f"I ({uI})")
         ax.set_title("the fit in the I(V) frame: I − I_set = a·X + b·(V − V_bias)")
         ax.legend(loc='upper left', fontsize=8)
-        ax.text(0.02, 0.03, f"a = {cf.a:.4g} {ua}\nb = {sm4file.si_text(cf.b, uI + '/V')}\n"
-                            f"I_set = {sm4file.si_text(cf.c, uI)}\nrms = {sm4file.si_text(cf.rms, uI, 3)}",
+        ax.text(0.02, 0.03, f"a = {cf.a:.4g} {ua}\nb = {sm4file.si_text(cf.b, uI + '/V')}"
+                            + (f" → {sm4file.si_text(gate.b[k], uI + '/V')} (gate)" if k in gate.replaced else "")
+                            + f"\nI_set = {sm4file.si_text(cf.c, uI)}\nrms = {sm4file.si_text(cf.rms, uI, 3)}",
                 transform=ax.transAxes, fontsize=8, va='bottom', bbox=dict(boxstyle='round', fc='w', alpha=0.8))
         ins = ax.inset_axes([0.6, 0.08, 0.38, 0.28])
         ins.plot(V, cf.residual, color='0.3', lw=0.6)
@@ -548,7 +698,8 @@ if __name__ == '__main__':
         didv_num[order] = np.gradient(iv_k[order], Vs)
         ax.plot(V, didv_num, color='0.6', lw=0.6, alpha=0.7,
                 label="numerical dI/dV of the " + ("filtered" if filtered else "recorded") + " I(V)")
-        ax.plot(V, cal[:, k], color='C3', lw=1.3, label="a·LIA + b (anchored at the setpoint)")
+        ax.plot(V, cal[:, k], color='C3', lw=1.3,
+                label="a·LIA + b (anchored at the setpoint)" + ("; b from the touching sweeps" if k in gate.replaced else ""))
         ax.set_ylabel(f"dI/dV ({uI}/V)")
         ax.set_title("the dI/dV frame: a scales the LIA, b shifts it")
         ax.legend(fontsize=8)
