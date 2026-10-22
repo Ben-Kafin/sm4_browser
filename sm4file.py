@@ -628,6 +628,16 @@ class Sm4File:
                 # page's: the pairing of the pages is unknown, so the file shows no spectra.
                 print(f"{exc}  The file has no spectra to show.")
                 self.spectra = None
+            if self.spectra is not None:
+                # The dwell per point (the sweep clock) on the spectra: the held stretch's source
+                # (calibration.settling_points) for the pipeline; None when the timing is unknown.
+                try:
+                    dwell = self.dwell_s
+                except Exception:
+                    dwell = None
+                self.spectra.dwell_s = dwell
+                if self.spectra_all is not None:
+                    self.spectra_all.dwell_s = dwell
         elif self.kind == 'phase':
             self.phase = phase.PhaseRotate.from_pages(pages, name=self.name)
         elif self.kind == 'fft':
@@ -1336,14 +1346,17 @@ class Sm4File:
         return fast, slow
 
     def curves(self, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0, channel='didv',
-               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None):
+               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None,
+               return_iv=False):
         """
         Every spectrum of the channel ('didv' or 'iets') through the pipeline
         (npts, N), original energy order (STS.process; hampel / sgolay the
         I(V) filters, hampel_didv / sgolay_didv the channel's own;
         iv_zero_sub: the current's value at 0 V subtracted before the
         division's I/V; normalize and calibrate: the two switchable steps);
-        never-acquired spectra come back as zero columns.
+        never-acquired spectra come back as zero columns.  With return_iv,
+        (curves, iv): the current the division worked on as well (filtered;
+        corrected by the gap factor with calibrate on).
         """
         if self.spectra is None:
             raise ValueError(f"{self.name} has no spectra.")
@@ -1351,7 +1364,7 @@ class Sm4File:
             print(f"{self.name}: no 'Current' channel, curves shown without calibration.")
         return self.spectra.process(channel, hampel, sgolay, divide_iv, iv_broadening, iv_zero_sub=iv_zero_sub,
                                     normalize=normalize, calibrate=calibrate,
-                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, return_iv=return_iv)
 
     # --- images ---
 
