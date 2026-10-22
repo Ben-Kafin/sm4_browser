@@ -11,6 +11,7 @@ if __package__ in (None, ''):
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import os
+import re
 import numpy as np
 from sm4_Browser import filters, calibration, normalization, feenstra
 
@@ -550,8 +551,10 @@ class STS:
         self.vmod = cls._float_attr(ref.attrs, 'RHK_CH1Drive_Amplitude')
         # The lock-in filter's and the current low-pass's cutoffs (Hz): the held stretch's source
         # (calibration.settling_points); the dwell per point is the file's (Sm4File sets dwell_s).
-        self.lockin_cutoff_hz = cls._float_attr(ref.attrs, 'RHK_Lockin0_FilterCutoffFrequency')
-        self.lowpass_hz = cls._float_attr(ref.attrs, 'RHK_LowPassFilter1_CutoffFrequency')
+        # The lock-in's is recorded as text, e.g. '20HzBut2-60dB@640Hz' (the cutoff, the filter type
+        # and order, the attenuation at a frequency); the leading frequency is the cutoff (_hz_attr).
+        self.lockin_cutoff_hz = cls._hz_attr(ref.attrs, 'RHK_Lockin0_FilterCutoffFrequency')
+        self.lowpass_hz = cls._hz_attr(ref.attrs, 'RHK_LowPassFilter1_CutoffFrequency')
         self.dwell_s = None
         self.lia_ref = self.iets_ref = self.iv_ref = None     # a sweep view's forward-sweep reference (sweep_view)
         self.grid_x = cls._int_attr(ref.attrs, 'RHK_GridXsize')
@@ -600,6 +603,30 @@ class STS:
         except (KeyError, TypeError, ValueError):
             return None
         return v if np.isfinite(v) else None
+
+    @staticmethod
+    def _hz_attr(attrs, key):
+        """
+        A recorded frequency as a positive float in Hz: a number as it is, or
+        the leading number of a text such as '20HzBut2-60dB@640Hz' (the
+        lock-in filter's cutoff, type, order and attenuation in one string),
+        read as Hz when its unit is 'Hz' or absent and as kHz for 'kHz';
+        None when absent, unreadable, or not positive.
+        """
+        v = attrs.get(key)
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                return None
+            return x if np.isfinite(x) and x > 0 else None
+        m = re.match(r'\s*([0-9]*\.?[0-9]+)\s*(k?Hz)?', v, flags=re.IGNORECASE)
+        if m is None:
+            return None
+        x = float(m.group(1)) * (1e3 if (m.group(2) or '').lower() == 'khz' else 1.0)
+        return x if np.isfinite(x) and x > 0 else None
 
     @staticmethod
     def _int_attr(attrs, key):
@@ -1001,8 +1028,10 @@ class STS:
                          + (f", raised to the floor −min(a·LIA) = {off.bound * 1e12:.4g} pA/V" if off.floored
                             else f" (the floor −min(a·LIA) = {off.bound * 1e12:.4g} pA/V did not act)")
                          + f"; current noise {off.noise * 1e12:.3g} pA; held stretch {settle} point(s)"
-                         + (f" ({settle_s * 1e3:.3g} ms)" if settle else " (no filter cutoff or dwell recorded)"
-                            if settle_s == 0 else f" ({settle_s * 1e3:.3g} ms, under one point)"))
+                         + (f" ({settle_s * 1e3:.3g} ms)" if settle
+                            else (f" ({settle_s * 1e3:.3g} ms, under one point)" if settle_s > 0
+                                  else (" (no filter cutoff recorded)" if lockin_cutoff_hz is None and lowpass_hz is None
+                                        else " (no dwell per point recorded: the file has no time per spectrum)"))))
             n_reg = sum(1 for gf in gfs if gf.regions)
             n_pts = sum(gf.n_region for gf in gfs)
             n_all = sum(gf.s.size - gf.held for gf in gfs)

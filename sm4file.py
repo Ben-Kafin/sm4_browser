@@ -628,16 +628,6 @@ class Sm4File:
                 # page's: the pairing of the pages is unknown, so the file shows no spectra.
                 print(f"{exc}  The file has no spectra to show.")
                 self.spectra = None
-            if self.spectra is not None:
-                # The dwell per point (the sweep clock) on the spectra: the held stretch's source
-                # (calibration.settling_points) for the pipeline; None when the timing is unknown.
-                try:
-                    dwell = self.dwell_s
-                except Exception:
-                    dwell = None
-                self.spectra.dwell_s = dwell
-                if self.spectra_all is not None:
-                    self.spectra_all.dwell_s = dwell
         elif self.kind == 'phase':
             self.phase = phase.PhaseRotate.from_pages(pages, name=self.name)
         elif self.kind == 'fft':
@@ -702,8 +692,23 @@ class Sm4File:
             self.n_fast = self.n_spectra if self.kind == 'point' else 0
             self.n_lines = 1
             self.self_check_text = None
-
-    # --- identity for the averages (an entry of an avgN window) ---
+        if self.spectra is not None:
+            # The dwell per point (the sweep clock) on the spectra: the held stretch's source
+            # (calibration.settling_points) for the pipeline.  A grid's only when the file records a
+            # time per spectrum (grid_timing 'recorded'): the fallback from the file span is not a
+            # dwell; a point file's from its span over its points (point_timing); else None.
+            dwell = None
+            try:
+                if self.kind == 'grid':
+                    tm = self.grid_timing()
+                    dwell = tm['dwell'] if tm.get('recorded') else None
+                elif self.kind == 'point':
+                    dwell = self.point_timing()['dwell']
+            except Exception:
+                dwell = None
+            self.spectra.dwell_s = dwell
+            if self.spectra_all is not None:
+                self.spectra_all.dwell_s = dwell
 
     @property
     def key(self):
