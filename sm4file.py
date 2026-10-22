@@ -693,17 +693,11 @@ class Sm4File:
             self.n_lines = 1
             self.self_check_text = None
         if self.spectra is not None:
-            # The dwell per point (the sweep clock) on the spectra: the held stretch's source
-            # (calibration.settling_points) for the pipeline.  A grid's only when the file records a
-            # time per spectrum (grid_timing 'recorded'): the fallback from the file span is not a
-            # dwell; a point file's from its span over its points (point_timing); else None.
-            dwell = None
+            # The dwell per point (the sweep clock, dwell_s: the same time per point the drift uses) on
+            # the spectra: the held stretch's source (calibration.settling_points) for the pipeline;
+            # None when the timing cannot be formed.
             try:
-                if self.kind == 'grid':
-                    tm = self.grid_timing()
-                    dwell = tm['dwell'] if tm.get('recorded') else None
-                elif self.kind == 'point':
-                    dwell = self.point_timing()['dwell']
+                dwell = self.dwell_s
             except Exception:
                 dwell = None
             self.spectra.dwell_s = dwell

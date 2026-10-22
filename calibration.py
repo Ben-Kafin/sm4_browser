@@ -125,8 +125,11 @@ def settling_points(lockin_cutoff_hz, lowpass_hz, dwell_s, n_tau=SETTLE_N_TAU):
     RHK_Lockin0_FilterCutoffFrequency) and the current channel (its own
     low-pass, RHK_LowPassFilter1_CutoffFrequency) reach their values only
     after a few time constants: n_tau of the longer of the two, divided by
-    the dwell per point, rounded up.  Returns (points, seconds); (0, 0.0)
-    when no cutoff is recorded or the dwell is unknown or not positive.
+    the dwell per point, rounded to the nearest point (a point more than
+    half inside the settling time is held; a point of several seconds
+    whose first 40 ms are unsettled is not).  Returns (points, seconds);
+    (0, 0.0) when no cutoff is recorded or the dwell is unknown or not
+    positive.
     """
     taus = []
     for f in (lockin_cutoff_hz, lowpass_hz):
@@ -143,7 +146,7 @@ def settling_points(lockin_cutoff_hz, lowpass_hz, dwell_s, n_tau=SETTLE_N_TAU):
     if not taus or not np.isfinite(dwell) or dwell <= 0:
         return 0, 0.0
     seconds = float(n_tau) * max(taus)
-    return int(np.ceil(seconds / dwell - 1e-9)), seconds
+    return int(np.floor(seconds / dwell + 0.5)), seconds
 
 
 def held_mask(energy, V_bias, settle):
