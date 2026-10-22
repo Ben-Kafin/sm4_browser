@@ -535,7 +535,7 @@ class LineAverage(Line):
                                channel=channel, acquired=acquired, iv_zero_sub=self._int_iv_zero_sub,
                                normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
                                norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
-                               ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                               ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'])
         c = np.array(c, dtype=np.float64)
         c[:, ~acquired] = np.nan
         return c

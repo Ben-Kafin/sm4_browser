@@ -1,9 +1,12 @@
 """
 Calibration of the lock-in channels against the co-acquired I(V) current:
-the per-curve gain-plus-offset regression anchored at the setpoint (the
-sample at the setpoint bias, whose current is the setpoint current: the
-feedback loop was opened there), and its double-derivative counterpart
-for the IETS (second-harmonic) channel.  Nothing refers to 0 V.  A sweep
+one gain for the file from the modulation amplitude (1 / V_mod for the
+first harmonic, 4 / V_mod² for the second; the joint fit over the columns
+when none is recorded, and printed beside it as a check either way), one
+offset per curve from the regression anchored at the setpoint (the sample
+at the setpoint bias, whose current is the setpoint current: the feedback
+loop was opened there), and its double-derivative counterpart for the
+IETS (second-harmonic) channel.  Nothing refers to 0 V.  A sweep
 that does not pass the setpoint bias is refused (anchor_index); a pixel's
 reverse sweeps, which start at the far end, take the a, b of its forward
 sweeps (the `ref` columns).  calibrate and calibrate_iets return
@@ -33,13 +36,15 @@ class ColumnFit(NamedTuple):
     (calibrate).  The arrays are in the column's original energy order
     (npts,).
     """
-    a: float               # dI/dV scale: I units per V per LIA unit: 1/V when both are in A
-    b: float               # dI/dV offset: I units per V
+    a: float               # dI/dV scale, the file's: I units per V per LIA unit: 1/V when both are in A
+    b: float               # dI/dV offset, this column's: I units per V
     c: float               # the setpoint current I_set, I units (not fitted: the anchor)
     X: np.ndarray          # ∫ LIA dV referenced at the anchor: X_raw − X_raw(V_bias) (LIA units·V)
     model: np.ndarray      # a·X + b·(V − V_bias) + c (I units)
     residual: np.ndarray   # I(V) − model (I units)
     rms: float             # rms of the residual (I units)
+    a_joint: float = float('nan')   # the joint fit's gain over the file's columns (the check, or the gain without V_mod)
+    gain: str = ''         # the gain's source: 'modulation' (1 / V_mod) or 'joint'
 
 
 class IetsColumnFit(NamedTuple):
@@ -49,14 +54,16 @@ class IetsColumnFit(NamedTuple):
     setpoint bias (calibrate_iets).  The arrays are in the column's
     original energy order (npts,).
     """
-    a: float               # d2I/dV2 scale: I units per V² per second-harmonic unit
-    b: float               # d2I/dV2 offset: I units per V²
+    a: float               # d2I/dV2 scale, the file's: I units per V² per second-harmonic unit
+    b: float               # d2I/dV2 offset, this column's: I units per V²
     c: float               # the unknown dI/dV at the anchor (I units per V)
     d: float               # the setpoint current I_set, I units (not fitted: the anchor)
     Z: np.ndarray          # the double integral of the second-harmonic signal, both integrations referenced at the anchor (second-harmonic units·V²)
     model: np.ndarray      # a·Z + b·U²/2 + c·U + d (I units)
     residual: np.ndarray   # I(V) − model (I units)
     rms: float             # rms of the residual (I units)
+    a_joint: float = float('nan')   # the joint fit's gain over the file's columns
+    gain: str = ''         # the gain's source: 'modulation' (4 / V_mod²) or 'joint'
 
 
 ANCHOR_TOL = 0.5     # the setpoint bias must lie within this fraction of the energy step of a sample
@@ -108,12 +115,46 @@ def _ref_column(ref, j, n):
     return rc[:, j], ri[:, j]
 
 
-# vmod (the modulation amplitude, V) is accepted for the pipeline's call (STS.process_arrays passes the
-# file's RHK_CH1Drive_Amplitude to whichever calibration file is in place) and is not used by this method.
+def gain_from_modulation(vmod, order=1):
+    """
+    The lock-in gain from the modulation amplitude V_mod (V, peak): for the
+    first harmonic dI/dV = LIA / V_mod, so 1 / V_mod; for the second
+    harmonic d2I/dV2 = 4 S / V_mod², so 4 / V_mod².  None when V_mod is not
+    recorded (or not positive).
+    """
+    if vmod is None or not np.isfinite(vmod) or float(vmod) <= 0:
+        return None
+    return 1.0 / float(vmod) if order == 1 else 4.0 / float(vmod) ** 2
+
+
+def _joint_gain(regressors, targets, nuisance):
+    """
+    One gain for every column with its own nuisance parameters: the least
+    squares of Σ_j ‖ΔI_j − a X_j − B β_j‖² over a and every β_j, the β_j
+    eliminated by projecting X_j and ΔI_j orthogonal to the columns of B
+    (the same B for every column: U, or (U²/2, U)).  NaN when no column
+    leaves anything to regress on.
+    """
+    B = np.asarray(nuisance, dtype=np.float64)
+    if B.ndim == 1:
+        B = B[:, None]
+    G = np.linalg.pinv(B.T @ B) @ B.T
+    num = den = 0.0
+    for X, dI in zip(regressors, targets):
+        Xp = X - B @ (G @ X)
+        dIp = dI - B @ (G @ dI)
+        num += float(np.dot(dIp, Xp))
+        den += float(np.dot(Xp, Xp))
+    return num / den if den > 0 else float('nan')
+
+
+# vmod (the modulation amplitude, V) is the gain's source (gain_from_modulation); the pipeline
+# (STS.process_arrays) passes the file's RHK_CH1Drive_Amplitude.
 def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None):
     """
-    Calibrate dI/dV (LIA) curves via per-curve linear regression against
-    the co-acquired I(V) current channel, anchored at the setpoint.
+    Calibrate dI/dV (LIA) curves against the co-acquired I(V) current
+    channel: one gain for the file, one offset per curve, anchored at the
+    setpoint.
 
     Physics
     -------
@@ -132,32 +173,29 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     of the experimental LIA signal (cumulative trapezoidal rule, referenced
     at the anchor sample).
 
-    For each spectrum j we minimise the least-squares cost, with
-    ΔI = I − I_set and U = V − V_bias,
+    The gain a is the lock-in's and does not change from spectrum to
+    spectrum within a file: it is 1 / V_mod from the recorded modulation
+    amplitude (gain_from_modulation; the lock-in's first harmonic is V_mod
+    times dI/dV).  The offset b_j is fitted per spectrum, with ΔI = I −
+    I_set and U = V − V_bias, as the least squares of
 
-        S(a, b) = Σₙ [ΔI(Vₙ) − a·X(Vₙ) − b·Uₙ]²
+        S_j(b) = Σₙ [ΔI_j(Vₙ) − a·X_j(Vₙ) − b·Uₙ]²,   b_j = Σ (ΔI_j − a·X_j)·U / Σ U²
 
-    Setting ∂S/∂a = 0 and ∂S/∂b = 0 gives the normal equations:
+    Fitting a per spectrum as well is not done: on a window where the LIA
+    is nearly flat, X is nearly proportional to U and a trades off against
+    b (one spectrum's data fix only a·mean(LIA) + b), which spreads the
+    gain over a wide range across the spectra of one file and flips its
+    sign in some.  The joint fit of one a for every regressed column, each
+    with its own b (_joint_gain), is computed as well: it is the gain when
+    the file records no modulation amplitude, and otherwise the console
+    comparison with 1 / V_mod (the pipeline prints both once per file).
 
-        ΣΔI·X = a·ΣX² + b·ΣU·X
-        ΣΔI·U = a·ΣX·U + b·ΣU²
-
-    In matrix form:
-
-        M · [a; b] = [ΣΔI·X ; ΣΔI·U]
-
-        M = [[ΣX²,  ΣUX],
-             [ΣXU,  ΣU²]]
-
-        [a; b] = M⁻¹ · [ΣΔI·X ; ΣΔI·U]
-
-    The calibrated dI/dV is then  a_j · LIA_j(V) + b_j, which
-    simultaneously recovers the scale and offset in a single fit.  The
-    relation is exact in U, so the fit is unbiased whatever the bias
-    window, crossing 0 V or not, and in either sweep direction (the
-    energies are sorted); nothing refers to 0 V.  A sweep that does not
-    pass V_bias (anchor_index) or a file without the setpoint is refused
-    (ValueError): it is not calibrated.
+    The calibrated dI/dV is then  a · LIA_j(V) + b_j.  The relation is
+    exact in U, so the fit is unbiased whatever the bias window, crossing
+    0 V or not, and in either sweep direction (the energies are sorted);
+    nothing refers to 0 V.  A sweep that does not pass V_bias
+    (anchor_index) or a file without the setpoint is refused (ValueError):
+    it is not calibrated.
 
     Parameters
     ----------
@@ -173,8 +211,8 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
         Current page's units (A): the recorded current, through the
         pipeline's filters when they are on.  None raises ValueError.
     vmod : float or None
-        The modulation amplitude (V), accepted for the pipeline's call and
-        not used by this method (see the comment above).
+        The modulation amplitude (V, peak; RHK_CH1Drive_Amplitude): the
+        gain's source.  None: the joint fit is the gain.
     V_bias, I_setpoint : float
         The setpoint (RHK_Bias in V, RHK_Current in A): the anchor.
     ref : (lia_ref, iv_ref) or None
@@ -182,22 +220,23 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
         setpoint: a pixel's forward sweeps (their raw mean), for the views
         of its reverse sweeps or of all its sweeps (sts.STS.sweep_view).
         When given, the regression of column j runs on ref column j and
-        its a, b are applied to curves[:, j]; a column whose reference is
+        its b_j is applied to curves[:, j]; a column whose reference is
         not finite (a pixel without a forward sweep) is regressed on
         itself.
 
     Returns
     -------
-    calibrated : ndarray, same shape as *curves*, float64: a_j * LIA_j + b_j
+    calibrated : ndarray, same shape as *curves*, float64: a * LIA_j + b_j
         per column, in I units per V (A/V for pages in A)
-    fits : list of ColumnFit, one per column (a, b, c = I_set, X, model,
-        residual, rms; the arrays in the original energy ordering; X, the
-        model and the residual of the regressed columns, the reference's
-        when one was used)
+    fits : list of ColumnFit, one per column (a the file's gain, b, c =
+        I_set, X, model, residual, rms, a_joint the joint fit's gain, gain
+        'modulation' or 'joint'; the arrays in the original energy
+        ordering; X, the model and the residual of the regressed columns,
+        the reference's when one was used)
 
-    A column whose X and U are linearly dependent (for instance an all-zero
-    LIA column, X = 0 everywhere) makes M singular and numpy.linalg.solve
-    raises LinAlgError; the pipeline passes the acquired columns only.
+    With no modulation amplitude and every column's X proportional to U
+    (for instance all-zero LIA columns) the joint gain is undefined and
+    ValueError is raised; the pipeline passes the acquired columns only.
     """
     if iv is None:
         raise ValueError(
@@ -210,63 +249,55 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     iv_data = np.asarray(iv, dtype=np.float64)
     I_set = float(I_setpoint)
     n_curves = curves.shape[1]
-    calibrated = np.empty_like(curves, dtype=np.float64)
-    fits = []
+    UU = float(np.dot(U, U))
 
+    # The regressed data per column (the reference's when given), on the sorted axis.
+    Xs, dIs, srcs = [], [], []
     for j in range(n_curves):
         rc = _ref_column(ref, j, curves.shape[0])
         src_lia = curves[:, j] if rc is None else rc[0]
         src_iv = iv_data[:, j] if rc is None else rc[1]
-        # Sort LIA and I(V) to match ascending energy.
-        lia_sorted = src_lia[sort_idx]
-        iv_sorted = src_iv[sort_idx]
-
         # X(V) = cumulative integral of LIA, referenced at the anchor sample (V_bias).
-        X_raw = cumulative_trapezoid(lia_sorted, e_sorted, initial=0)
-        X = X_raw - X_raw[i_a]
-
+        X_raw = cumulative_trapezoid(src_lia[sort_idx], e_sorted, initial=0)
+        Xs.append(X_raw - X_raw[i_a])
         # ΔI(V) = I(V) − I_set: the loop was opened at V_bias with the current at the setpoint.
-        delta_I = iv_sorted - I_set
+        dIs.append(src_iv[sort_idx] - I_set)
+        srcs.append(src_iv)
 
-        # Assemble normal equations:  M · [a; b] = rhs
-        sum_X2 = np.dot(X, X)
-        sum_U2 = np.dot(U, U)
-        sum_UX = np.dot(U, X)
-        sum_IX = np.dot(delta_I, X)
-        sum_IU = np.dot(delta_I, U)
+    # The gain: 1 / V_mod, or the joint fit over every column (its own offset each) without one.
+    a_joint = _joint_gain(Xs, dIs, U)
+    g = gain_from_modulation(vmod, 1)
+    a, source = (g, 'modulation') if g is not None else (a_joint, 'joint')
+    if not np.isfinite(a):
+        raise ValueError("the calibration gain cannot be determined: no modulation amplitude recorded and "
+                         "every column's integrated LIA is proportional to V − V_bias.")
 
-        M = np.array([[sum_X2, sum_UX],
-                      [sum_UX, sum_U2]])
-        rhs = np.array([sum_IX, sum_IU])
-
-        # Solve for [a, b].
-        ab = np.linalg.solve(M, rhs)
-        a_j = ab[0]
-        b_j = ab[1]
-
+    calibrated = np.empty_like(curves, dtype=np.float64)
+    fits = []
+    U_orig = np.empty_like(U)
+    U_orig[sort_idx] = U
+    for j in range(n_curves):
+        # The offset: the least squares of ΔI − a·X against U.
+        b_j = float(np.dot(dIs[j] - a * Xs[j], U) / UU) if UU > 0 else 0.0
         # Calibrated dI/dV in original energy ordering (the column's own LIA, whichever columns were regressed).
-        calibrated[:, j] = a_j * curves[:, j] + b_j
-
-        # The fit entry (the common contract of the calibration files): the referenced integral
-        # and the model in the original ordering, c the setpoint current.
-        X_orig = np.empty_like(X)
-        X_orig[sort_idx] = X
-        U_orig = np.empty_like(U)
-        U_orig[sort_idx] = U
-        model = a_j * X_orig + b_j * U_orig + I_set
-        residual = src_iv - model
-        fits.append(ColumnFit(float(a_j), float(b_j), I_set, X_orig, model, residual,
-                              float(np.sqrt(np.mean(residual * residual)))))
+        calibrated[:, j] = a * curves[:, j] + b_j
+        X_orig = np.empty_like(Xs[j])
+        X_orig[sort_idx] = Xs[j]
+        model = a * X_orig + b_j * U_orig + I_set
+        residual = srcs[j] - model
+        fits.append(ColumnFit(float(a), b_j, I_set, X_orig, model, residual,
+                              float(np.sqrt(np.mean(residual * residual))), float(a_joint), source))
 
     return calibrated, fits
 
 
-# vmod: accepted for the pipeline's call and not used by this method (see calibrate).
+# vmod: the gain's source, 4 / V_mod² for the second harmonic (gain_from_modulation).
 def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None):
     """
-    Calibrate IETS (second-harmonic lock-in) curves via per-curve linear
-    regression against the co-acquired I(V) current channel, the
-    double-derivative counterpart of calibrate, anchored at the setpoint.
+    Calibrate IETS (second-harmonic lock-in) curves against the co-acquired
+    I(V) current channel, the double-derivative counterpart of calibrate:
+    one gain for the file, the offset and the anchor slope per curve,
+    anchored at the setpoint.
 
     The true d2I/dV2 relates to the raw second-harmonic signal S by
 
@@ -279,31 +310,34 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
 
     where Z(V) is the double cumulative trapezoidal integral of S, both
     integrations referenced at the anchor, and c absorbs the unknown dI/dV
-    at the anchor.  For each spectrum j the least-squares cost in (a, b,
-    c) gives the 3 by 3 normal equations
+    at the anchor.  The gain a is 4 / V_mod² from the recorded modulation
+    amplitude (gain_from_modulation; the lock-in's second harmonic is
+    V_mod² / 4 times d2I/dV2), or the joint fit of one a over every
+    regressed column with its own (b, c) (_joint_gain) when none is
+    recorded; the joint fit is computed either way for the console
+    comparison.  For each spectrum j the least squares in (b, c) with a
+    fixed gives the 2 by 2 normal equations
 
-        M · [a; b; c] = [ΣΔI·Z ; ΣΔI·U²/2 ; ΣΔI·U],
-        M = [[ΣZ², ΣZ·U²/2, ΣZ·U], [ΣZ·U²/2, Σ(U²/2)², ΣU²/2·U], [ΣZ·U, ΣU²/2·U, ΣU²]]
+        [[Σ(U²/2)², ΣU²/2·U], [ΣU²/2·U, ΣU²]] · [b; c] = [Σ(ΔI − a·Z)·U²/2 ; Σ(ΔI − a·Z)·U]
 
-    solved with numpy.linalg.solve as calibrate solves its 2 by 2 system.
-    The calibrated curve is a_j · S_j(V) + b_j (in the Current page's units
+    The calibrated curve is a · S_j(V) + b_j (in the Current page's units
     per V²), in the original energy ordering.  As in calibrate the relation
-    is exact in U, so nothing refers to 0 V; the three regressors are
-    nearly collinear, so the anchor must be right, and a sweep that does
-    not pass V_bias is refused (anchor_index).
+    is exact in U, so nothing refers to 0 V, and a sweep that does not pass
+    V_bias is refused (anchor_index).
 
     Parameters: as calibrate (energy in V, any order; curves the
     second-harmonic page's data as the loader gives it, through the dI/dV
     filters when they are on; iv the recorded current through the
-    pipeline's filters, None raises ValueError; vmod accepted and not used;
-    V_bias, I_setpoint the setpoint; ref the reference columns of the
-    sweeps that started at the setpoint).
+    pipeline's filters, None raises ValueError; vmod the modulation
+    amplitude; V_bias, I_setpoint the setpoint; ref the reference columns
+    of the sweeps that started at the setpoint).
 
     Returns
     -------
     calibrated : ndarray, same shape as *curves*, float64
     fits : list of IetsColumnFit, one per column (a, b, c, d = I_set, Z,
-        model, residual, rms; the arrays in the original energy ordering)
+        model, residual, rms, a_joint, gain; the arrays in the original
+        energy ordering)
     """
     if iv is None:
         raise ValueError(
@@ -316,45 +350,44 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
     iv_data = np.asarray(iv, dtype=np.float64)
     I_set = float(I_setpoint)
     n_curves = curves.shape[1]
-    calibrated = np.empty_like(curves, dtype=np.float64)
-    fits = []
     Q = 0.5 * U * U
+    B = np.column_stack([Q, U])
+    M2 = B.T @ B
 
+    Zs, dIs, srcs = [], [], []
     for j in range(n_curves):
         rc = _ref_column(ref, j, curves.shape[0])
         src_s = curves[:, j] if rc is None else rc[0]
         src_iv = iv_data[:, j] if rc is None else rc[1]
-        s_sorted = src_s[sort_idx]
-        iv_sorted = src_iv[sort_idx]
-
         # Y(V) = cumulative integral of S, referenced at the anchor; Z(V) = its integral, referenced too.
-        Y_raw = cumulative_trapezoid(s_sorted, e_sorted, initial=0)
+        Y_raw = cumulative_trapezoid(src_s[sort_idx], e_sorted, initial=0)
         Y = Y_raw - Y_raw[i_a]
         Z_raw = cumulative_trapezoid(Y, e_sorted, initial=0)
-        Z = Z_raw - Z_raw[i_a]
+        Zs.append(Z_raw - Z_raw[i_a])
+        dIs.append(src_iv[sort_idx] - I_set)
+        srcs.append(src_iv)
 
-        delta_I = iv_sorted - I_set
+    a_joint = _joint_gain(Zs, dIs, B)
+    g = gain_from_modulation(vmod, 2)
+    a, source = (g, 'modulation') if g is not None else (a_joint, 'joint')
+    if not np.isfinite(a):
+        raise ValueError("the calibration gain cannot be determined: no modulation amplitude recorded and "
+                         "every column's double integral is in the span of U²/2 and U.")
 
-        M = np.array([[np.dot(Z, Z), np.dot(Z, Q), np.dot(Z, U)],
-                      [np.dot(Q, Z), np.dot(Q, Q), np.dot(Q, U)],
-                      [np.dot(U, Z), np.dot(U, Q), np.dot(U, U)]])
-        rhs = np.array([np.dot(delta_I, Z), np.dot(delta_I, Q), np.dot(delta_I, U)])
-
-        abc = np.linalg.solve(M, rhs)
-        a_j, b_j, c_j = abc[0], abc[1], abc[2]
-
-        calibrated[:, j] = a_j * curves[:, j] + b_j
-
-        # The fit entry: the referenced double integral and the model in the original ordering,
-        # d the setpoint current.
-        Z_orig = np.empty_like(Z)
-        Z_orig[sort_idx] = Z
-        U_orig = np.empty_like(U)
-        U_orig[sort_idx] = U
-        model = a_j * Z_orig + b_j * 0.5 * U_orig * U_orig + c_j * U_orig + I_set
-        residual = src_iv - model
-        fits.append(IetsColumnFit(float(a_j), float(b_j), float(c_j), I_set, Z_orig, model, residual,
-                                  float(np.sqrt(np.mean(residual * residual)))))
+    calibrated = np.empty_like(curves, dtype=np.float64)
+    fits = []
+    U_orig = np.empty_like(U)
+    U_orig[sort_idx] = U
+    for j in range(n_curves):
+        rhs = B.T @ (dIs[j] - a * Zs[j])
+        b_j, c_j = np.linalg.solve(M2, rhs)
+        calibrated[:, j] = a * curves[:, j] + b_j
+        Z_orig = np.empty_like(Zs[j])
+        Z_orig[sort_idx] = Zs[j]
+        model = a * Z_orig + b_j * 0.5 * U_orig * U_orig + c_j * U_orig + I_set
+        residual = srcs[j] - model
+        fits.append(IetsColumnFit(float(a), float(b_j), float(c_j), I_set, Z_orig, model, residual,
+                                  float(np.sqrt(np.mean(residual * residual))), float(a_joint), source))
 
     return calibrated, fits
 
@@ -366,7 +399,8 @@ if __name__ == '__main__':
     # integral X referenced at the anchor (the sample at the setpoint bias), the recorded current
     # (every acquired column faint, the shown sweep bold; the filtered current when the filters are
     # on).  Row 2: the fit in the I(V) frame with its parts a·X, b·(V − V_bias), c = I_set and the
-    # residual; the calibrated a·LIA + b in the browser's dI/dV frame
+    # residual (a the file's gain from V_mod, b the sweep's offset); the calibrated a·LIA + b in the
+    # browser's dI/dV frame
     # with the numerical derivative of the (filtered) current; the least-squares cost S(a, b)
     # around its minimum.  Parameters of every column printed once; the shown sweep's on every step.
     from sm4_Browser import qtplot as plt
@@ -402,8 +436,12 @@ if __name__ == '__main__':
     print(f"{f.name}: {n_sweeps} acquired column(s), bias {V.min():+.3f} to {V.max():+.3f} V"
           f"; anchor at the setpoint: V_bias = {Vs[i0]:+.4f} V, I_setpoint = {f.I_setpoint * pA:.3f} pA"
           + (f"; current filters Hampel {hampel}, SG {sgolay}" if filtered else "; current filters off"))
+    print(f"gain a = {fits[0].a:.4g} {ua} " + ("from the modulation amplitude (1/V_mod, V_mod = "
+                                                f"{f.vmod * 1e3:.3g} mV)" if fits[0].gain == 'modulation'
+                                                else "from the joint fit over the columns (no modulation amplitude recorded)")
+          + f"; the joint fit gives {fits[0].a_joint:.4g} {ua}; the offset b per sweep")
     for j, cf in zip(cols, fits):
-        print(f"column {j}: a = {cf.a:.4g} {ua}, b = {sm4file.si_text(cf.b, uI + '/V')}, "
+        print(f"column {j}: b = {sm4file.si_text(cf.b, uI + '/V')}, "
               f"I_set = {sm4file.si_text(cf.c, uI)}, rms residual = {sm4file.si_text(cf.rms, uI)}")
 
     X_all = np.column_stack([c.X for c in fits])
@@ -448,7 +486,7 @@ if __name__ == '__main__':
         cf = fits[k]
         lia_k = lia[:, k]
         iv_k = iv[:, k]
-        print(f"column {cols[k]}: a = {cf.a:.4g}, b = {cf.b:.4g}")
+        print(f"column {cols[k]}: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}")
         aa, bb, S, S_min = cost_surface(k)
 
         axes = fig.subplots(2, 3)
@@ -523,10 +561,10 @@ if __name__ == '__main__':
         cs = ax.contourf(aa, bb, logS, levels=30, cmap='viridis')
         cb = fig.colorbar(cs, ax=ax, label="log10(S / S_min)")
         state['axes'].append(cb.ax)
-        ax.plot(cf.a, cf.b, 'o', color='w', mec='k', label=f"minimum: a = {cf.a:.4g}, b = {cf.b:.4g}")
+        ax.plot(cf.a, cf.b, 'o', color='w', mec='k', label=f"used: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}")
         ax.set_xlabel(f"a ({ua})")
         ax.set_ylabel(f"b ({uI}/V)")
-        ax.set_title("least-squares cost S(a, b), anchored at the setpoint (±4 standard errors)")
+        ax.set_title("least-squares cost S(a, b) of this sweep alone (±4 standard errors of a free fit)")
         ax.legend(fontsize=8, loc='upper right')
 
         for ax in list(axes[0]) + list(axes[1, :2]):

@@ -74,7 +74,8 @@ def run():
            rv.spectra.lia_ref is not None and np.allclose(rv.spectra.lia_ref, fw.spectra.lia)
            and np.allclose(rv.spectra.iv_ref, fw.spectra.iv) and av.spectra.lia_ref is not None
            and np.allclose(av.spectra.lia_ref, fw.spectra.lia))
-        _, fits = calibration.calibrate(fw.energy, fw.spectra.lia, fw.spectra.iv, V_bias=fw.V_bias, I_setpoint=fw.I_setpoint)
+        _, fits = calibration.calibrate(fw.energy, fw.spectra.lia, fw.spectra.iv, fw.vmod, V_bias=fw.V_bias,
+                                        I_setpoint=fw.I_setpoint)
         cr = rv.curves(channel='didv', normalize=False, calibrate=True)
         exp = np.column_stack([cf.a * rv.spectra.lia[:, j] + cf.b for j, cf in enumerate(fits)])
         ok(f"[{layout}] the reverse view takes the forward sweeps' a, b", np.allclose(cr, exp))

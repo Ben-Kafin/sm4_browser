@@ -1736,7 +1736,7 @@ class Map:
             c, areas = STS.process_arrays(energy, lia, iv, hampel, sgolay, div, self.iv_width(),
                                           return_areas=True, channel='didv', iv_zero_sub=self.iv_zero_sub,
                                           vmod=g.vmod, V_bias=g.V_bias, I_setpoint=g.I_setpoint, ref=refs(cols),
-                                          hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                                          hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=g.name)
             return c[e_order, :], areas
 
         sends = []

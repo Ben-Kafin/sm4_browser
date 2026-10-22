@@ -1154,10 +1154,14 @@ class Fit:
                                           if vmod else "not recorded"))
         ul, ui = getattr(self, 'units_lia', None), getattr(self, 'units_iv', None)
         ua = " /V" if ul == ui else f" {ui}/({ul}·V)"          # the stretch's units (1/V: both pages in A)
+        if self.calib_fits:
+            cf0 = self.calib_fits[0]
+            print(f"Calibration gain: a = {cf0.a:.4f}{ua} "
+                  + ("from the modulation amplitude (1/V_mod)" if cf0.gain == 'modulation'
+                     else "from the joint fit over the sweeps (no modulation amplitude recorded)")
+                  + f"; the joint fit over the sweeps gives {cf0.a_joint:.4f}{ua}; the offset b per sweep")
         for j, (cf, area) in enumerate(zip(self.calib_fits, areas_A)):
-            print(f"  sweep {j}: a = {cf.a:.4f}{ua}"
-                  + (f" (1/V_mod = {1.0 / vmod:.4f} /V)" if vmod else "")
-                  + f", c = {cf.c * pA:.3f} pA, "
+            print(f"  sweep {j}: b = {cf.b * pA:.3f} pA/V, c = {cf.c * pA:.3f} pA, "
                   f"rms residual = {cf.rms * pA:.3f} pA, area = {area * pA:.3f} pA")
         print(f"Calibration anchor: the setpoint, V_bias = {self.V_bias:.4f} V, I_setpoint = {self.I_setpoint * pA:.2f} pA"
               f"; the fit's window reference V_ref = {self.V[self.i_ref]:.4f} V")

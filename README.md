@@ -175,14 +175,20 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
 1. the filters (`filters.py`): Hampel (spikes), then Savitzky-Golay (smoothing), each with one
    toggle for the lock-in channel's columns (`dI/dV`) and one for the recorded current I(V), the
    same settings for both targets, every toggle off by default;
-2. the calibration of the lock-in channel against that current (`calibration.py`: a
-   gain-plus-offset regression per curve anchored at the setpoint, the sample at the setpoint bias
-   RHK_Bias whose current is the setpoint current RHK_Current, where the feedback loop was opened;
-   the relation is exact in V − V_bias, so no bias window and no sweep direction biases it and
-   nothing refers to 0 V; a pixel's reverse sweeps, which start at the far end, take the a and b
-   of its forward sweeps; a sweep without a sample at the setpoint bias, or a file without the
-   setpoint, is not calibrated, said once on the console; `calibrate_iets` for the
-   second-harmonic channel);
+2. the calibration of the lock-in channel against that current (`calibration.py`: dI/dV =
+   a·LIA + b with one gain a per file and one offset b per curve. The gain is the lock-in's,
+   1/V_mod from the file's modulation amplitude (4/V_mod² for the second harmonic); the joint
+   fit of one gain over every curve of the file is printed beside it on the console as a check,
+   and is the gain when no modulation amplitude is recorded. The offset is the least-squares fit
+   of the integrated LIA to the recorded current anchored at the setpoint, the sample at the
+   setpoint bias RHK_Bias whose current is the setpoint current RHK_Current, where the feedback
+   loop was opened; the relation is exact in V − V_bias, so no bias window and no sweep direction
+   biases it and nothing refers to 0 V. Fitting the gain per curve as well is not done: where the
+   lock-in signal is nearly flat the gain trades off against the offset and scatters, and flips
+   sign, across the curves of one file. A pixel's reverse sweeps, which start at the far end,
+   take the offsets fitted on its forward sweeps; a sweep without a sample at the setpoint bias,
+   or a file without the setpoint, is not calibrated, said once on the console; `calibrate_iets`
+   for the second-harmonic channel);
 3. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
    current (`feenstra.py`): Feenstra's normalized conductance (dI/dV)/(I/V), with `0Vsub` the
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
@@ -605,10 +611,11 @@ calibration, the Feenstra division and the normalization in that order on any se
 
 The four pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
-`calibration.calibrate` fits each lock-in column to the derivative of its filtered current
-(`ColumnFit`: gain and offset, anchored at the setpoint; `anchor_index` finds the sample at the
-setpoint bias and refuses a sweep without one; `ref` carries a reverse-sweep view's forward
-columns), `calibrate_iets` the second-harmonic channel. `feenstra.divide_by_iv` divides by the
+`calibration.calibrate` calibrates each lock-in column against its filtered current
+(`ColumnFit`: the file's gain from the modulation amplitude, `gain_from_modulation`, or the joint
+fit over the columns, `_joint_gain`; the column's offset anchored at the setpoint; `anchor_index`
+finds the sample at the setpoint bias and refuses a sweep without one; `ref` carries a
+reverse-sweep view's forward columns), `calibrate_iets` the second-harmonic channel. `feenstra.divide_by_iv` divides by the
 I/V (`iv_corrected` for the 0 V subtraction, `iv_broadened` for the exponential broadening),
 `feenstra_titles` names the four panels, `iv_zero_crossings` is the diagnostic, and
 `FeenstraWindow` is the companion window. `normalization.normalize` scales every curve to unit area

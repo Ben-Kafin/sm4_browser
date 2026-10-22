@@ -791,7 +791,7 @@ class STS:
 
     # --- the pipeline (the steps live in filters, calibration, feenstra, normalization) ---
 
-    _notes_said = set()        # the console lines of a refused calibration, each said once
+    _notes_said = set()        # the console lines of a refused calibration and of a file's gain, each said once
 
     @classmethod
     def _note_once(cls, text):
@@ -799,11 +799,22 @@ class STS:
             cls._notes_said.add(text)
             print(text)
 
+    @staticmethod
+    def _gain_text(name, fit, vmod, channel):
+        """One console line: the file's calibration gain, its source, and the joint fit's value beside it."""
+        unit = "/V²" if channel == 'iets' else "/V"
+        if fit.gain == 'modulation':
+            rel = ("4 / V_mod²" if channel == 'iets' else "1 / V_mod")
+            return (f"{name}: calibration gain a = {fit.a:.4g} {unit} = {rel} (V_mod = {float(vmod) * 1e3:.3g} mV); "
+                    f"the joint fit over the columns gives {fit.a_joint:.3g} {unit}; the offset per sweep.")
+        return (f"{name}: no modulation amplitude recorded; the calibration gain is the joint fit over the "
+                f"columns, a = {fit.a:.4g} {unit}; the offset per sweep.")
+
     @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
                        calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
-                       hampel_didv=None, sgolay_didv=None):
+                       hampel_didv=None, sgolay_didv=None, name=None):
         """
         Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
@@ -813,10 +824,13 @@ class STS:
         calibration.calibrate for dI/dV, calibrate_iets for IETS, anchored
         at the setpoint V_bias / I_setpoint; `ref` = (lia_ref, iv_ref) the
         forward-sweep reference columns of a reverse-sweep view, through
-        the same filters; off, the columns stay in the channel page's
+        the same filters; the gain one per file from the modulation
+        amplitude `vmod` with the joint fit over the columns beside it, the
+        offset per column; off, the columns stay in the channel page's
         units; a file without a sample at its setpoint bias, or without the
         setpoint, is not calibrated: calibration.anchor_index, said once on
-        the console), the division by the broadened I/V of the same current when
+        the console; with `name` the file's, the gain and its check are said
+        once per file), the division by the broadened I/V of the same current when
         divide_iv is on (dI/dV only; needs I(V); iv_broadening is the
         broadening width in volts, 0 the plain I/V; iv_zero_sub subtracts
         each column's current at 0 V before I/V is formed, see
@@ -855,8 +869,10 @@ class STS:
                          filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
             fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
             try:
-                cal, _ = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f)
+                cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f)
                 c[:, cols] = cal
+                if name and fits:
+                    cls._note_once(cls._gain_text(name, fits[0], vmod, channel))
             except ValueError as exc:
                 cls._note_once(f"calibration not applied: {exc}")
         if divide_iv and channel != 'iets':
@@ -883,7 +899,8 @@ class STS:
                                    acquired=self.acquired, iv_zero_sub=iv_zero_sub, normalize=normalize,
                                    calibrate=calibrate, vmod=getattr(self, 'vmod', None),
                                    V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None),
-                                   ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                                   ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
+                                   name=getattr(self, 'name', None))
 
 
 if __name__ == '__main__':

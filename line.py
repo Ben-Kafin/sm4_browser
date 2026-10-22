@@ -451,7 +451,8 @@ class Line:
                                            vmod=getattr(self, 'vmod', None), norm_range=norm_range,
                                            V_bias=getattr(self, 'V_bias', None),
                                            I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
-                                           hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                                           hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
+                                           name=os.path.basename(str(self.ifile)))
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)
         curves[:, ~acquired] = np.nan

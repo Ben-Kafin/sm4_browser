@@ -514,7 +514,7 @@ def send_sets_to_fit(label, V0, data, data_unfiltered, parts, hampel, sgolay, di
         _, ar = STS.process_arrays(f.energy, f.lia, f.iv, hampel, sgolay, divide_iv, iv_width,
                                    return_areas=True, acquired=f.acquired, iv_zero_sub=iv_zero_sub, vmod=f.vmod,
                                    V_bias=f.V_bias, I_setpoint=f.I_setpoint, ref=(lia_ref, iv_ref),
-                                   hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                                   hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=f.name)
         order = np.argsort(f.energy)
         Vf = f.energy[order]
         iv_sorted = f.iv[order, :]

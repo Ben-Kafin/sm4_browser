@@ -2231,7 +2231,7 @@ def _rows(b, exp):
     b._goto(0)
 
 
-@check("N3 calibration anchored at the setpoint: exact on every window and sweep direction, the forward reference, the refusals, the pipeline's note; the file's curves")
+@check("N3 calibration anchored at the setpoint: one gain per file (V_mod or the joint fit), one offset per sweep; exact on every window and sweep direction, the forward reference, the refusals, the pipeline's notes; the file's curves")
 def _calibration_anchor(b, exp):
     import io
     import contextlib
@@ -2254,9 +2254,23 @@ def _calibration_anchor(b, exp):
         lia_s, I_s = synth(Vs, i_a)
         inv = np.empty_like(order)
         inv[order] = np.arange(len(order))
-        cal, fits = calibration.calibrate(V, lia_s[inv], I_s[inv], V_bias=Vb, I_setpoint=I_set)
-        assert abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and fits[0].c == I_set, (Vb, fits[0].a, fits[0].b)
+        cal, fits = calibration.calibrate(V, lia_s[inv], I_s[inv], V_bias=Vb, I_setpoint=I_set)   # no V_mod: the joint fit
+        assert fits[0].gain == 'joint' and abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and fits[0].c == I_set
         assert np.allclose(cal[:, 0], a_t * lia_s[inv][:, 0] + b_t)
+        cal2, fits2 = calibration.calibrate(V, lia_s[inv], I_s[inv], vmod=1.0 / a_t, V_bias=Vb, I_setpoint=I_set)
+        assert fits2[0].gain == 'modulation' and fits2[0].a == a_t and abs(fits2[0].b - b_t) < 1e-9 and abs(fits2[0].a_joint - a_t) < 1e-9
+    # one gain for the file, one offset per column: three columns with their own offsets, exact without V_mod
+    offs = (-0.4, 0.3, 1.1)
+    lia3 = np.column_stack([0.8 + 0.5 * np.sin(3.0 * V + k) + 0.3 * V ** 2 for k in range(3)])
+    X3 = cumulative_trapezoid(lia3, V, axis=0, initial=0)
+    X3 -= X3[i_a0 := calibration.anchor_index(V, 1.0)]
+    I3 = I_set + a_t * X3 + np.asarray(offs)[None, :] * (V - V[i_a0])[:, None]
+    cal3, fits3 = calibration.calibrate(V, lia3, I3, V_bias=1.0, I_setpoint=I_set)
+    assert all(f.gain == 'joint' and abs(f.a - a_t) < 1e-9 for f in fits3)
+    assert all(abs(f.b - o) < 1e-9 for f, o in zip(fits3, offs)), [f.b for f in fits3]
+    cal3m, fits3m = calibration.calibrate(V, lia3, I3, vmod=0.02, V_bias=1.0, I_setpoint=I_set)
+    assert all(f.a == 50.0 and f.gain == 'modulation' and abs(f.a_joint - a_t) < 1e-9 for f in fits3m)
+    assert np.allclose(cal3m, 50.0 * lia3 + np.array([f.b for f in fits3m])[None, :])
     # the reference: a column of other values takes the reference's a, b, applied to its own LIA
     V = np.linspace(-1, 1, 201)
     i_a = calibration.anchor_index(V, 1.0)
@@ -2267,6 +2281,8 @@ def _calibration_anchor(b, exp):
     ref_nan = (np.full_like(lia_f, np.nan), I_f)                      # no forward sweep: the column on its own
     _, fits_own = calibration.calibrate(V, lia_f, I_f, V_bias=1.0, I_setpoint=I_set, ref=ref_nan)
     assert abs(fits_own[0].a - a_t) < 1e-9
+    assert calibration.gain_from_modulation(0.01) == 100.0 and calibration.gain_from_modulation(0.01, 2) == 40000.0
+    assert calibration.gain_from_modulation(None) is None and calibration.gain_from_modulation(0.0) is None
     # the IETS counterpart on a window away from 0 V
     Vq = np.linspace(2, 5, 301)
     i_q = calibration.anchor_index(Vq, 2.0)
@@ -2279,6 +2295,8 @@ def _calibration_anchor(b, exp):
     Iq = I_set + a_t * Z + b_t * U ** 2 / 2 + 0.7 * U
     _, fq = calibration.calibrate_iets(Vq, S[:, None], Iq[:, None], V_bias=2.0, I_setpoint=I_set)
     assert abs(fq[0].a - a_t) < 1e-6 and abs(fq[0].b - b_t) < 1e-6 and abs(fq[0].c - 0.7) < 1e-6, (fq[0].a, fq[0].b, fq[0].c)
+    _, fq2 = calibration.calibrate_iets(Vq, S[:, None], Iq[:, None], vmod=np.sqrt(4.0 / a_t), V_bias=2.0, I_setpoint=I_set)
+    assert fq2[0].gain == 'modulation' and abs(fq2[0].a - a_t) < 1e-9 and abs(fq2[0].b - b_t) < 1e-6
     # the refusals: no sample at the setpoint bias, no setpoint recorded
     for kw in (dict(V_bias=1.5, I_setpoint=I_set), dict(V_bias=None, I_setpoint=I_set), dict(V_bias=1.0, I_setpoint=None)):
         try:
@@ -2294,11 +2312,17 @@ def _calibration_anchor(b, exp):
         c2 = STS.process_arrays(V, lia_f, I_f, normalize=False, calibrate=True, V_bias=1.5, I_setpoint=I_set)
     assert np.allclose(c1, lia_f) and np.allclose(c2, lia_f)
     assert buf.getvalue().count("calibration not applied") == 1, buf.getvalue()
-    # the file's curves: every acquired column a·LIA + b with the a, b of the anchored regression
+    # the file's curves: every acquired column a·LIA + b_j, a the file's gain 1/V_mod, b_j its own offset
     g = goto_kind(b, 'grid')
     cols = np.flatnonzero(np.asarray(g.acquired, dtype=bool))
-    _, fits = calibration.calibrate(g.energy, g.lia[:, cols], g.iv[:, cols], V_bias=g.V_bias, I_setpoint=g.I_setpoint)
-    c = g.curves(normalize=False, calibrate=True)
+    _, fits = calibration.calibrate(g.energy, g.lia[:, cols], g.iv[:, cols], g.vmod, V_bias=g.V_bias, I_setpoint=g.I_setpoint)
+    assert g.vmod and all(cf.a == 1.0 / g.vmod and cf.gain == 'modulation' for cf in fits)
+    STS._notes_said.clear()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        c = g.curves(normalize=False, calibrate=True)
+        g.curves(normalize=False, calibrate=True)
+    assert buf.getvalue().count("calibration gain a = ") == 1 and "1 / V_mod" in buf.getvalue(), buf.getvalue()
     expect = np.column_stack([cf.a * g.lia[:, j] + cf.b for j, cf in zip(cols, fits)])
     assert np.allclose(c[:, cols], expect, rtol=1e-9, atol=0), "the pipeline's calibration is the anchored regression"
     assert all(cf.c == g.I_setpoint for cf in fits)
