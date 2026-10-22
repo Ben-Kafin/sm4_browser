@@ -1744,7 +1744,7 @@ class Map:
         def processed(cols, hampel, sgolay, hampel_didv, sgolay_didv):
             # The pipeline on the raw columns with calibrate and normalize at their defaults (both on: the
             # fit's pipeline), energy ascending; areas: the normalization areas per column (amps).  The
-            # calibration gets the file's filter cutoffs and dwell, its offset, and the pixels' sweeps.
+            # calibration gets the file's offset and the pixels' sweeps.
             lia = g.lia[:, cols]
             iv = g.iv[:, cols]
             spc = g.spectra
@@ -1752,9 +1752,6 @@ class Map:
                                           return_areas=True, channel='didv', iv_zero_sub=self.iv_zero_sub,
                                           vmod=g.vmod, V_bias=g.V_bias, I_setpoint=g.I_setpoint, ref=refs(cols),
                                           hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=g.name,
-                                          lockin_cutoff_hz=getattr(spc, 'lockin_cutoff_hz', None),
-                                          lowpass_hz=getattr(spc, 'lowpass_hz', None),
-                                          dwell_s=getattr(spc, 'dwell_s', None),
                                           b_file=spc.file_offset('didv', hampel, sgolay, hampel_didv, sgolay_didv),
                                           members=members_of(cols))
             return c[e_order, :], areas

@@ -692,17 +692,6 @@ class Sm4File:
             self.n_fast = self.n_spectra if self.kind == 'point' else 0
             self.n_lines = 1
             self.self_check_text = None
-        if self.spectra is not None:
-            # The dwell per point (the sweep clock, dwell_s: the same time per point the drift uses) on
-            # the spectra: the held stretch's source (calibration.settling_points) for the pipeline;
-            # None when the timing cannot be formed.
-            try:
-                dwell = self.dwell_s
-            except Exception:
-                dwell = None
-            self.spectra.dwell_s = dwell
-            if self.spectra_all is not None:
-                self.spectra_all.dwell_s = dwell
 
     @property
     def key(self):

@@ -537,9 +537,6 @@ class LineAverage(Line):
                                         normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
                                         norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
                                         ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'],
-                                        lockin_cutoff_hz=getattr(spc, 'lockin_cutoff_hz', None),
-                                        lowpass_hz=getattr(spc, 'lowpass_hz', None),
-                                        dwell_s=getattr(spc, 'dwell_s', None),
                                         b_file=(spc.file_offset(channel, hampel, sgolay, hampel_didv, sgolay_didv)
                                                 if calibrate and hasattr(spc, 'file_offset') else None),
                                         members=getattr(spc, 'members', None) if channel != 'iets' else None,

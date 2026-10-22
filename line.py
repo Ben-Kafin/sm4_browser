@@ -432,9 +432,8 @@ class Line:
         the file's (STS.acquired, this line's slice in self.kept: no column
         never written or ending in never-written samples); for columns of
         another width the never-written test alone.  The calibration gets the
-        file's filter cutoffs and dwell (the held stretch), the file's offset
-        (STS.file_offset) and the sweeps behind the view's columns
-        (self._int_members) when the columns are the displayed line's.
+        file's offset (STS.file_offset) and the sweeps behind the view's
+        columns (self._int_members) when the columns are the displayed line's.
         """
         raw = np.asarray(raw, dtype=np.float64)
         kept = getattr(self, 'kept', None)
@@ -463,10 +462,7 @@ class Line:
                                                     V_bias=getattr(self, 'V_bias', None),
                                                     I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
                                                     hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                                    name=os.path.basename(str(self.ifile)),
-                                                    lockin_cutoff_hz=getattr(sp, 'lockin_cutoff_hz', None),
-                                                    lowpass_hz=getattr(sp, 'lowpass_hz', None),
-                                                    dwell_s=getattr(sp, 'dwell_s', None), b_file=b_file,
+                                                    name=os.path.basename(str(self.ifile)), b_file=b_file,
                                                     members=mem, return_iv=True)
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)

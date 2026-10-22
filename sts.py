@@ -11,7 +11,6 @@ if __package__ in (None, ''):
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import os
-import re
 import numpy as np
 from sm4_Browser import filters, calibration, normalization, feenstra
 
@@ -372,8 +371,7 @@ class STS:
         s = STS.__new__(STS)
         for attr in ('name', 'attrs', 'zscale_iv', 'zoffset_iv', 'zoffset_lia', 'zoffset_iets', 'units_lia',
                      'units_iets', 'units_iv', 'vmod', 'grid_x', 'grid_y', 'iv_dropped', 'energy', 'energy_units',
-                     'adc_period', 'V_bias', 'I_setpoint', 'iv_realigned', 'lockin_cutoff_hz', 'lowpass_hz',
-                     'dwell_s'):
+                     'adc_period', 'V_bias', 'I_setpoint', 'iv_realigned'):
             setattr(s, attr, getattr(self, attr, None))
         npts = len(self.energy)
         acq_v = np.zeros(n_pix, dtype=bool)
@@ -549,13 +547,6 @@ class STS:
                 self.iv_dropped = iv.shape
         # The modulation amplitude (V) and the recorded grid size, None when not recorded.
         self.vmod = cls._float_attr(ref.attrs, 'RHK_CH1Drive_Amplitude')
-        # The lock-in filter's and the current low-pass's cutoffs (Hz): the held stretch's source
-        # (calibration.settling_points); the dwell per point is the file's (Sm4File sets dwell_s).
-        # The lock-in's is recorded as text, e.g. '20HzBut2-60dB@640Hz' (the cutoff, the filter type
-        # and order, the attenuation at a frequency); the leading frequency is the cutoff (_hz_attr).
-        self.lockin_cutoff_hz = cls._hz_attr(ref.attrs, 'RHK_Lockin0_FilterCutoffFrequency')
-        self.lowpass_hz = cls._hz_attr(ref.attrs, 'RHK_LowPassFilter1_CutoffFrequency')
-        self.dwell_s = None
         self.lia_ref = self.iets_ref = self.iv_ref = None     # a sweep view's forward-sweep reference (sweep_view)
         self.grid_x = cls._int_attr(ref.attrs, 'RHK_GridXsize')
         self.grid_y = cls._int_attr(ref.attrs, 'RHK_GridYsize')
@@ -603,30 +594,6 @@ class STS:
         except (KeyError, TypeError, ValueError):
             return None
         return v if np.isfinite(v) else None
-
-    @staticmethod
-    def _hz_attr(attrs, key):
-        """
-        A recorded frequency as a positive float in Hz: a number as it is, or
-        the leading number of a text such as '20HzBut2-60dB@640Hz' (the
-        lock-in filter's cutoff, type, order and attenuation in one string),
-        read as Hz when its unit is 'Hz' or absent and as kHz for 'kHz';
-        None when absent, unreadable, or not positive.
-        """
-        v = attrs.get(key)
-        if v is None:
-            return None
-        if not isinstance(v, str):
-            try:
-                x = float(v)
-            except (TypeError, ValueError):
-                return None
-            return x if np.isfinite(x) and x > 0 else None
-        m = re.match(r'\s*([0-9]*\.?[0-9]+)\s*(k?Hz)?', v, flags=re.IGNORECASE)
-        if m is None:
-            return None
-        x = float(m.group(1)) * (1e3 if (m.group(2) or '').lower() == 'khz' else 1.0)
-        return x if np.isfinite(x) and x > 0 else None
 
     @staticmethod
     def _int_attr(attrs, key):
@@ -830,9 +797,6 @@ class STS:
         s.energy = self.energy
         s.energy_units = getattr(self, 'energy_units', None)
         s.adc_period = getattr(self, 'adc_period', None)
-        s.lockin_cutoff_hz = getattr(self, 'lockin_cutoff_hz', None)
-        s.lowpass_hz = getattr(self, 'lowpass_hz', None)
-        s.dwell_s = getattr(self, 'dwell_s', None)
         s.source = getattr(self, 'source', self)
         m = getattr(self, 'members', None)
         s.members = None if m is None else {'lia': m['lia'][:, cols, :].copy(), 'iv': m['iv'][:, cols, :].copy(),
@@ -881,8 +845,7 @@ class STS:
         The file's lock-in offset for the dI/dV channel
         (calibration.file_offset: the 1 / rms²-weighted mean of the
         regressed b of every acquired forward sweep of the file, through
-        the given filters, the held stretch out of the regression, the
-        floor on), formed once per filter setting on the file's own
+        the given filters, the floor on), formed once per filter setting on the file's own
         spectra (self.source: the all-sweeps spectroscopy a view or a
         subset came from, else this object) and cached there.  None for
         the IETS channel, without the current, without a forward sweep,
@@ -906,25 +869,20 @@ class STS:
         if cols.size:
             c = filters.filter_lia(np.asarray(src.lia, dtype=np.float64)[:, cols], hampel_didv, sgolay_didv)
             iv = filters.filter_lia(np.asarray(src.iv, dtype=np.float64)[:, cols], hampel, sgolay)
-            settle, _ = calibration.settling_points(getattr(src, 'lockin_cutoff_hz', None),
-                                                    getattr(src, 'lowpass_hz', None), getattr(src, 'dwell_s', None))
             try:
                 _, fits = calibration.calibrate(src.energy, c, iv, getattr(src, 'vmod', None), V_bias=src.V_bias,
-                                                I_setpoint=src.I_setpoint, settle=settle)
-                held = calibration.held_mask(src.energy, src.V_bias, settle)
-                off = calibration.file_offset(fits, c[~held, :], floor=True)
+                                                I_setpoint=src.I_setpoint)
+                off = calibration.file_offset(fits, c, floor=True)
             except ValueError:
                 off = None
         cache[key] = off
         return off
 
     @classmethod
-    def _didv_corrected(cls, energy, c, iv, cols, vmod, V_bias, I_setpoint, ref_f, members, b_file,
-                        lockin_cutoff_hz, lowpass_hz, dwell_s, filt, name):
+    def _didv_corrected(cls, energy, c, iv, cols, vmod, V_bias, I_setpoint, ref_f, members, b_file, filt, name):
         """
         The dI/dV channel's calibration on the acquired columns `cols`
-        (process_arrays): the regression (calibration.calibrate, the held
-        stretch out of it), the file's offset (b_file, a
+        (process_arrays): the regression (calibration.calibrate), the file's offset (b_file, a
         calibration.FileOffset from file_offset, else formed over the
         regressed sweeps here), the gap factor of every sweep
         (calibration.gap_factor; with `members` every sweep behind each
@@ -939,28 +897,25 @@ class STS:
         the file's console lines).  ValueError when nothing can be
         regressed.
         """
-        settle, settle_s = calibration.settling_points(lockin_cutoff_hz, lowpass_hz, dwell_s)
-        held = calibration.held_mask(energy, V_bias, settle)
         hp, sp, hd, sd = filt
         lines = []
         unanchored = 0
         if members is None:
             if ref_f is not None:
                 cal, fits = calibration.calibrate(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
-                                                  I_setpoint=I_setpoint, ref=ref_f, settle=settle)
+                                                  I_setpoint=I_setpoint, ref=ref_f)
                 if name:
                     lines.append(cls._gain_text(name, fits[0], vmod, 'didv'))
                     lines.append(f"{name}: the view's columns average several sweeps and the sweeps were not "
                                  f"handed over: the regressed offsets are applied and no gap factor is formed.")
                 return cal, iv[:, cols].copy(), lines
             cal, fits = calibration.calibrate(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
-                                              I_setpoint=I_setpoint, settle=settle)
-            off = b_file if b_file is not None else calibration.file_offset(fits, c[:, cols][~held, :], floor=True)
+                                              I_setpoint=I_setpoint)
+            off = b_file if b_file is not None else calibration.file_offset(fits, c[:, cols], floor=True)
             a = fits[0].a
             zero = feenstra.iv_zero_offset(energy, iv[:, cols])
             g = a * c[:, cols] + off.b
-            gfs = calibration.gap_factor(energy, g, iv[:, cols], V_bias, settle=settle,
-                                         i_floor=calibration.I_FLOOR_FACTOR * off.noise, iv_zero=zero)
+            gfs = calibration.gap_factor(energy, g, iv[:, cols], V_bias, iv_zero=zero)
             corrected = g / np.column_stack([gf.s for gf in gfs])
             iv_corr = np.column_stack([gf.iv_corr for gf in gfs])
             n_sweeps = len(gfs)
@@ -977,12 +932,10 @@ class STS:
                 raise ValueError("no forward sweep behind these columns: no sweep starts at the setpoint.")
             L = np.column_stack([lia_m[:, p, m] for p, m in fw])
             Iw = np.column_stack([iv_m[:, p, m] for p, m in fw])
-            cal, fits = calibration.calibrate(energy, L, Iw, vmod, V_bias=V_bias, I_setpoint=I_setpoint, settle=settle)
-            off = b_file if b_file is not None else calibration.file_offset(fits, L[~held, :], floor=True)
+            cal, fits = calibration.calibrate(energy, L, Iw, vmod, V_bias=V_bias, I_setpoint=I_setpoint)
+            off = b_file if b_file is not None else calibration.file_offset(fits, L, floor=True)
             a = fits[0].a
-            i_floor = calibration.I_FLOOR_FACTOR * off.noise
-            gf_f = calibration.gap_factor(energy, a * L + off.b, Iw, V_bias, settle=settle, i_floor=i_floor,
-                                          iv_zero=feenstra.iv_zero_offset(energy, Iw))
+            gf_f = calibration.gap_factor(energy, a * L + off.b, Iw, V_bias, iv_zero=feenstra.iv_zero_offset(energy, Iw))
             corr_m = np.full((len(energy), n_c, k), np.nan)
             ivc_m = np.full((len(energy), n_c, k), np.nan)
             lns_end = {}
@@ -1003,8 +956,7 @@ class STS:
                     else:
                         l0.append(0.0)
                         unanchored += 1
-                gf_r = calibration.gap_factor(energy, a * L2 + off.b, I2, V_bias, settle=settle, i_floor=i_floor,
-                                              start='far', lns0=np.array(l0),
+                gf_r = calibration.gap_factor(energy, a * L2 + off.b, I2, V_bias, start='far', lns0=np.array(l0),
                                               iv_zero=feenstra.iv_zero_offset(energy, I2))
                 for i, (p, m) in enumerate(rv):
                     corr_m[:, p, m] = (a * L2[:, i] + off.b) / gf_r[i].s
@@ -1027,18 +979,15 @@ class STS:
                          f"{off.n} forward sweep(s)' regressed b is {off.b_mean * 1e12:.4g} pA/V"
                          + (f", raised to the floor −min(a·LIA) = {off.bound * 1e12:.4g} pA/V" if off.floored
                             else f" (the floor −min(a·LIA) = {off.bound * 1e12:.4g} pA/V did not act)")
-                         + f"; current noise {off.noise * 1e12:.3g} pA; held stretch {settle} point(s)"
-                         + (f" ({settle_s * 1e3:.3g} ms)" if settle
-                            else (f" ({settle_s * 1e3:.3g} ms, under one point)" if settle_s > 0
-                                  else (" (no filter cutoff recorded)" if lockin_cutoff_hz is None and lowpass_hz is None
-                                        else " (no dwell per point recorded: the file has no time per spectrum)"))))
-            n_reg = sum(1 for gf in gfs if gf.regions)
-            n_pts = sum(gf.n_region for gf in gfs)
-            n_all = sum(gf.s.size - gf.held for gf in gfs)
-            n_neg = int(np.sum(np.any(corrected[~held, :] < 0, axis=0)))
-            lines.append(f"{name}: gap correction over {len(cols)} column(s), {n_sweeps} sweep(s): creep regions "
-                         f"in {n_reg} sweep(s), {100.0 * n_pts / max(n_all, 1):.1f} % of the points; {n_neg} "
-                         f"corrected column(s) dip below zero outside the held stretch"
+                         + f"; current noise {off.noise * 1e12:.3g} pA")
+            s_ends = np.array([gf.s_end for gf in gfs])
+            n_skip = sum(gf.n_skipped for gf in gfs)
+            n_neg = int(np.sum(np.any(corrected < 0, axis=0)))
+            lines.append(f"{name}: gap correction over {len(cols)} column(s), {n_sweeps} sweep(s): s_end from "
+                         f"{s_ends.min():.3f} to {s_ends.max():.3f} (median {np.median(s_ends):.3f})"
+                         + (f"; {n_skip} step(s) skipped (a current of zero, not finite, or of the other sign)"
+                            if n_skip else "")
+                         + f"; {n_neg} corrected column(s) dip below zero"
                          + (f"; {unanchored} reverse sweep(s) with no forward sweep before them are not "
                             f"corrected" if unanchored else ""))
         return corrected, iv_corr, lines
@@ -1047,8 +996,7 @@ class STS:
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
                        calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
-                       hampel_didv=None, sgolay_didv=None, name=None, lockin_cutoff_hz=None, lowpass_hz=None,
-                       dwell_s=None, b_file=None, members=None, return_iv=False):
+                       hampel_didv=None, sgolay_didv=None, name=None, b_file=None, members=None, return_iv=False):
         """
         Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
@@ -1080,9 +1028,7 @@ class STS:
         RHK_CH1Drive_Amplitude) is the calibration gain's source.
 
         For the dI/dV channel with calibrate on, the steps after the
-        regression (_didv_corrected): the held stretch at the start of every
-        sweep (lockin_cutoff_hz, lowpass_hz, dwell_s: calibration.settling_points)
-        is left out of the regression; the file's offset (`b_file`, a
+        regression (_didv_corrected): the file's offset (`b_file`, a
         calibration.FileOffset from STS.file_offset, else formed over the
         regressed sweeps of this call) replaces the per-sweep b; the gap
         factor s of every sweep (calibration.gap_factor) is read from the
@@ -1126,7 +1072,7 @@ class STS:
                         cls._note_once(cls._gain_text(name, fits[0], vmod, channel))
                 elif cols.size:
                     cal, iv_c, lines = cls._didv_corrected(energy, c, iv, cols, vmod, V_bias, I_setpoint, ref_f,
-                                                           members, b_file, lockin_cutoff_hz, lowpass_hz, dwell_s,
+                                                           members, b_file,
                                                            (hampel, sgolay, hampel_didv, sgolay_didv), name)
                     c[:, cols] = cal
                     iv_used = iv.copy()
@@ -1154,7 +1100,7 @@ class STS:
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                 return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,
                 hampel_didv=None, sgolay_didv=None, return_iv=False):
-        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint, a sweep view's forward reference and its sweeps, the file's filter cutoffs and dwell, and the file's offset (file_offset) from the file)."""
+        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint, a sweep view's forward reference and its sweeps, and the file's offset (file_offset) from the file)."""
         ref = (getattr(self, 'iets_ref' if channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
         b_file = self.file_offset(channel, hampel, sgolay, hampel_didv, sgolay_didv) if calibrate else None
         return self.process_arrays(self.energy, self.channel(channel), self.iv, hampel, sgolay, divide_iv,
@@ -1164,8 +1110,6 @@ class STS:
                                    V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None),
                                    ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
                                    name=getattr(self, 'name', None),
-                                   lockin_cutoff_hz=getattr(self, 'lockin_cutoff_hz', None),
-                                   lowpass_hz=getattr(self, 'lowpass_hz', None), dwell_s=getattr(self, 'dwell_s', None),
                                    b_file=b_file, members=getattr(self, 'members', None), return_iv=return_iv)
 
 
