@@ -520,7 +520,7 @@ class FeenstraWindow:
             return
         flags = self.pipeline.state()
         try:
-            view = self.parent.feenstra_view(calibrate=flags['calibrate'], normalize=flags['normalize'])
+            view = self.parent.feenstra_view(calibrate=flags['calibrate'], normalize=flags['normalize'], gate=flags['gate'])
         except Exception as exc:
             print(f"Feenstra window: {exc}")
             return

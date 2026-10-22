@@ -19,10 +19,11 @@ Pipeline
    (spikes), Savitzky-Golay (filters.filter_lia), and the LIA column through
    the same filters under its own two toggles (the dI/dV pair); the
    calibration of the LIA column against that current
-   (calibration.calibrate, the Line tool's calibration: the gain-plus-offset
-   regression of calibration.py anchored at the setpoint; it returns per
-   sweep a, b, c and rms, and the console report of
-   process prints a, c, rms and the area); for quantity 'ratio' the division by the broadened I/V of the
+   (calibration.calibrate, the Line tool's calibration: per sweep the least
+   squares of the gain a, the offset b and the constant of integration c,
+   nothing locked, then the gate at its defaults, calibration.GATE_DEFAULT:
+   the fit has no pipeline box; it returns per sweep a, b, c and rms, and
+   the console report of process prints a, b, c, rms and the area); for quantity 'ratio' the division by the broadened I/V of the
    same filtered current (feenstra.divide_by_iv, told not to filter again:
    the current's value at 0 V subtracted first when iv_zero_sub is on,
    then broadened by iv_broadening_V); then unit-area normalization
@@ -601,9 +602,9 @@ class Fit:
         the set's I(V) through the I(V) filters once and its LIA columns
         through the dI/dV ones (filters.filter_lia), calibration of the LIA
         columns against that current on its own axis
-        (calibration.calibrate, anchored at the set's setpoint, the
-        analyzer's when the set carries none; a set's forward-sweep
-        reference through the same filters; a set the calibration refuses
+        (calibration.calibrate, per sweep the least squares of a, b, c with
+        nothing locked; the set's setpoint and forward-sweep reference are
+        handed over and not used; a set the calibration refuses
         stays in the LIA's units, said once), the division by the broadened I/V of
         the same current for quantity 'ratio' (the analyzer's quantity, or
         `quantity` when given; feenstra.divide_by_iv with the analyzer's
@@ -1129,7 +1130,7 @@ class Fit:
 
         # Console report (the loader's amps): the calibration of the fitted curve before normalization
         # (the LIA columns through the dI/dV filters against the current through the I(V) filters,
-        # anchored at the setpoint; a refused calibration leaves the columns as they are).
+        # per sweep the least squares of a, b, c; a refused calibration leaves the columns as they are).
         pA = 1e12
         iv_f = filters.filter_lia(self.iv, self.hampel_filter_params, self.sgolay_filter_params)
         lia_f = filters.filter_lia(self.lia, self.hampel_didv_params, self.sgolay_didv_params)
@@ -1155,16 +1156,15 @@ class Fit:
         ul, ui = getattr(self, 'units_lia', None), getattr(self, 'units_iv', None)
         ua = " /V" if ul == ui else f" {ui}/({ul}·V)"          # the stretch's units (1/V: both pages in A)
         if self.calib_fits:
-            cf0 = self.calib_fits[0]
-            print(f"Calibration gain: a = {cf0.a:.4f}{ua} "
-                  + ("from the modulation amplitude (1/V_mod)" if cf0.gain == 'modulation'
-                     else "from the joint fit over the sweeps (no modulation amplitude recorded)")
-                  + f"; the joint fit over the sweeps gives {cf0.a_joint:.4f}{ua}; the offset b per sweep")
+            a_all = np.array([cf.a for cf in self.calib_fits])
+            print(f"Calibration: per sweep the least squares of a, b, c, nothing locked; gain a from "
+                  f"{a_all.min():.4f} to {a_all.max():.4f}{ua}, median {np.median(a_all):.4f}{ua}"
+                  + (f"; 1/V_mod = {self.calib_fits[0].a_mod:.4f}{ua} as the check"
+                     if np.isfinite(self.calib_fits[0].a_mod) else ""))
         for j, (cf, area) in enumerate(zip(self.calib_fits, areas_A)):
-            print(f"  sweep {j}: b = {cf.b * pA:.3f} pA/V, c = {cf.c * pA:.3f} pA, "
+            print(f"  sweep {j}: a = {cf.a:.4f}{ua}, b = {cf.b * pA:.3f} pA/V, c = {cf.c * pA:.3f} pA, "
                   f"rms residual = {cf.rms * pA:.3f} pA, area = {area * pA:.3f} pA")
-        print(f"Calibration anchor: the setpoint, V_bias = {self.V_bias:.4f} V, I_setpoint = {self.I_setpoint * pA:.2f} pA"
-              f"; the fit's window reference V_ref = {self.V[self.i_ref]:.4f} V")
+        print(f"The fit's window reference V_ref = {self.V[self.i_ref]:.4f} V")
         print(f"Un-normalized averaged calibrated dI/dV integrated V_ref -> V_bias: "
               f"{I_cal[self.i_bias] * pA:.2f} pA  (measured I(V_bias) - I(V_ref) = "
               f"{(iv_avg[self.i_bias] - iv_avg[self.i_ref]) * pA:.2f} pA, "

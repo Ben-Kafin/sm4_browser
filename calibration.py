@@ -1,28 +1,49 @@
 """
-Calibration of the lock-in channels against the co-acquired I(V) current:
-one gain for the file from the modulation amplitude (1 / V_mod for the
-first harmonic, 4 / V_mod² for the second; the joint fit over the columns
-when none is recorded, and printed beside it as a check either way), one
-offset per curve from the regression anchored at the setpoint (the sample
-at the setpoint bias, whose current is the setpoint current: the feedback
-loop was opened there), and its double-derivative counterpart for the
-IETS (second-harmonic) channel.  Nothing refers to 0 V.  A sweep
-that does not pass the setpoint bias is refused (anchor_index); a pixel's
-reverse sweeps, which start at the far end, take the a, b of its forward
-sweeps (the `ref` columns).  calibrate and calibrate_iets return
-(calibrated, fits), every fit entry carrying a, b, c, rms, X / Z, model
-and residual.  The dI/dV offsets then pass the safety gate_offsets: a
-sweep whose regressed b departs from the two sweeps touching it by more
-than the file's own scatter allows (a sweep with a disturbed current)
-takes their mean b, scaled by its relation to them in a second
-regression anchored at the sample nearest 0 V (far_offsets).  Plain
-arrays in, columns = spectra;
-the pipeline (sts.STS.process_arrays) calls these on the acquired
-columns only, after the channel and the current have been through
-their filters and before the Feenstra division.  Run as a file, the __main__
-block draws one file's calibration (its inputs, the fit in the I(V) frame,
-the calibrated curve in the dI/dV frame, and the cost surface), one sweep
-at a time.
+Calibration of the lock-in channels against the co-acquired I(V) current,
+one least squares per sweep with nothing locked, and the gate on the
+per-sweep gains and offsets.  The true dI/dV relates to the lock-in
+output by a·LIA + b, so the recorded current is
+
+    I(V) = a · X(V) + b · V + c,     X(V) = ∫ LIA dV
+
+the constant c the constant of integration: it carries where the
+integral starts and the current's own level, so no sample is privileged
+and no current (the setpoint's or any recorded one) is subtracted.  For
+each sweep a, b and c are the least squares of that relation over every
+point of the sweep (the normal equations of the sum of squares in a, b,
+c); the calibrated dI/dV is a · LIA + b.  The gain the modulation
+amplitude would give, 1 / V_mod, is carried beside the fitted a as the
+check and is not used.
+
+The gate (gate_sweeps; GateSettings, the window's 'gate' row with its
+'H' and 'SG' boxes): one sweep with a disturbed current must not break
+the calibration.  Along the acquisition order, a sweep's a is compared
+with the mean a of the two sweeps touching it; a departure beyond
+GATE_FACTOR times the robust scale of those departures over the file,
+confirmed against the touching sweeps that passed, marks the sweep, and
+it takes the trend's a with its b and c refitted.  The same test on b
+then marks sweeps that take the trend's pair.  The trend is the
+sequence of the per-sweep values through the package's Hampel filter
+(filters.hampel, window and n_sigma from the 'H' box) and then a
+Savitzky-Golay smoothing (length and order from the 'SG' box): where a
+sweep's regression should sit among the sweeps around it.  The gate
+needs as many sweeps as the Savitzky-Golay length and runs on dI/dV
+only.
+
+The IETS (second-harmonic) channel is the double-derivative
+counterpart: I(V) = a · Z(V) + b · V² / 2 + c · V + d with Z the double
+integral of the second-harmonic signal, four parameters per sweep, the
+calibrated d2I/dV2 a · S + b, no gate.  calibrate and calibrate_iets
+return (calibrated, fits), every fit entry carrying the parameters,
+their standard errors, X / Z, the model and the residual; the dI/dV
+entries also the sweep's own pair beside the applied one, the stage
+that replaced it, the trend's pair and the Gate record.  Plain arrays
+in, columns = spectra; the pipeline (sts.STS.process_arrays) calls these
+on the acquired columns only, after the channel and the current have
+been through their filters and before the Feenstra division.  Run as a
+file, the __main__ block draws one file's calibration (its inputs, the
+fit in the I(V) frame, the calibrated curve in the dI/dV frame, and the
+cost surface), one sweep at a time.
 """
 
 if __package__ in (None, ''):
@@ -32,260 +53,246 @@ if __package__ in (None, ''):
 from typing import NamedTuple
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
+from scipy.signal import savgol_filter
+from sm4_Browser import filters
+
+
+# The gate's tolerance: this many times the robust scale (1.4826 × MAD) of the departures of the
+# per-sweep values from the mean of their two touching sweeps.
+GATE_FACTOR = 2.0
+# The trend's defaults, the window's 'H' and 'SG' boxes: the Hampel filter's window (sweeps on
+# each side) and n_sigma, the Savitzky-Golay length (sweeps, odd) and polynomial order.
+GATE_HAMPEL = (3, 3.0)
+GATE_SGOLAY = (9, 2)
+
+
+class GateSettings(NamedTuple):
+    """The gate as a window sets it: on / off, the Hampel (window, n_sigma), the Savitzky-Golay (length, order)."""
+    on: bool = True
+    hampel: tuple = GATE_HAMPEL
+    sgolay: tuple = GATE_SGOLAY
+
+    @property
+    def text(self):
+        """The short form shown beside the toggle: 'H 3,3 SG 9,2'."""
+        return f"H {self.hampel[0]:g},{self.hampel[1]:g} SG {self.sgolay[0]:g},{self.sgolay[1]:g}"
+
+
+GATE_DEFAULT = GateSettings()
+
+
+def gate_settings(gate):
+    """
+    The GateSettings of `gate`: None (the defaults), a GateSettings, a dict
+    with 'on', 'hampel', 'sgolay' (missing keys the defaults), or a bool
+    (on / off at the defaults).  Validated: the Hampel window a whole number
+    of at least 1 and n_sigma positive; the Savitzky-Golay length an odd
+    whole number greater than the order, the order a whole number of at
+    least 0.  ValueError otherwise, naming the box.
+    """
+    if gate is None:
+        return GATE_DEFAULT
+    if isinstance(gate, GateSettings):
+        g = gate
+    elif isinstance(gate, (bool, np.bool_)):
+        g = GateSettings(on=bool(gate))
+    elif isinstance(gate, dict):
+        g = GateSettings(on=bool(gate.get('on', True)), hampel=tuple(gate.get('hampel', GATE_HAMPEL)),
+                         sgolay=tuple(gate.get('sgolay', GATE_SGOLAY)))
+    else:
+        raise ValueError(f"gate settings must be None, a bool, a dict or GateSettings; got {gate!r}.")
+    try:
+        hw, hs = g.hampel
+        sl, so = g.sgolay
+        hw, hs, sl, so = float(hw), float(hs), float(sl), float(so)
+    except (TypeError, ValueError):
+        raise ValueError("gate settings: 'H' needs window,n_sigma and 'SG' needs length,order.")
+    if hw != int(hw) or hw < 1 or not np.isfinite(hs) or hs <= 0:
+        raise ValueError(f"gate 'H' box: the window must be a whole number of at least 1 and n_sigma positive (got {hw:g},{hs:g}).")
+    if sl != int(sl) or so != int(so) or so < 0 or sl <= so or int(sl) % 2 == 0:
+        raise ValueError(f"gate 'SG' box: the length must be an odd whole number greater than the order, the order at least 0 (got {sl:g},{so:g}).")
+    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)))
+
+
+class Gate(NamedTuple):
+    """The gate's record of one calibrate call: what ran and what it replaced (indices in the call's column order)."""
+    settings: GateSettings
+    ran: bool                  # False: the gate was off or the call had fewer columns than the Savitzky-Golay length
+    note: str                  # why it did not run ('' when it ran)
+    tol_a: float               # the tolerance on a (I units per V per LIA unit); NaN when it did not run
+    tol_b: float               # the tolerance on b (I units per V)
+    replaced_a: np.ndarray     # the columns replaced on the a stage (the trend's a, b and c refitted)
+    replaced_b: np.ndarray     # the columns replaced on the b stage (the trend's pair)
+    trend_a: np.ndarray        # the trend of a along the columns (the a stage's), NaN when it did not run
+    trend_b: np.ndarray        # the trend of b (after the a stage)
+
+
+_NO_GATE = Gate(GATE_DEFAULT, False, '', float('nan'), float('nan'), np.zeros(0, dtype=int), np.zeros(0, dtype=int),
+                np.zeros(0), np.zeros(0))
 
 
 class ColumnFit(NamedTuple):
     """
-    One column's dI/dV regression, I(V) − I_set = a·X(V) + b·(V − V_bias)
-    with X referenced at the anchor sample, the one at the setpoint bias
-    (calibrate).  The arrays are in the column's original energy order
-    (npts,).
+    One column's dI/dV regression, I(V) = a·X(V) + b·V + c, X the cumulative
+    integral of the LIA from the lowest-energy sample (calibrate), and what
+    the gate made of it.  The arrays are in the column's original energy
+    order (npts,).
     """
-    a: float               # dI/dV scale, the file's: I units per V per LIA unit: 1/V when both are in A
-    b: float               # dI/dV offset, this column's: I units per V
-    c: float               # the setpoint current I_set, I units (not fitted: the anchor)
-    X: np.ndarray          # ∫ LIA dV referenced at the anchor: X_raw − X_raw(V_bias) (LIA units·V)
-    model: np.ndarray      # a·X + b·(V − V_bias) + c (I units)
+    a: float               # dI/dV scale applied: I units per V per LIA unit: 1/V when both are in A
+    b: float               # dI/dV offset applied: I units per V
+    c: float               # the constant of integration of the applied pair's refit (I units)
+    X: np.ndarray          # ∫ LIA dV from the lowest-energy sample (LIA units·V)
+    model: np.ndarray      # a·X + b·V + c with the sweep's own least squares (I units)
     residual: np.ndarray   # I(V) − model (I units)
     rms: float             # rms of the residual (I units)
-    a_joint: float = float('nan')   # the joint fit's gain over the file's columns (the check, or the gain without V_mod)
-    gain: str = ''         # the gain's source: 'modulation' (1 / V_mod) or 'joint'
+    se: tuple = (float('nan'),) * 3   # the standard errors of the sweep's own (a, b, c) from the residual
+    a_mod: float = float('nan')       # the gain the modulation amplitude would give, 1 / V_mod (the check; NaN when not recorded)
+    a_own: float = float('nan')       # the sweep's own least squares (a, b, c); equal to a, b, c when the gate left it
+    b_own: float = float('nan')
+    c_own: float = float('nan')
+    replaced: str = ''                # '' (its own pair), 'a' (the a stage: the trend's a, b and c refitted), 'ab' (the b stage: the trend's pair)
+    trend: tuple = (float('nan'),) * 2   # the trend's (a, b) at this column, NaN when the gate did not run
+    gate: Gate = _NO_GATE             # the call's gate record (the same object in every column's entry)
 
 
 class IetsColumnFit(NamedTuple):
     """
-    One column's IETS regression, I(V) − I_set = a·Z(V) + b·U²/2 + c·U with
-    U = V − V_bias and Z referenced at the anchor sample, the one at the
-    setpoint bias (calibrate_iets).  The arrays are in the column's
+    One column's IETS regression, I(V) = a·Z(V) + b·V²/2 + c·V + d, Z the
+    double cumulative integral of the second-harmonic signal from the
+    lowest-energy sample (calibrate_iets).  The arrays are in the column's
     original energy order (npts,).
     """
-    a: float               # d2I/dV2 scale, the file's: I units per V² per second-harmonic unit
+    a: float               # d2I/dV2 scale, this column's: I units per V² per second-harmonic unit
     b: float               # d2I/dV2 offset, this column's: I units per V²
-    c: float               # the unknown dI/dV at the anchor (I units per V)
-    d: float               # the setpoint current I_set, I units (not fitted: the anchor)
-    Z: np.ndarray          # the double integral of the second-harmonic signal, both integrations referenced at the anchor (second-harmonic units·V²)
-    model: np.ndarray      # a·Z + b·U²/2 + c·U + d (I units)
+    c: float               # the dI/dV constant of integration (I units per V)
+    d: float               # the current's constant of integration (I units)
+    Z: np.ndarray          # the double integral of the second-harmonic signal from the lowest-energy sample (second-harmonic units·V²)
+    model: np.ndarray      # a·Z + b·V²/2 + c·V + d (I units)
     residual: np.ndarray   # I(V) − model (I units)
     rms: float             # rms of the residual (I units)
-    a_joint: float = float('nan')   # the joint fit's gain over the file's columns
-    gain: str = ''         # the gain's source: 'modulation' (4 / V_mod²) or 'joint'
-
-
-ANCHOR_TOL = 0.5     # the setpoint bias must lie within this fraction of the energy step of a sample
-
-# The safety on the dI/dV offsets (gate_offsets): a sweep whose regressed offset departs from the two
-# sweeps touching it beyond the file's own scatter takes theirs, carried over by its relation to them
-# in a second regression anchored at the other end of the window (far_offsets).
-GATE_FACTOR = 3.0        # the tolerance: this many times the robust scale of the departures from the touching sweeps' mean
-GATE_MIN_COLUMNS = 5     # fewer columns than this: no gate (not enough neighbours)
-
-
-class OffsetGate(NamedTuple):
-    """The offsets of a set of sweeps through the safety (gate_offsets); arrays (N,) in the sweeps' order."""
-    b: np.ndarray          # the offsets applied: the regressed b, the replacement for the replaced sweeps
-    ref: np.ndarray        # every sweep's reference: the mean of the regressed b of the touching sweeps it was tested against
-    tol: float             # the tolerance (I units per V); NaN when the gate did not run
-    replaced: np.ndarray   # the indices of the sweeps that took the replacement
-    ratio: np.ndarray      # per sweep the ratio applied, b2 / mean b2 of the neighbours used; NaN where the plain mean was
-    plain: np.ndarray      # the replaced sweeps that took the plain mean: the second regression disturbed there too
-
-
-def far_offsets(energy, curves, iv, a, ref=None):
-    """
-    The second regression of the dI/dV channel: the same model as
-    calibrate, I(V) − I(V_far) = a·X(V) + b·(V − V_far), the gain `a` the
-    file's, each sweep anchored at the sample nearest 0 V (V_far) with its
-    recorded current there as the known value, X the cumulative integral
-    of the lock-in referenced there.  Returns the offsets (N,) in I units
-    per V.  `ref` as in calibrate: the regression of column j runs on the
-    reference columns when they are finite.  Only the gate uses these
-    offsets (gate_offsets): a sweep's relation to its neighbours at the
-    other end of the window.
-    """
-    energy = np.asarray(energy, dtype=np.float64)
-    curves = np.asarray(curves, dtype=np.float64)
-    iv = np.asarray(iv, dtype=np.float64)
-    sort_idx = np.argsort(energy)
-    e_sorted = energy[sort_idx]
-    i_far = int(np.argmin(np.abs(e_sorted)))
-    U = e_sorted - e_sorted[i_far]
-    UU = float(np.dot(U, U))
-    out = np.empty(curves.shape[1])
-    for j in range(curves.shape[1]):
-        rc = _ref_column(ref, j, curves.shape[0])
-        src_lia = curves[:, j] if rc is None else rc[0]
-        src_iv = iv[:, j] if rc is None else rc[1]
-        X = cumulative_trapezoid(src_lia[sort_idx], e_sorted, initial=0)
-        X = X - X[i_far]
-        dI = src_iv[sort_idx] - src_iv[sort_idx][i_far]
-        out[j] = float(np.dot(dI - a * X, U) / UU) if UU > 0 else 0.0
-    return out
-
-
-def gate_offsets(b1, b2, factor=GATE_FACTOR, min_columns=GATE_MIN_COLUMNS):
-    """
-    The safety on the per-sweep offsets: one sweep with a disturbed
-    current must not break the calibration.  `b1` are the main
-    regression's offsets (calibrate, anchored at the setpoint), `b2` the
-    second regression's (far_offsets, anchored at the sample nearest
-    0 V), both (N,) in the sweeps' order.
-
-    The gate works on b1 with the two sweeps touching each sweep (one at
-    the ends).  A sweep's reference is the mean of their b1; a sweep
-    whose own b1 departs from it by more than the tolerance is flagged;
-    the tolerance is `factor` times the robust scale of the departures
-    over the set, 1.4826 times their median absolute deviation about
-    their median.  A flagged sweep is then tested once more against its
-    touching sweeps that were not flagged, so a sweep that merely touches
-    an outlier is not dragged along; with none left it stays flagged.
-    A sweep still flagged takes, as its b1, the mean b1 of the touching
-    sweeps used, scaled by the ratio of its own b2 to their mean b2, its
-    relation to those sweeps at the other end of the window, when the
-    second regression itself passes the same tolerance there (its own b2
-    within `tol` of their mean b2); when the far end is disturbed too,
-    the plain mean b1 of those sweeps (listed in `plain`).  A ratio that
-    is not finite (their mean b2 zero) counts as the far end disturbed.
-    Every other sweep keeps its own b1.  With fewer than `min_columns`
-    sweeps, or no scatter in the departures, nothing is replaced (tol NaN
-    or 0).  Returns an OffsetGate.
-    """
-    b1 = np.asarray(b1, dtype=np.float64)
-    b2 = np.asarray(b2, dtype=np.float64)
-    n = b1.size
-    empty = np.zeros(0, dtype=int)
-    ratio = np.full(n, np.nan)
-    if n < max(1, int(min_columns)) or b2.size != n:
-        return OffsetGate(b1.copy(), b1.copy(), float('nan'), empty, ratio, empty)
-    touching = [[i for i in (j - 1, j + 1) if 0 <= i < n] for j in range(n)]
-
-    def mean_of(idx, arr):
-        vals = arr[idx]
-        vals = vals[np.isfinite(vals)]
-        return float(np.mean(vals)) if vals.size else float('nan')
-
-    ref = np.array([mean_of(touching[j], b1) for j in range(n)])
-    d = b1 - ref
-    ok = np.isfinite(d)
-    if not ok.any():
-        return OffsetGate(b1.copy(), ref, float('nan'), empty, ratio, empty)
-    scale = 1.4826 * float(np.median(np.abs(d[ok] - np.median(d[ok]))))
-    tol = float(factor) * scale
-    if not (np.isfinite(tol) and tol > 0):
-        return OffsetGate(b1.copy(), ref, tol, empty, ratio, empty)
-    first = set(np.flatnonzero(ok & (np.abs(d) > tol)).tolist())
-    out = b1.copy()
-    replaced, plain = [], []
-    for j in sorted(first):
-        used = [i for i in touching[j] if i not in first]
-        if used:
-            r1 = mean_of(used, b1)
-            if np.isfinite(r1) and abs(b1[j] - r1) <= tol:
-                ref[j] = r1
-                continue                       # it fits the sweeps that passed: a false alarm
-        else:
-            used = touching[j]                 # every touching sweep flagged too: tested against them as they are
-            r1 = ref[j]
-        m2 = mean_of(used, b2)
-        ref[j] = r1
-        if not np.isfinite(r1):
-            continue                           # no finite reference: the sweep keeps its own b
-        far_ok = np.isfinite(m2) and m2 != 0 and np.isfinite(b2[j]) and abs(b2[j] - m2) <= tol
-        if far_ok:
-            ratio[j] = b2[j] / m2
-            out[j] = r1 * ratio[j]
-        else:
-            out[j] = r1
-            plain.append(j)
-        replaced.append(j)
-    return OffsetGate(out, ref, tol, np.array(replaced, dtype=int), ratio, np.array(plain, dtype=int))
-
-
-def anchor_index(energy, V_bias):
-    """
-    The anchor sample: the index in `energy` (any order) of the sample at
-    the setpoint bias V_bias (RHK_Bias), within ANCHOR_TOL of the energy
-    step.  The feedback loop was opened there at the setpoint current, so
-    the current of that sample is known: I_setpoint.  Raises ValueError
-    when V_bias is not recorded or no sample lies at it: a sweep that never
-    passes the bias it was stabilised at has no known current and is not
-    calibrated (the pipeline says so once on the console).
-    """
-    e = np.asarray(energy, dtype=np.float64)
-    if V_bias is None or not np.isfinite(V_bias):
-        raise ValueError("no setpoint bias (RHK_Bias) recorded; the calibration anchors at the setpoint.")
-    if e.size == 0:
-        raise ValueError("no energy samples.")
-    i = int(np.argmin(np.abs(e - float(V_bias))))
-    step = float(np.median(np.abs(np.diff(np.sort(e))))) if e.size > 1 else 0.0
-    if abs(e[i] - float(V_bias)) > max(ANCHOR_TOL * step, 1e-12):
-        raise ValueError(f"no sample at the setpoint bias {float(V_bias):+.4f} V (the sweep runs "
-                         f"{e.min():+.4f} to {e.max():+.4f} V); the file is not calibrated.")
-    return i
-
-
-def _anchor(energy, V_bias, I_setpoint):
-    """The sorted axis, its sort order, the anchor index on it, and U = V − V_bias; the setpoint checked."""
-    energy = np.asarray(energy, dtype=np.float64)
-    if I_setpoint is None or not np.isfinite(I_setpoint):
-        raise ValueError("no setpoint current (RHK_Current) recorded; the calibration anchors at the setpoint.")
-    sort_idx = np.argsort(energy)
-    e_sorted = energy[sort_idx]
-    i_a = anchor_index(e_sorted, V_bias)
-    return e_sorted, sort_idx, i_a, e_sorted - e_sorted[i_a]
-
-
-def _ref_column(ref, j, n):
-    """The reference columns (lia, iv) of column j, or None when no reference holds a finite column there."""
-    if ref is None or ref[0] is None or ref[1] is None:
-        return None
-    rc, ri = np.asarray(ref[0], dtype=np.float64), np.asarray(ref[1], dtype=np.float64)
-    if rc.ndim != 2 or ri.ndim != 2 or rc.shape[0] != n or ri.shape[0] != n or j >= rc.shape[1] or j >= ri.shape[1]:
-        return None
-    if not (np.isfinite(rc[:, j]).all() and np.isfinite(ri[:, j]).all()):
-        return None
-    return rc[:, j], ri[:, j]
+    se: tuple = (float('nan'),) * 4   # the standard errors of (a, b, c, d)
+    a_mod: float = float('nan')       # the gain the modulation amplitude would give, 4 / V_mod² (the check)
 
 
 def gain_from_modulation(vmod, order=1):
     """
-    The lock-in gain from the modulation amplitude V_mod (V, peak): for the
-    first harmonic dI/dV = LIA / V_mod, so 1 / V_mod; for the second
-    harmonic d2I/dV2 = 4 S / V_mod², so 4 / V_mod².  None when V_mod is not
-    recorded (or not positive).
+    The lock-in gain the modulation amplitude V_mod (V, peak) would give:
+    for the first harmonic dI/dV = LIA / V_mod, so 1 / V_mod; for the
+    second harmonic d2I/dV2 = 4 S / V_mod², so 4 / V_mod².  None when V_mod
+    is not recorded (or not positive).  The check carried beside the fitted
+    gain; the regression does not use it.
     """
     if vmod is None or not np.isfinite(vmod) or float(vmod) <= 0:
         return None
     return 1.0 / float(vmod) if order == 1 else 4.0 / float(vmod) ** 2
 
 
-def _joint_gain(regressors, targets, nuisance):
+def _solve(A, y, what):
     """
-    One gain for every column with its own nuisance parameters: the least
-    squares of Σ_j ‖ΔI_j − a X_j − B β_j‖² over a and every β_j, the β_j
-    eliminated by projecting X_j and ΔI_j orthogonal to the columns of B
-    (the same B for every column: U, or (U²/2, U)).  NaN when no column
-    leaves anything to regress on.
+    The least squares of y against the columns of A (npts, k), the columns
+    scaled to unit norm for the solve (the integral of a current in A is
+    1e-10 of V): (parameters, standard errors, residual).  Raises
+    ValueError naming `what` when the columns are dependent (a column of
+    zeros, or a regressor in the span of the others): the parameters are
+    then not determined.
     """
-    B = np.asarray(nuisance, dtype=np.float64)
-    if B.ndim == 1:
-        B = B[:, None]
-    G = np.linalg.pinv(B.T @ B) @ B.T
-    num = den = 0.0
-    for X, dI in zip(regressors, targets):
-        Xp = X - B @ (G @ X)
-        dIp = dI - B @ (G @ dI)
-        num += float(np.dot(dIp, Xp))
-        den += float(np.dot(Xp, Xp))
-    return num / den if den > 0 else float('nan')
+    norms = np.sqrt(np.sum(A * A, axis=0))
+    if not np.all(norms > 0):
+        raise ValueError(f"{what}: a regressor is identically zero; its parameters are not determined.")
+    As = A / norms
+    sol, _, rank, _ = np.linalg.lstsq(As, y, rcond=None)
+    if rank < A.shape[1]:
+        raise ValueError(f"{what}: the regressors are dependent; the parameters are not determined.")
+    residual = y - As @ sol
+    dof = max(A.shape[0] - A.shape[1], 1)
+    cov = float(residual @ residual) / dof * np.linalg.inv(As.T @ As)
+    return sol / norms, np.sqrt(np.abs(np.diag(cov))) / norms, residual
 
 
-# vmod (the modulation amplitude, V) is the gain's source (gain_from_modulation); the pipeline
-# (STS.process_arrays) passes the file's RHK_CH1Drive_Amplitude.
-def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None):
+def _touching_flags(x, factor):
+    """
+    The touching-sweep test on the sequence x (N,) in acquisition order:
+    every value against the mean of the two values touching it (one at the
+    ends); the tolerance `factor` times the robust scale (1.4826 × MAD about
+    the median) of those departures; a value beyond it is re-tested against
+    the touching values that passed, so a sweep that merely touches an
+    outlier is not dragged along.  Returns (the flagged indices, the
+    tolerance); nothing flagged when the scale is 0 or not finite.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = x.size
+    touching = [[i for i in (j - 1, j + 1) if 0 <= i < n] for j in range(n)]
+    ref = np.array([np.mean(x[t]) for t in touching])
+    d = x - ref
+    ok = np.isfinite(d)
+    if not ok.any():
+        return np.zeros(0, dtype=int), float('nan')
+    tol = float(factor) * 1.4826 * float(np.median(np.abs(d[ok] - np.median(d[ok]))))
+    if not (np.isfinite(tol) and tol > 0):
+        return np.zeros(0, dtype=int), tol
+    first = set(np.flatnonzero(ok & (np.abs(d) > tol)).tolist())
+    flagged = []
+    for j in sorted(first):
+        passed = [i for i in touching[j] if i not in first]
+        if passed and abs(x[j] - np.mean(x[passed])) <= tol:
+            continue                               # it fits the sweeps that passed: a false alarm
+        flagged.append(j)
+    return np.array(flagged, dtype=int), tol
+
+
+def _trend(x, settings):
+    """The trend of the sequence x along the sweeps: the Hampel filter, then the Savitzky-Golay smoothing (GateSettings)."""
+    x = np.asarray(x, dtype=np.float64)
+    xh = filters.hampel(x[:, None], window=settings.hampel[0], n_sigma=settings.hampel[1])[:, 0]
+    return savgol_filter(xh, settings.sgolay[0], settings.sgolay[1], mode='interp')
+
+
+def gate_sweeps(a, b, refit, gate=None, factor=GATE_FACTOR):
+    """
+    The gate on the per-sweep gains a and offsets b (N,) in acquisition
+    order, `refit(j, a_j)` giving the (b, c) of sweep j refitted with its
+    a held (calibrate's).  Stage 1: the touching-sweep test on a
+    (_touching_flags); a flagged sweep takes the trend's a (_trend) and
+    its b and c refitted.  Stage 2: the test on the b that came out of
+    stage 1; a flagged sweep takes the trend's a and b, the trends drawn
+    on the sequences after stage 1.  Returns (a, b, c-or-None per column,
+    Gate): the applied values and the record.  With the gate off, or
+    fewer sweeps than the Savitzky-Golay length, nothing is replaced and
+    the record says why.
+    """
+    settings = gate_settings(gate)
+    a = np.array(a, dtype=np.float64)
+    b = np.array(b, dtype=np.float64)
+    n = a.size
+    c = [None] * n
+    if not settings.on:
+        return a, b, c, Gate(settings, False, "the gate is off", float('nan'), float('nan'),
+                             np.zeros(0, dtype=int), np.zeros(0, dtype=int), np.full(n, np.nan), np.full(n, np.nan))
+    if n < settings.sgolay[0]:
+        return a, b, c, Gate(settings, False, f"{n} sweep(s), fewer than the Savitzky-Golay length {settings.sgolay[0]}",
+                             float('nan'), float('nan'), np.zeros(0, dtype=int), np.zeros(0, dtype=int),
+                             np.full(n, np.nan), np.full(n, np.nan))
+    rep_a, tol_a = _touching_flags(a, factor)
+    trend_a = _trend(a, settings)
+    for j in rep_a:
+        a[j] = trend_a[j]
+        b[j], c[j] = refit(j, a[j])
+    rep_b, tol_b = _touching_flags(b, factor)
+    trend_a2 = _trend(a, settings)
+    trend_b = _trend(b, settings)
+    for j in rep_b:
+        a[j], b[j] = trend_a2[j], trend_b[j]
+        c[j] = None
+    return a, b, c, Gate(settings, True, '', tol_a, tol_b, rep_a, rep_b, trend_a2, trend_b)
+
+
+# vmod (the modulation amplitude, V) gives the check carried beside the fitted gain (gain_from_modulation);
+# V_bias, I_setpoint and ref are accepted for the callers and not used: the regression locks nothing.
+def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None, gate=None):
     """
     Calibrate dI/dV (LIA) curves against the co-acquired I(V) current
-    channel: one gain for the file, one offset per curve, anchored at the
-    setpoint.
+    channel: per sweep the least squares of a, b, c, nothing locked, then
+    the gate.
 
     Physics
     -------
@@ -293,40 +300,31 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
 
         true dI/dV(V) = a · LIA(V) + b
 
-    The feedback loop was opened at the setpoint bias V_bias with the
-    current at its setpoint I_set, so the sweep's sample at V_bias (its
-    first, in a sweep that leaves the setpoint) has a known current.
-    Integrating both sides from V_bias to V:
+    Integrating both sides:
 
-        I(V) − I_set = a · X(V) + b · (V − V_bias)
+        I(V) = a · X(V) + b · V + c
 
-    where X(V) ≡ ∫ LIA(V') dV' from V_bias to V is the cumulative integral
-    of the experimental LIA signal (cumulative trapezoidal rule, referenced
-    at the anchor sample).
+    where X(V) is the cumulative integral of the experimental LIA signal
+    (cumulative trapezoidal rule from the lowest-energy sample) and c the
+    constant of integration.  The constant carries where the integral
+    starts and the level of the current, so no sample is privileged, no
+    current is subtracted, and the fit does not depend on where X starts
+    (a shift of X by a constant is absorbed by c).  For each spectrum j the
+    least squares of
 
-    The gain a is the lock-in's and does not change from spectrum to
-    spectrum within a file: it is 1 / V_mod from the recorded modulation
-    amplitude (gain_from_modulation; the lock-in's first harmonic is V_mod
-    times dI/dV).  The offset b_j is fitted per spectrum, with ΔI = I −
-    I_set and U = V − V_bias, as the least squares of
+        S_j(a, b, c) = Σₙ [I_j(Vₙ) − a·X_j(Vₙ) − b·Vₙ − c]²
 
-        S_j(b) = Σₙ [ΔI_j(Vₙ) − a·X_j(Vₙ) − b·Uₙ]²,   b_j = Σ (ΔI_j − a·X_j)·U / Σ U²
+    gives (a_j, b_j, c_j), the normal equations ∂S/∂a = ∂S/∂b = ∂S/∂c = 0,
+    i.e. [[ΣX², ΣXV, ΣX], [ΣXV, ΣV², ΣV], [ΣX, ΣV, n]] · [a; b; c] =
+    [ΣIX; ΣIV; ΣI].  The relation holds on any bias window, crossing 0 V
+    or not, and in either sweep direction (the energies are sorted).  The
+    gain from the modulation amplitude, 1 / V_mod, is carried in the fits
+    (a_mod) as the check beside a_j; it is not used.
 
-    Fitting a per spectrum as well is not done: on a window where the LIA
-    is nearly flat, X is nearly proportional to U and a trades off against
-    b (one spectrum's data fix only a·mean(LIA) + b), which spreads the
-    gain over a wide range across the spectra of one file and flips its
-    sign in some.  The joint fit of one a for every regressed column, each
-    with its own b (_joint_gain), is computed as well: it is the gain when
-    the file records no modulation amplitude, and otherwise the console
-    comparison with 1 / V_mod (the pipeline prints both once per file).
-
-    The calibrated dI/dV is then  a · LIA_j(V) + b_j.  The relation is
-    exact in U, so the fit is unbiased whatever the bias window, crossing
-    0 V or not, and in either sweep direction (the energies are sorted);
-    nothing refers to 0 V.  A sweep that does not pass V_bias
-    (anchor_index) or a file without the setpoint is refused (ValueError):
-    it is not calibrated.
+    The gate (gate_sweeps, the module docstring) then runs on the per-sweep
+    a and b in the columns' order: a replaced sweep's calibrated curve uses
+    the pair it took.  The calibrated dI/dV is a_j · LIA_j(V) + b_j with the
+    applied pair.
 
     Parameters
     ----------
@@ -343,203 +341,213 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
         pipeline's filters when they are on.  None raises ValueError.
     vmod : float or None
         The modulation amplitude (V, peak; RHK_CH1Drive_Amplitude): the
-        gain's source.  None: the joint fit is the gain.
-    V_bias, I_setpoint : float
-        The setpoint (RHK_Bias in V, RHK_Current in A): the anchor.
-    ref : (lia_ref, iv_ref) or None
-        Columns aligned with `curves` whose sweeps did start at the
-        setpoint: a pixel's forward sweeps (their raw mean), for the views
-        of its reverse sweeps or of all its sweeps (sts.STS.sweep_view).
-        When given, the regression of column j runs on ref column j and
-        its b_j is applied to curves[:, j]; a column whose reference is
-        not finite (a pixel without a forward sweep) is regressed on
-        itself.
+        check's source.
+    V_bias, I_setpoint, ref
+        Accepted for the callers (the setpoint and a sweep view's
+        forward-sweep reference) and not used: every sweep is regressed on
+        its own data.
+    gate : GateSettings, dict, bool or None
+        The gate as the window sets it (gate_settings); None the defaults
+        (on, Hampel 3,3, Savitzky-Golay 9,2).
 
     Returns
     -------
-    calibrated : ndarray, same shape as *curves*, float64: a * LIA_j + b_j
-        per column, in I units per V (A/V for pages in A)
-    fits : list of ColumnFit, one per column (a the file's gain, b, c =
-        I_set, X, model, residual, rms, a_joint the joint fit's gain, gain
-        'modulation' or 'joint'; the arrays in the original energy
-        ordering; X, the model and the residual of the regressed columns,
-        the reference's when one was used)
+    calibrated : ndarray, same shape as *curves*, float64: a_j * LIA_j + b_j
+        per column with the applied pair, in I units per V (A/V for pages
+        in A)
+    fits : list of ColumnFit, one per column (the applied a, b, c, X, model,
+        residual, rms and se of the sweep's own fit, a_mod, the own pair,
+        the stage that replaced it, the trend's pair, the Gate record; the
+        arrays in the original energy ordering)
 
-    With no modulation amplitude and every column's X proportional to U
-    (for instance all-zero LIA columns) the joint gain is undefined and
-    ValueError is raised; the pipeline passes the acquired columns only.
+    A column whose regressors are dependent (an all-zero LIA column: X is
+    then zero) raises ValueError naming it; the pipeline passes the
+    acquired columns only.
     """
     if iv is None:
         raise ValueError(
             "No I(V) current channel found in this SM4 file. "
             "Cannot perform linear-regression calibration."
         )
-    e_sorted, sort_idx, i_a, U = _anchor(energy, V_bias, I_setpoint)
     energy = np.asarray(energy, dtype=np.float64)
     curves = np.asarray(curves, dtype=np.float64)
     iv_data = np.asarray(iv, dtype=np.float64)
-    I_set = float(I_setpoint)
-    n_curves = curves.shape[1]
-    UU = float(np.dot(U, U))
-
-    # The regressed data per column (the reference's when given), on the sorted axis.
-    Xs, dIs, srcs = [], [], []
-    for j in range(n_curves):
-        rc = _ref_column(ref, j, curves.shape[0])
-        src_lia = curves[:, j] if rc is None else rc[0]
-        src_iv = iv_data[:, j] if rc is None else rc[1]
-        # X(V) = cumulative integral of LIA, referenced at the anchor sample (V_bias).
-        X_raw = cumulative_trapezoid(src_lia[sort_idx], e_sorted, initial=0)
-        Xs.append(X_raw - X_raw[i_a])
-        # ΔI(V) = I(V) − I_set: the loop was opened at V_bias with the current at the setpoint.
-        dIs.append(src_iv[sort_idx] - I_set)
-        srcs.append(src_iv)
-
-    # The gain: 1 / V_mod, or the joint fit over every column (its own offset each) without one.
-    a_joint = _joint_gain(Xs, dIs, U)
+    if energy.size == 0:
+        raise ValueError("no energy samples.")
+    sort_idx = np.argsort(energy)
+    e_sorted = energy[sort_idx]
+    one = np.ones_like(e_sorted)
     g = gain_from_modulation(vmod, 1)
-    a, source = (g, 'modulation') if g is not None else (a_joint, 'joint')
-    if not np.isfinite(a):
-        raise ValueError("the calibration gain cannot be determined: no modulation amplitude recorded and "
-                         "every column's integrated LIA is proportional to V − V_bias.")
+    a_mod = float('nan') if g is None else float(g)
+    n_curves = curves.shape[1]
+    Xs, Is, own, ses = [], [], [], []
+    for j in range(n_curves):
+        # X(V) = cumulative integral of the LIA from the lowest-energy sample.
+        X = cumulative_trapezoid(curves[sort_idx, j], e_sorted, initial=0)
+        I = iv_data[sort_idx, j]
+        sol, se, _ = _solve(np.column_stack([X, e_sorted, one]), I, f"column {j}")
+        Xs.append(X)
+        Is.append(I)
+        own.append(sol)
+        ses.append(se)
+    own = np.array(own) if n_curves else np.zeros((0, 3))
 
+    def refit(j, a_j):
+        """The (b, c) of column j with a held at a_j."""
+        sol, _, _ = _solve(np.column_stack([e_sorted, one]), Is[j] - a_j * Xs[j], f"column {j}")
+        return float(sol[0]), float(sol[1])
+
+    a_app, b_app, c_app, record = gate_sweeps(own[:, 0], own[:, 1], refit, gate) if n_curves else \
+        (np.zeros(0), np.zeros(0), [], _NO_GATE)
     calibrated = np.empty_like(curves, dtype=np.float64)
     fits = []
-    U_orig = np.empty_like(U)
-    U_orig[sort_idx] = U
     for j in range(n_curves):
-        # The offset: the least squares of ΔI − a·X against U.
-        b_j = float(np.dot(dIs[j] - a * Xs[j], U) / UU) if UU > 0 else 0.0
-        # Calibrated dI/dV in original energy ordering (the column's own LIA, whichever columns were regressed).
-        calibrated[:, j] = a * curves[:, j] + b_j
+        a_j, b_j = float(a_app[j]), float(b_app[j])
+        if c_app[j] is None:
+            c_j = own[j, 2] if (a_j == own[j, 0] and b_j == own[j, 1]) else refit_c(Xs[j], Is[j], e_sorted, a_j, b_j)
+        else:
+            c_j = float(c_app[j])
+        calibrated[:, j] = a_j * curves[:, j] + b_j
         X_orig = np.empty_like(Xs[j])
         X_orig[sort_idx] = Xs[j]
-        model = a * X_orig + b_j * U_orig + I_set
-        residual = srcs[j] - model
-        fits.append(ColumnFit(float(a), b_j, I_set, X_orig, model, residual,
-                              float(np.sqrt(np.mean(residual * residual))), float(a_joint), source))
-
+        model = own[j, 0] * X_orig + own[j, 1] * energy + own[j, 2]
+        residual = iv_data[:, j] - model
+        replaced = 'ab' if j in record.replaced_b else ('a' if j in record.replaced_a else '')
+        trend = (float(record.trend_a[j]), float(record.trend_b[j])) if record.ran else (float('nan'),) * 2
+        fits.append(ColumnFit(a_j, b_j, float(c_j), X_orig, model, residual,
+                              float(np.sqrt(np.mean(residual * residual))), tuple(float(s) for s in ses[j]), a_mod,
+                              float(own[j, 0]), float(own[j, 1]), float(own[j, 2]), replaced, trend, record))
     return calibrated, fits
 
 
-# vmod: the gain's source, 4 / V_mod² for the second harmonic (gain_from_modulation).
-def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None):
+def refit_c(X, I, V, a, b):
+    """The level c of a sweep for a given pair (a, b): the mean of I − a·X − b·V over the sweep (sorted arrays)."""
+    return float(np.mean(I - a * X - b * V))
+
+
+def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None, gate=None):
     """
     Calibrate IETS (second-harmonic lock-in) curves against the co-acquired
     I(V) current channel, the double-derivative counterpart of calibrate:
-    one gain for the file, the offset and the anchor slope per curve,
-    anchored at the setpoint.
+    per sweep the least squares of a, b, c, d, nothing locked, no gate.
 
     The true d2I/dV2 relates to the raw second-harmonic signal S by
 
         true d2I/dV2(V) = a · S(V) + b
 
-    Integrating twice from the anchor sample (the setpoint bias V_bias,
-    where the current is I_set), with U = V − V_bias:
+    Integrating twice:
 
-        I(V) − I_set = a · Z(V) + b · U² / 2 + c · U
+        I(V) = a · Z(V) + b · V² / 2 + c · V + d
 
-    where Z(V) is the double cumulative trapezoidal integral of S, both
-    integrations referenced at the anchor, and c absorbs the unknown dI/dV
-    at the anchor.  The gain a is 4 / V_mod² from the recorded modulation
-    amplitude (gain_from_modulation; the lock-in's second harmonic is
-    V_mod² / 4 times d2I/dV2), or the joint fit of one a over every
-    regressed column with its own (b, c) (_joint_gain) when none is
-    recorded; the joint fit is computed either way for the console
-    comparison.  For each spectrum j the least squares in (b, c) with a
-    fixed gives the 2 by 2 normal equations
-
-        [[Σ(U²/2)², ΣU²/2·U], [ΣU²/2·U, ΣU²]] · [b; c] = [Σ(ΔI − a·Z)·U²/2 ; Σ(ΔI − a·Z)·U]
-
-    The calibrated curve is a · S_j(V) + b_j (in the Current page's units
-    per V²), in the original energy ordering.  As in calibrate the relation
-    is exact in U, so nothing refers to 0 V, and a sweep that does not pass
-    V_bias is refused (anchor_index).
+    where Z(V) is the double cumulative trapezoidal integral of S from the
+    lowest-energy sample, c the constant of the first integration (the
+    dI/dV level) and d of the second (the current level).  For each
+    spectrum j the least squares in (a, b, c, d) over every point of the
+    sweep, the 4 by 4 normal equations on the regressors (Z, V²/2, V, 1).
+    The calibrated curve is a_j · S_j(V) + b_j (in the Current page's units
+    per V²), in the original energy ordering.  The gain the modulation
+    amplitude would give, 4 / V_mod², is carried as the check (a_mod).
 
     Parameters: as calibrate (energy in V, any order; curves the
     second-harmonic page's data as the loader gives it, through the dI/dV
     filters when they are on; iv the recorded current through the
     pipeline's filters, None raises ValueError; vmod the modulation
-    amplitude; V_bias, I_setpoint the setpoint; ref the reference columns
-    of the sweeps that started at the setpoint).
+    amplitude; V_bias, I_setpoint, ref and gate accepted and not used).
 
     Returns
     -------
     calibrated : ndarray, same shape as *curves*, float64
-    fits : list of IetsColumnFit, one per column (a, b, c, d = I_set, Z,
-        model, residual, rms, a_joint, gain; the arrays in the original
-        energy ordering)
+    fits : list of IetsColumnFit, one per column (a, b, c, d, Z, model,
+        residual, rms, se, a_mod; the arrays in the original energy ordering)
     """
     if iv is None:
         raise ValueError(
             "No I(V) current channel found in this SM4 file. "
             "Cannot perform linear-regression calibration."
         )
-    e_sorted, sort_idx, i_a, U = _anchor(energy, V_bias, I_setpoint)
     energy = np.asarray(energy, dtype=np.float64)
     curves = np.asarray(curves, dtype=np.float64)
     iv_data = np.asarray(iv, dtype=np.float64)
-    I_set = float(I_setpoint)
-    n_curves = curves.shape[1]
-    Q = 0.5 * U * U
-    B = np.column_stack([Q, U])
-    M2 = B.T @ B
-
-    Zs, dIs, srcs = [], [], []
-    for j in range(n_curves):
-        rc = _ref_column(ref, j, curves.shape[0])
-        src_s = curves[:, j] if rc is None else rc[0]
-        src_iv = iv_data[:, j] if rc is None else rc[1]
-        # Y(V) = cumulative integral of S, referenced at the anchor; Z(V) = its integral, referenced too.
-        Y_raw = cumulative_trapezoid(src_s[sort_idx], e_sorted, initial=0)
-        Y = Y_raw - Y_raw[i_a]
-        Z_raw = cumulative_trapezoid(Y, e_sorted, initial=0)
-        Zs.append(Z_raw - Z_raw[i_a])
-        dIs.append(src_iv[sort_idx] - I_set)
-        srcs.append(src_iv)
-
-    a_joint = _joint_gain(Zs, dIs, B)
+    if energy.size == 0:
+        raise ValueError("no energy samples.")
+    sort_idx = np.argsort(energy)
+    e_sorted = energy[sort_idx]
+    one = np.ones_like(e_sorted)
     g = gain_from_modulation(vmod, 2)
-    a, source = (g, 'modulation') if g is not None else (a_joint, 'joint')
-    if not np.isfinite(a):
-        raise ValueError("the calibration gain cannot be determined: no modulation amplitude recorded and "
-                         "every column's double integral is in the span of U²/2 and U.")
-
+    a_mod = float('nan') if g is None else float(g)
+    n_curves = curves.shape[1]
     calibrated = np.empty_like(curves, dtype=np.float64)
     fits = []
-    U_orig = np.empty_like(U)
-    U_orig[sort_idx] = U
     for j in range(n_curves):
-        rhs = B.T @ (dIs[j] - a * Zs[j])
-        b_j, c_j = np.linalg.solve(M2, rhs)
-        calibrated[:, j] = a * curves[:, j] + b_j
-        Z_orig = np.empty_like(Zs[j])
-        Z_orig[sort_idx] = Zs[j]
-        model = a * Z_orig + b_j * 0.5 * U_orig * U_orig + c_j * U_orig + I_set
-        residual = srcs[j] - model
-        fits.append(IetsColumnFit(float(a), float(b_j), float(c_j), I_set, Z_orig, model, residual,
-                                  float(np.sqrt(np.mean(residual * residual))), float(a_joint), source))
-
+        # Y(V) = cumulative integral of S from the lowest-energy sample; Z(V) = its integral.
+        Y = cumulative_trapezoid(curves[sort_idx, j], e_sorted, initial=0)
+        Zs = cumulative_trapezoid(Y, e_sorted, initial=0)
+        Is = iv_data[sort_idx, j]
+        (a_j, b_j, c_j, d_j), se, _ = _solve(np.column_stack([Zs, 0.5 * e_sorted * e_sorted, e_sorted, one]), Is,
+                                             f"column {j}")
+        calibrated[:, j] = a_j * curves[:, j] + b_j
+        Z_orig = np.empty_like(Zs)
+        Z_orig[sort_idx] = Zs
+        model = a_j * Z_orig + b_j * 0.5 * energy * energy + c_j * energy + d_j
+        residual = iv_data[:, j] - model
+        fits.append(IetsColumnFit(float(a_j), float(b_j), float(c_j), float(d_j), Z_orig, model, residual,
+                                  float(np.sqrt(np.mean(residual * residual))), tuple(float(s) for s in se), a_mod))
     return calibrated, fits
+
+
+def gate_from_record(rec):
+    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order]); a record without them (older) gives the defaults."""
+    try:
+        return gate_settings({'on': rec.get('gate', True), 'hampel': rec.get('gate_hampel', GATE_HAMPEL),
+                              'sgolay': rec.get('gate_sgolay', GATE_SGOLAY)})
+    except ValueError as exc:
+        print(f"record: the gate settings are not usable ({exc}); the defaults are used.")
+        return GATE_DEFAULT
+
+
+def gate_record(settings):
+    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay'} (gate_from_record reads them)."""
+    return {'gate': bool(settings.on), 'gate_hampel': [settings.hampel[0], settings.hampel[1]],
+            'gate_sgolay': [settings.sgolay[0], settings.sgolay[1]]}
+
+
+def gate_text(fits, cols=None):
+    """
+    One console phrase for a calibrate call's gate: not run and why, or
+    the tolerances and the columns replaced on each stage (the file's
+    column indices when `cols` maps the call's columns to them).
+    """
+    if not fits:
+        return "no column"
+    rec = fits[0].gate
+    if not rec.ran:
+        return f"gate not run ({rec.note})"
+    name = (lambda k: int(cols[k])) if cols is not None else int
+    ra = [name(k) for k in rec.replaced_a]
+    rb = [name(k) for k in rec.replaced_b]
+    return (f"gate {rec.settings.text}, factor {GATE_FACTOR:g}: tolerance ±{rec.tol_a:.3g} on a, "
+            f"±{rec.tol_b * 1e12:.3g} pA/V on b; {len(ra)} sweep(s) took the trend's a" + (f" ({ra})" if ra else "")
+            + f", {len(rb)} the trend's pair" + (f" ({rb})" if rb else ""))
 
 
 if __name__ == '__main__':
     # One file's dI/dV calibration by this method drawn, one sweep at a time (the file, the starting
-    # sweep, and the current filters set here; '< sweep' / 'sweep >' step through the acquired columns
-    # in file order, point, line, or map alike).  Row 1, the calibration's inputs: the raw LIA, its
-    # integral X referenced at the anchor (the sample at the setpoint bias), the recorded current
-    # (every acquired column faint, the shown sweep bold; the filtered current when the filters are
-    # on).  Row 2: the fit in the I(V) frame with its parts a·X, b·(V − V_bias), c = I_set and the
-    # residual (a the file's gain from V_mod, b the sweep's offset); the calibrated a·LIA + b in the
-    # browser's dI/dV frame
-    # with the numerical derivative of the (filtered) current; the least-squares cost S(a, b)
-    # around its minimum.  Parameters of every column printed once; the shown sweep's on every step.
+    # sweep, the current filters and the gate set here; '< sweep' / 'sweep >' step through the
+    # acquired columns in file order, point, line, or map alike).  Row 1, the calibration's inputs:
+    # the raw LIA, its integral X from the lowest-energy sample, the recorded current (every acquired
+    # column faint, the shown sweep bold; the filtered current when the filters are on).  Row 2: the
+    # fit in the I(V) frame with its parts a·X, b·V, c and the residual (a, b, c the sweep's own least
+    # squares); the calibrated a·LIA + b in the browser's dI/dV frame, with the pair the gate applied
+    # when it replaced the sweep, and the numerical derivative of the (filtered) current; the
+    # least-squares cost S(a, b) around its minimum, c at its optimum for each (a, b), the trend's
+    # pair marked.  Parameters of every column printed once; the shown sweep's on every step.
     from sm4_Browser import qtplot as plt
-    from sm4_Browser import sm4file, widgets, filters
+    from sm4_Browser import sm4file, widgets
     path = r'experiment_dir/file.sm4'
     column = 0        # the starting sweep: an index among the acquired columns (0 = the first)
     hampel = None     # the current filters as the windows set them (None = off), e.g. {'window': 4, 'n_sigma': 3}
     sgolay = None     # e.g. {'window_length': 6, 'polyorder': 3}
+    gate = None       # the gate as the window sets it: None the defaults, False off, or {'on': True, 'hampel': (3, 3), 'sgolay': (9, 2)}
 
     f = sm4file.Sm4File(path)
     cols = np.flatnonzero(f.acquired)
@@ -554,68 +562,55 @@ if __name__ == '__main__':
     iv_raw = np.asarray(f.iv[:, cols], dtype=np.float64)
     filtered = hampel is not None or sgolay is not None
     iv = filters.filter_lia(iv_raw, hampel, sgolay)   # the recorded current through the filters (a copy when off)
-    cal, fits = calibrate(V, lia, iv, f.vmod, V_bias=f.V_bias, I_setpoint=f.I_setpoint, ref=(f.lia_ref, f.iv_ref))
-    # The safety on the offsets: the second regression at the other end, the gate on the touching sweeps,
-    # the replaced sweeps' curves recomputed.
-    b2 = far_offsets(V, lia, iv, fits[0].a, ref=(f.lia_ref, f.iv_ref))
-    gate = gate_offsets([cf.b for cf in fits], b2)
-    for k in gate.replaced:
-        cal[:, k] = fits[k].a * lia[:, k] + gate.b[k]
+    cal, fits = calibrate(V, lia, iv, f.vmod, gate=gate)
     uL = f.units_lia or 'no units'                    # the LIA page's RHK_Zunits (the loader's data are in it)
     uI = f.units_iv or 'no units'                     # the Current page's RHK_Zunits
     ua = "1/V" if uI == uL else f"{uI}/({uL}·V)"      # the units of the stretch a
-    pA = 1e12
     n_sweeps = int(cols.size)
     order = np.argsort(V)
     Vs = V[order]
-    i0 = anchor_index(Vs, f.V_bias)                   # the anchor: the sample at the setpoint bias
-    Us = Vs - Vs[i0]
-    print(f"{f.name}: {n_sweeps} acquired column(s), bias {V.min():+.3f} to {V.max():+.3f} V"
-          f"; anchor at the setpoint: V_bias = {Vs[i0]:+.4f} V, I_setpoint = {f.I_setpoint * pA:.3f} pA"
+    a_all = np.array([cf.a for cf in fits])
+    print(f"{f.name}: {n_sweeps} acquired column(s), bias {V.min():+.3f} to {V.max():+.3f} V; per sweep the least "
+          f"squares of a, b, c, nothing locked"
           + (f"; current filters Hampel {hampel}, SG {sgolay}" if filtered else "; current filters off"))
-    print(f"gain a = {fits[0].a:.4g} {ua} " + ("from the modulation amplitude (1/V_mod, V_mod = "
-                                                f"{f.vmod * 1e3:.3g} mV)" if fits[0].gain == 'modulation'
-                                                else "from the joint fit over the columns (no modulation amplitude recorded)")
-          + f"; the joint fit gives {fits[0].a_joint:.4g} {ua}; the offset b per sweep")
-    print("offset gate: " + (f"±{sm4file.si_text(gate.tol, uI + '/V')} ({GATE_FACTOR:g} × the robust scale of the "
-                              f"departures from the two touching sweeps' mean); "
-                              f"{gate.replaced.size} of {n_sweeps} sweep(s) replaced"
-                              + (f", {gate.plain.size} of them by the plain mean (the far end disturbed too)" if gate.plain.size else "")
-                              if np.isfinite(gate.tol) else
-                              f"not run ({n_sweeps} sweeps, fewer than {GATE_MIN_COLUMNS})"))
-    for k, (j, cf) in enumerate(zip(cols, fits)):
-        print(f"column {j}: b = {sm4file.si_text(cf.b, uI + '/V')}, "
-              f"I_set = {sm4file.si_text(cf.c, uI)}, rms residual = {sm4file.si_text(cf.rms, uI)}; "
-              f"at the other end b2 = {sm4file.si_text(b2[k], uI + '/V')}"
-              + ((f"; replaced: the touching sweeps' mean {sm4file.si_text(gate.ref[k], uI + '/V')}"
-                  + (f" × {gate.ratio[k]:.3g}" if k not in gate.plain else " (plain: the far end disturbed too)")
-                  + f" = {sm4file.si_text(gate.b[k], uI + '/V')}") if k in gate.replaced else ""))
+    print(f"gain a per sweep (applied): {a_all.min():.4g} to {a_all.max():.4g} {ua}, median {np.median(a_all):.4g}; "
+          + (f"1 / V_mod = {fits[0].a_mod:.4g} {ua} (V_mod = {f.vmod * 1e3:.3g} mV) as the check"
+             if np.isfinite(fits[0].a_mod) else "no modulation amplitude recorded"))
+    print(gate_text(fits, cols))
+    for j, cf in zip(cols, fits):
+        print(f"column {j}: own a = {cf.a_own:.4g} ± {cf.se[0]:.2g} {ua}, b = {sm4file.si_text(cf.b_own, uI + '/V')} ± "
+              f"{sm4file.si_text(cf.se[1], uI + '/V')}, c = {sm4file.si_text(cf.c_own, uI)}, "
+              f"rms residual = {sm4file.si_text(cf.rms, uI)}"
+              + (f"; replaced on the {'b' if cf.replaced == 'ab' else 'a'} stage: a = {cf.a:.4g}, "
+                 f"b = {sm4file.si_text(cf.b, uI + '/V')}" if cf.replaced else ""))
 
     X_all = np.column_stack([c.X for c in fits])
     faint = dict(color='0.6', lw=0.5, alpha=0.5)
     bold = dict(color='C0', lw=1.2)
+    pA = 1e12
     to_pA = (lambda y: y * pA, lambda y: y / pA)      # the right-hand axes in pA (a Current page in A)
 
     def cost_surface(k):
         """
-        This method's least-squares cost S(a, b) = Σ (ΔI − a·X − b·U)² of
-        sweep k, ΔI = I − I_set and X referenced at the anchor, U = V − V_bias,
-        on a window of ±4 standard errors of a and b around the minimum (from
-        rms² · M⁻¹).  (a grid, b grid, S[b, a], S at the fit).
+        This method's least-squares cost of sweep k, S(a, b) = min over c of
+        Σ (I − a·X − b·V − c)², on a window of ±4 standard errors of a and b
+        around the sweep's own minimum, widened to hold the applied pair.
+        (a grid, b grid, S[b, a], S at the fit).
         """
         cf = fits[k]
         Xs = cf.X[order]
-        dI = iv[order, k] - cf.c
-        M = np.array([[Xs @ Xs, Us @ Xs], [Us @ Xs, Us @ Us]])
-        cov = cf.rms ** 2 * np.linalg.inv(M)
-        sa, sb = np.sqrt(abs(cov[0, 0])), np.sqrt(abs(cov[1, 1]))
-        ha = 4 * sa if np.isfinite(sa) and sa > 0 else 0.1 * (abs(cf.a) or 1.0)
-        hb = 4 * sb if np.isfinite(sb) and sb > 0 else 0.1 * (abs(cf.b) or 1.0)
-        aa = np.linspace(cf.a - ha, cf.a + ha, 121)
-        bb = np.linspace(cf.b - hb, cf.b + hb, 121)
+        Is = iv[order, k]
+        sa, sb = cf.se[0], cf.se[1]
+        ha = 4 * sa if np.isfinite(sa) and sa > 0 else 0.1 * (abs(cf.a_own) or 1.0)
+        hb = 4 * sb if np.isfinite(sb) and sb > 0 else 0.1 * (abs(cf.b_own) or 1.0)
+        ha = max(ha, 1.2 * abs(cf.a - cf.a_own))
+        hb = max(hb, 1.2 * abs(cf.b - cf.b_own))
+        aa = np.linspace(cf.a_own - ha, cf.a_own + ha, 121)
+        bb = np.linspace(cf.b_own - hb, cf.b_own + hb, 121)
         S = np.empty((bb.size, aa.size))
         for ia, a_ in enumerate(aa):
-            r = (dI - a_ * Xs)[None, :] - bb[:, None] * Us[None, :]
+            r = (Is - a_ * Xs)[None, :] - bb[:, None] * Vs[None, :]
+            r = r - r.mean(axis=1, keepdims=True)     # c at its optimum: the mean of what is left
             S[:, ia] = np.sum(r * r, axis=1)
         return aa, bb, S, float(np.sum(cf.residual * cf.residual))
 
@@ -633,15 +628,16 @@ if __name__ == '__main__':
         cf = fits[k]
         lia_k = lia[:, k]
         iv_k = iv[:, k]
-        print(f"column {cols[k]}: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}"
-              + ((" (replaced: the touching sweeps' mean" + (f" × {gate.ratio[k]:.3g}" if k not in gate.plain else ", plain")
-                  + f" = {gate.b[k]:.4g})") if k in gate.replaced else ""))
+        how = "the trend's pair" if cf.replaced == 'ab' else "the trend's a, b refitted"
+        print(f"column {cols[k]}: own a = {cf.a_own:.4g}, b = {cf.b_own:.4g}, c = {cf.c_own:.4g}"
+              + (f"; applied a = {cf.a:.4g}, b = {cf.b:.4g} ({how})" if cf.replaced else ""))
         aa, bb, S, S_min = cost_surface(k)
 
         axes = fig.subplots(2, 3)
         state['axes'].extend(axes.flat)
-        fig.suptitle(f"{f.name}: calibration of column {cols[k]} anchored at the setpoint  (bias {V.min():+.3f} to "
-                     f"{V.max():+.3f} V, V_bias = {Vs[i0]:+.3f} V" + (", current filtered" if filtered else "") + ")")
+        fig.suptitle(f"{f.name}: calibration of column {cols[k]}, the sweep's own least squares of a, b, c"
+                     + (f", replaced by the gate on the {'b' if cf.replaced == 'ab' else 'a'} stage" if cf.replaced else "")
+                     + f"  (bias {V.min():+.3f} to {V.max():+.3f} V" + (", current filtered" if filtered else "") + ")")
 
         # Row 1: the inputs of the calibration.
         ax = axes[0, 0]
@@ -654,10 +650,8 @@ if __name__ == '__main__':
         ax = axes[0, 1]
         ax.plot(V, X_all, **faint)
         ax.plot(V, cf.X, **bold)
-        ax.axvline(Vs[i0], color='0.5', lw=0.8, ls=':')
-        ax.set_ylabel(f"X = ∫ LIA dV from V_bias ({uL}·V)")
-        ax.set_title(f"the regressor X(V) = ∫ LIA dV from V_bias = {Vs[i0]:+.3f} V (0 there by construction; "
-                     "the current it builds is in the panel below)")
+        ax.set_ylabel(f"X = ∫ LIA dV ({uL}·V)")
+        ax.set_title("the regressor X(V) = ∫ LIA dV from the lowest-energy sample (where it starts is absorbed by c)")
 
         ax = axes[0, 2]
         ax.plot(V, iv_raw, **faint)
@@ -675,17 +669,16 @@ if __name__ == '__main__':
         if filtered:
             ax.plot(V, iv_raw[:, k], '.', ms=2, color='0.75', label="I(V) recorded")
         ax.plot(V, iv_k, '.', ms=2, color='0.3', label="I(V)" + (" filtered" if filtered else ""))
-        ax.plot(V, cf.model, color='C3', lw=1.2, label="a·X + b·(V − V_bias) + I_set")
-        ax.plot(V, cf.a * cf.X, '--', color='C0', lw=1, label="a·X")
-        ax.plot(V, cf.b * (V - Vs[i0]), ':', color='C2', lw=1, label="b·(V − V_bias)")
-        ax.axhline(cf.c, ls='-.', color='C1', lw=1, label="c = I_set")
-        ax.axvline(Vs[i0], color='0.5', lw=0.8, ls=':')
+        ax.plot(V, cf.model, color='C3', lw=1.2, label="a·X + b·V + c (the sweep's own fit)")
+        ax.plot(V, cf.a_own * cf.X, '--', color='C0', lw=1, label="a·X")
+        ax.plot(V, cf.b_own * V, ':', color='C2', lw=1, label="b·V")
+        ax.axhline(cf.c_own, ls='-.', color='C1', lw=1, label="c")
         ax.set_ylabel(f"I ({uI})")
-        ax.set_title("the fit in the I(V) frame: I − I_set = a·X + b·(V − V_bias)")
+        ax.set_title("the fit in the I(V) frame: I = a·X + b·V + c")
         ax.legend(loc='upper left', fontsize=8)
-        ax.text(0.02, 0.03, f"a = {cf.a:.4g} {ua}\nb = {sm4file.si_text(cf.b, uI + '/V')}"
-                            + (f" → {sm4file.si_text(gate.b[k], uI + '/V')} (gate)" if k in gate.replaced else "")
-                            + f"\nI_set = {sm4file.si_text(cf.c, uI)}\nrms = {sm4file.si_text(cf.rms, uI, 3)}",
+        ax.text(0.02, 0.03, f"a = {cf.a_own:.4g} ± {cf.se[0]:.2g} {ua}\nb = {sm4file.si_text(cf.b_own, uI + '/V')}"
+                            f"\nc = {sm4file.si_text(cf.c_own, uI)}\nrms = {sm4file.si_text(cf.rms, uI, 3)}"
+                            + (f"\napplied: a = {cf.a:.4g}, b = {sm4file.si_text(cf.b, uI + '/V')}" if cf.replaced else ""),
                 transform=ax.transAxes, fontsize=8, va='bottom', bbox=dict(boxstyle='round', fc='w', alpha=0.8))
         ins = ax.inset_axes([0.6, 0.08, 0.38, 0.28])
         ins.plot(V, cf.residual, color='0.3', lw=0.6)
@@ -698,8 +691,9 @@ if __name__ == '__main__':
         didv_num[order] = np.gradient(iv_k[order], Vs)
         ax.plot(V, didv_num, color='0.6', lw=0.6, alpha=0.7,
                 label="numerical dI/dV of the " + ("filtered" if filtered else "recorded") + " I(V)")
-        ax.plot(V, cal[:, k], color='C3', lw=1.3,
-                label="a·LIA + b (anchored at the setpoint)" + ("; b from the touching sweeps" if k in gate.replaced else ""))
+        if cf.replaced:
+            ax.plot(V, cf.a_own * lia_k + cf.b_own, color='C1', lw=0.9, ls='--', label="a·LIA + b with the sweep's own pair")
+        ax.plot(V, cal[:, k], color='C3', lw=1.3, label="a·LIA + b" + (" with the gate's pair" if cf.replaced else ""))
         ax.set_ylabel(f"dI/dV ({uI}/V)")
         ax.set_title("the dI/dV frame: a scales the LIA, b shifts it")
         ax.legend(fontsize=8)
@@ -712,12 +706,17 @@ if __name__ == '__main__':
         cs = ax.contourf(aa, bb, logS, levels=30, cmap='viridis')
         cb = fig.colorbar(cs, ax=ax, label="log10(S / S_min)")
         state['axes'].append(cb.ax)
-        ax.plot(cf.a, cf.b, 'o', color='w', mec='k', label=f"used: a = {cf.a:.4g} ({cf.gain}), b = {cf.b:.4g}")
+        ax.plot(cf.a_own, cf.b_own, 'o', color='w', mec='k', label=f"the sweep's own fit: a = {cf.a_own:.4g}, b = {cf.b_own:.4g}")
+        if cf.replaced:
+            ax.plot(cf.a, cf.b, 's', color='C1', mec='k', label=f"applied: a = {cf.a:.4g}, b = {cf.b:.4g}")
+        if np.isfinite(cf.trend[0]):
+            ax.plot(cf.trend[0], cf.trend[1], '+', color='w', ms=9, label=f"the trend: a = {cf.trend[0]:.4g}, b = {cf.trend[1]:.4g}")
+        if np.isfinite(cf.a_mod):
+            ax.axvline(cf.a_mod, color='w', lw=0.8, ls='--', label=f"1 / V_mod = {cf.a_mod:.4g}")
         ax.set_xlabel(f"a ({ua})")
         ax.set_ylabel(f"b ({uI}/V)")
-        ax.set_title("least-squares cost S(a, b) of this sweep alone (±4 standard errors of a free fit)")
+        ax.set_title("least-squares cost S(a, b) of this sweep, c at its optimum (±4 standard errors)")
         ax.legend(fontsize=8, loc='upper right')
-
         for ax in list(axes[0]) + list(axes[1, :2]):
             ax.set_xlabel("Energy (eV)")
         sweep_text.set_text(f"sweep {k + 1} of {n_sweeps} (file column {cols[k]})")

@@ -43,7 +43,7 @@ from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
 from sm4_Browser.qtplot import gridspec
-from sm4_Browser import fit, topo, sm4file, widgets, plots, records
+from sm4_Browser import fit, topo, sm4file, widgets, plots, records, calibration
 from sm4_Browser.drift import DriftWindow
 from sm4_Browser.sts import STS, curve_units
 from sm4_Browser.averaging import Averages, Selection
@@ -408,15 +408,16 @@ class Line:
 
     def _pipeline(self, raw, iv, hampel_filter_params, sgolay_filter_params, apply_calibration,
                   divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False,
-                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None):
+                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None, gate=None):
         """
         The package's one pipeline (STS.process_arrays) on this line's
         columns (npts, N), each step when switched on: the columns through
         the dI/dV Hampel and Savitzky-Golay filters and the I(V) through the
         I(V) ones, each once, the calibration against that current
-        (calibration.calibrate for dI/dV, calibrate_iets for IETS: the
-        gain-plus-offset regression anchored at the file's setpoint; `ref`
-        the forward-sweep reference columns of a reverse-sweep view), the
+        (calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep
+        the least squares of the gain, the offset and the constant of
+        integration, nothing locked; `ref` the forward-sweep reference
+        columns of a reverse-sweep view, handed over and not used), the
         division by the broadened I/V of the same current (dI/dV only;
         iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
         value at 0 V, feenstra.iv_corrected), unit-area normalization (over
@@ -452,7 +453,8 @@ class Line:
                                            V_bias=getattr(self, 'V_bias', None),
                                            I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
                                            hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                           name=os.path.basename(str(self.ifile)))
+                                           name=os.path.basename(str(self.ifile)),
+                                           gate=getattr(self, '_int_gate', None) if gate is None else gate)
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)
         curves[:, ~acquired] = np.nan
@@ -598,13 +600,14 @@ class Line:
         return True
 
     def _int_on_pipeline_change(self, state):
-        """The 'calibrate' / 'normalize' box: recomputed through the Feenstra path; refused, the box goes back."""
-        old = (self._int_apply_calibration, self._int_apply_normalize)
+        """The 'calibrate' / 'gate' / 'normalize' box: recomputed through the Feenstra path; refused, the box goes back."""
+        old = (self._int_apply_calibration, self._int_apply_normalize, self._int_gate)
         self._int_apply_calibration, self._int_apply_normalize = state['calibrate'], state['normalize']
-        note = (f"calibration {'on' if state['calibrate'] else 'off'}, "
-                f"normalization {'on' if state['normalize'] else 'off'}")
+        self._int_gate = state.get('gate', self._int_gate)      # a state without the gate keeps it
+        note = (f"calibration {'on' if state['calibrate'] else 'off'}, gate {'on' if self._int_gate.on else 'off'} "
+                f"({self._int_gate.text}), normalization {'on' if state['normalize'] else 'off'}")
         if not self._int_apply_feenstra(note):
-            self._int_apply_calibration, self._int_apply_normalize = old
+            self._int_apply_calibration, self._int_apply_normalize, self._int_gate = old
             self._int_pipeline_box.set_state(*old)
             self._int_fig.canvas.draw_idle()
 
@@ -1824,7 +1827,7 @@ class Line:
         if w is not None and w.is_open():
             w.refresh()
 
-    def _int_feenstra_versions(self, calibrate, normalize):
+    def _int_feenstra_versions(self, calibrate, normalize, gate=None):
         """
         The four versions of the displayed line for the companion
         (feenstra_view): a dict key -> {'title', 'ylabel', 'top' or 'note'}
@@ -1840,11 +1843,11 @@ class Line:
         memo = getattr(self, '_int_versions_memo', None)
         if memo is not None and memo[0] == memo_key:
             return {k: dict(v) for k, v in memo[1].items()}, memo[2]
-        versions, q = self._int_feenstra_versions_compute(calibrate, normalize, hp, sp, raw, iv)
+        versions, q = self._int_feenstra_versions_compute(calibrate, normalize, hp, sp, raw, iv, gate)
         self._int_versions_memo = (memo_key, versions, q)
         return {k: dict(v) for k, v in versions.items()}, q
 
-    def _int_feenstra_versions_compute(self, calibrate, normalize, hp, sp, raw, iv):
+    def _int_feenstra_versions_compute(self, calibrate, normalize, hp, sp, raw, iv, gate=None):
         """The four versions of _int_feenstra_versions, computed (every normalization over the window's energy crop; the window's dI/dV filters and the forward-sweep reference as the heatmap's)."""
         hd, sd = getattr(self, '_int_hampel_didv', None), getattr(self, '_int_sgolay_didv', None)
         ref = getattr(self, '_int_ref', None)
@@ -1861,7 +1864,7 @@ class Line:
         }
         versions['didv']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize,
                                                                   norm_range=self._int_e_range, hampel_didv=hd,
-                                                                  sgolay_didv=sd, ref=ref))
+                                                                  sgolay_didv=sd, ref=ref, gate=gate))
         if iv is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
@@ -1884,10 +1887,11 @@ class Line:
                 versions['ratio']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, True, width,
                                                                            normalize, iv_zero_sub=zs,
                                                                            norm_range=self._int_e_range,
-                                                                           hampel_didv=hd, sgolay_didv=sd, ref=ref))
+                                                                           hampel_didv=hd, sgolay_didv=sd, ref=ref,
+                                                                           gate=gate))
         return versions, q
 
-    def feenstra_view(self, calibrate=True, normalize=True):
+    def feenstra_view(self, calibrate=True, normalize=True, gate=None):
         """
         The companion's view (feenstra.FeenstraWindow): the displayed line in
         four versions, the dI/dV of the window's pipeline with the division
@@ -1907,7 +1911,7 @@ class Line:
         as 'e_range' ((lo, hi) or None): the companion shows that range and
         scales its colours over it.
         """
-        versions, q = self._int_feenstra_versions(calibrate, normalize)
+        versions, q = self._int_feenstra_versions(calibrate, normalize, gate)
         for key, v in versions.items():
             if 'top' in v:
                 markers, groups = self._int_curve_items(v['top'])
@@ -2367,6 +2371,7 @@ class Line:
                 'hampel_didv_on': bool(hd_on), 'sgolay_didv_on': bool(sd_on),
                 'calibrate': bool(self._int_apply_calibration),
                 'normalize': bool(self._int_apply_normalize),
+                **calibration.gate_record(self._int_gate),
                 'divide_iv': bool(self._int_divide_iv),
                 'iv_broadening_V': float(self._int_iv_broadening),
                 'iv_broadened': bool(self._int_iv_broadened),
@@ -2432,7 +2437,9 @@ class Line:
         self._int_chk_feenstra.set(self._int_divide_iv)
         self._int_apply_calibration = bool(rec.get('calibrate', self._int_apply_calibration))
         self._int_apply_normalize = bool(rec.get('normalize', self._int_apply_normalize))
-        self._int_pipeline_box.set_state(self._int_apply_calibration, self._int_apply_normalize)
+        if 'gate' in rec or 'gate_hampel' in rec or 'gate_sgolay' in rec:
+            self._int_gate = calibration.gate_from_record(rec)
+        self._int_pipeline_box.set_state(self._int_apply_calibration, self._int_apply_normalize, self._int_gate)
         try:
             self._int_gamma_box.set(float(rec.get('gamma', 1.0)))
         except Exception:
@@ -2780,7 +2787,7 @@ class Line:
         self._int_filters.on_change(self._int_on_filter_change)
         # The 'calibrate' / 'normalize' box (top right, as in every window).
         self._int_pipeline_box = widgets.PipelineBox(fig, calibrate=self._int_apply_calibration,
-                                                     normalize=self._int_apply_normalize)
+                                                     normalize=self._int_apply_normalize, gate=self._int_gate)
         self._int_pipeline_box.on_change(self._int_on_pipeline_change)
         # The heatmap's 'γ' box, just below the heatmap's bottom-right corner.
         self._int_gamma_box = widgets.GammaBox(fig, gamma=self._int_gamma0)
@@ -2864,6 +2871,7 @@ class Line:
                                         sgolay_filter_params=None,
                                         apply_calibration=False,
                                         apply_normalize=False,
+                                        gate=None,
                                         marker_positions=None,
                                         topo_lines=None,
                                         fit_settings=None,
@@ -3020,6 +3028,10 @@ class Line:
             Pre-fill of the in-window filter controls (the filters start off).
         apply_calibration, apply_normalize : bool
             Starting states of the 'calibrate' / 'normalize' box.
+        gate : calibration.GateSettings, dict, bool or None
+            The starting state of the box's 'gate' row and its 'H' / 'SG'
+            boxes (calibration.gate_settings; None the defaults: on, 3,3 and
+            9,2).
         marker_positions : list of float or None
             Initial marker positions in Å along the line axis (one group of
             that many markers).  If None, one group of two markers one
@@ -3086,6 +3098,7 @@ class Line:
         self._int_feenstra = None             # the Feenstra companion (opened at the end)
         self._int_apply_calibration = bool(apply_calibration)
         self._int_apply_normalize = bool(apply_normalize)
+        self._int_gate = calibration.gate_settings(gate)
         self._int_gamma0 = float(gamma)
         self._int_e_range = None              # the applied energy crop: (lo, hi) V shown and normalized over, None = all
         self._int_x_range = None              # the applied position crop: (lo, hi) Å shown, None = the kept rows

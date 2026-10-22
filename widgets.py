@@ -87,7 +87,9 @@ SPECS = {
     'WKB background': _spec('check', 1.7, 0.32),
     'hold': _spec('check', 0.3, 0.26, fs=7, labels=['']),           # the fit edit window's hold rows (unlabeled)
     # --- toggle boxes (several rows) ---
-    'pipeline': _spec('checks', 0.95, 0.52, fs=8, labels=['calibrate', 'normalize']),
+    'pipeline': _spec('checks', 0.95, 0.74, fs=8, labels=['calibrate', '    gate', 'normalize']),   # the gate row indented under calibrate (PipelineBox)
+    'gate H': _spec('text', 0.40, 0.20, fs=7),                      # the gate's Hampel 'window,n_sigma' beside the gate row (PipelineBox)
+    'gate SG': _spec('text', 0.40, 0.20, fs=7),                     # the gate's Savitzky-Golay 'length,order'
     'topo processors': _spec('checks', 1.4, 0.36, fs=8, labels=None, row_h=0.36),   # labels from topo.TOPO_PROCESSORS
     # --- radios ---
     'channel': _spec('radio', 1.1, 0.55, fs=8, labels=['dI/dV', 'IETS']),
@@ -192,6 +194,7 @@ LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
           'cal length': 'calibrated length (nm) ',
           'γ': 'γ ', 'drift v': 'v (nm/h, cal) ', 'E lo': '', 'E hi': '', 'x lo': '', 'x hi': '',
+          'gate H': 'H ', 'gate SG': 'SG ',
           'slow axis': 'drift', 'fast axis': 'stripe', 'stripe pass': 'pass'}        # the radios' titles (Radio, title=True)
 
 # The short form of every label that has one, used when a window is taller than it is wide (the
@@ -1340,32 +1343,94 @@ class FilterControls:
 
 class PipelineBox:
     """
-    The 'calibrate' / 'normalize' box (one box, two rows), at the same place
-    in every window that has it (its top-right corner, TOP_RIGHT): the two
-    pipeline steps switchable on their own, both off at open in every window
-    that uses Feenstra (the callers say so).  state() gives
-    {'calibrate': bool, 'normalize': bool}; set_state() sets the rows without
-    firing; on_change(callback) runs callback(state) after a click.
+    The 'calibrate' / 'gate' / 'normalize' box (one box, three rows), at
+    the same place in every window that has it (its top-right corner,
+    TOP_RIGHT): the two pipeline steps switchable on their own, both off at
+    open in every window that uses Feenstra (the callers say so), and under
+    'calibrate', indented, its 'gate' row (calibration.gate_sweeps: the
+    safety on the per-sweep gains and offsets, on at open) with two small
+    boxes to the left of the box at the row's height, 'H' holding the
+    gate's Hampel 'window,n_sigma' and 'SG' its Savitzky-Golay
+    'length,order' (calibration.GATE_HAMPEL / GATE_SGOLAY at open).  A box
+    edit that does not parse, or breaks the gate's rules
+    (calibration.gate_settings), is reported on the console and the box put
+    back.  The gate row is ignored while 'calibrate' is off.  state() gives
+    {'calibrate': bool, 'normalize': bool, 'gate': calibration.GateSettings};
+    set_state() sets the rows and boxes without firing; on_change(callback)
+    runs callback(state) after a click or an accepted edit.
     """
 
     TOP_RIGHT = (0.935, 0.93)
+    GAP = 0.004              # between the 'SG' box and the toggle box, and between the two boxes (figure fraction)
 
-    def __init__(self, fig, xy=None, calibrate=True, normalize=True):
+    def __init__(self, fig, xy=None, calibrate=True, normalize=True, gate=None):
+        from sm4_Browser import calibration
+        self.fig = fig
+        self._gate = calibration.gate_settings(gate)
         x, y = self.TOP_RIGHT if xy is None else xy
-        self.box = make(fig, 'pipeline', x, y, values=[bool(calibrate), bool(normalize)])
+        self.box = make(fig, 'pipeline', x, y, values=[bool(calibrate), bool(self._gate.on), bool(normalize)])
+        # The two boxes to the left of the toggle box, on the gate row (the middle one).
+        fw, fh = fig.get_size_inches()
+        row_y = y + SPECS['pipeline']['h'] / fh / 3.0 + 0.5 * (SPECS['pipeline']['h'] / fh / 3.0 - SPECS['gate SG']['h'] / fh)
+        x_sg = x - self.GAP - SPECS['gate SG']['w'] / fw
+        x_h = x_sg - 0.03 - self.GAP - SPECS['gate H']['w'] / fw        # room for the 'SG' label between them
+        self.box_sg = make(fig, 'gate SG', x_sg, row_y, value=self._fmt(self._gate.sgolay))
+        self.box_h = make(fig, 'gate H', x_h, row_y, value=self._fmt(self._gate.hampel))
         self._cb = None
-        self.box.on_change(lambda label, states: self._fire())
+        self._quiet = False
+        self.box.on_change(lambda label, states: self._on_toggle())
+        self.box_h.on_change(lambda text: self._on_edit('hampel', text))
+        self.box_sg.on_change(lambda text: self._on_edit('sgolay', text))
+
+    @staticmethod
+    def _fmt(pair):
+        return f"{pair[0]:g},{pair[1]:g}"
 
     def _fire(self):
-        if self._cb is not None:
+        if self._cb is not None and not self._quiet:
             self._cb(self.state())
+
+    def _on_toggle(self):
+        c, g, n = self.box.value
+        self._gate = self._gate._replace(on=bool(g))
+        self._fire()
+
+    def _on_edit(self, which, text):
+        """An accepted 'H' or 'SG' edit changes the gate settings and fires; a refused one is reported and the box put back."""
+        from sm4_Browser import calibration
+        if self._quiet:
+            return
+        try:
+            parts = [float(p) for p in str(text).replace(';', ',').split(',')]
+            if len(parts) != 2:
+                raise ValueError(f"'{text}': two numbers are needed, separated by a comma.")
+            trial = self._gate._replace(**{which: (parts[0], parts[1])})
+            new = calibration.gate_settings(trial)
+        except ValueError as exc:
+            print(f"gate '{'H' if which == 'hampel' else 'SG'}' box: {exc} The box is put back.")
+            self._set_boxes()
+            return
+        if new == self._gate:
+            self._set_boxes()
+            return
+        self._gate = new
+        self._set_boxes()
+        self._fire()
+
+    def _set_boxes(self):
+        self._quiet = True
+        try:
+            self.box_h.set(self._fmt(self._gate.hampel))
+            self.box_sg.set(self._fmt(self._gate.sgolay))
+        finally:
+            self._quiet = False
 
     def on_change(self, callback):
         self._cb = callback
 
     def state(self):
-        c, n = self.box.value
-        return {'calibrate': bool(c), 'normalize': bool(n)}
+        c, g, n = self.box.value
+        return {'calibrate': bool(c), 'normalize': bool(n), 'gate': self._gate._replace(on=bool(g))}
 
     @property
     def calibrate(self):
@@ -1375,14 +1440,27 @@ class PipelineBox:
     def normalize(self):
         return self.state()['normalize']
 
-    def set_state(self, calibrate=None, normalize=None):
+    @property
+    def gate(self):
+        """The gate as set: calibration.GateSettings (its `on` the gate row)."""
+        return self.state()['gate']
+
+    def set_state(self, calibrate=None, normalize=None, gate=None):
+        """The rows and boxes set without firing; `gate` a GateSettings, dict, bool or None (unchanged)."""
+        from sm4_Browser import calibration
         if calibrate is not None:
             self.box.set(0, bool(calibrate))
         if normalize is not None:
-            self.box.set(1, bool(normalize))
+            self.box.set(2, bool(normalize))
+        if gate is not None:
+            self._gate = calibration.gate_settings(gate)
+            self.box.set(1, bool(self._gate.on))
+            self._set_boxes()
 
     def show(self, flag):
         self.box.show(flag)
+        self.box_h.show(flag)
+        self.box_sg.show(flag)
 
 
 class FeenstraSettings:

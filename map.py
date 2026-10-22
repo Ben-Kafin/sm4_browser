@@ -23,7 +23,7 @@ if __package__ in (None, ''):
 import os
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import fit, widgets, plots
+from sm4_Browser import fit, widgets, plots, calibration
 from sm4_Browser.sts import STS, curve_units
 from sm4_Browser.averaging import Averages, Selection
 from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero, iv_corrected,
@@ -183,6 +183,7 @@ class Map:
         self.iv_broadened = bool(iv_broadened)
         self.calibrate = False                      # the 'calibrate' / 'normalize' box: both off at open, as in
         self.normalize = False                      # every window that uses Feenstra
+        self.gate = calibration.GATE_DEFAULT        # the box's 'gate' row and its 'H' / 'SG' boxes
         self.cmap_norm = False                      # 'cmap norm': each map its own colour scale
         held = grid.channels()                      # the maps start on a channel the file holds
         self.channel = channel if channel in held else (held[0] if held else 'didv')
@@ -237,7 +238,7 @@ class Map:
             self.rad_sweeps.on_change(self._on_sweeps)
         self.chk_feenstra = widgets.make(self.fig, 'Feenstra', 0.34, 0.08, value=self.divide_iv)
         self.chk_feenstra.on_change(self._on_feenstra_toggle)
-        self.pipeline = widgets.PipelineBox(self.fig, calibrate=self.calibrate, normalize=self.normalize)
+        self.pipeline = widgets.PipelineBox(self.fig, calibrate=self.calibrate, normalize=self.normalize, gate=self.gate)
         self.pipeline.on_change(self._on_pipeline_change)
         self.chk_cmap_norm = widgets.make(self.fig, 'cmap norm', 0.825, 0.065, value=self.cmap_norm)
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
@@ -394,17 +395,17 @@ class Map:
         print(f"Feenstra {'on' if flag else 'off'}: the map window shows " + (t['ratio'] + "." if flag else "dI/dV."))
 
     def _on_pipeline_change(self, state):
-        """The 'calibrate' / 'normalize' box: the maps recomputed with the flags; refused, the box goes back."""
-        old = (self.calibrate, self.normalize)
-        self.calibrate, self.normalize = state['calibrate'], state['normalize']
+        """The 'calibrate' / 'gate' / 'normalize' box: the maps recomputed with the flags; refused, the box goes back."""
+        old = (self.calibrate, self.normalize, self.gate)
+        self.calibrate, self.normalize, self.gate = state['calibrate'], state['normalize'], state.get('gate', self.gate)
         before = self.maps
         self.recompute()
         if self.maps is before:
-            self.calibrate, self.normalize = old
+            self.calibrate, self.normalize, self.gate = old
             self.pipeline.set_state(*old)
             return
-        print(f"calibration {'on' if self.calibrate else 'off'}, normalization {'on' if self.normalize else 'off'}: "
-              f"the map window shows {self._quantity()}.")
+        print(f"calibration {'on' if self.calibrate else 'off'}, gate {'on' if self.gate.on else 'off'} ({self.gate.text}), "
+              f"normalization {'on' if self.normalize else 'off'}: the map window shows {self._quantity()}.")
 
     def _on_cmap_norm(self, flag):
         """'cmap norm': each map its own colour scale (on) or one scale over the whole cube (off)."""
@@ -801,11 +802,11 @@ class Map:
         if w is not None and w.is_open():
             w.refresh()
 
-    def _cube(self, divide_iv, calibrate=None, normalize=None):
+    def _cube(self, divide_iv, calibrate=None, normalize=None, gate=None):
         """
         The processed cube (n_e, n_lines, n_fast) with the division as given
-        (recompute's reshaping) and the calibrate / normalize flags (the
-        window's unless given: the companion's own).
+        (recompute's reshaping) and the calibrate / normalize flags and the
+        gate settings (the window's unless given: the companion's own).
         """
         g = self.grid
         hp, sp = self.filters.params()
@@ -813,7 +814,7 @@ class Map:
         c = g.curves(hp, sp, divide_iv, self.iv_width(), channel=self.channel, iv_zero_sub=self.iv_zero_sub,
                      normalize=self.normalize if normalize is None else normalize,
                      calibrate=self.calibrate if calibrate is None else calibrate,
-                     hampel_didv=hd, sgolay_didv=sd)[self.order, :]
+                     hampel_didv=hd, sgolay_didv=sd, gate=self.gate if gate is None else gate)[self.order, :]
         n = g.n_lines * g.n_fast
         c = c[:, :n].copy()
         c[:, ~g.acquired[:n]] = np.nan
@@ -855,7 +856,7 @@ class Map:
         return {'ylabel': f"{q} (arb. units)", 'ylabel_offset': f"{q} (arb. units, offset)",
                 'title_markers': f"{q} at markers", 'stack_where': ", blocks by centre (highest y at the top)"}
 
-    def feenstra_view(self, calibrate=True, normalize=True):
+    def feenstra_view(self, calibrate=True, normalize=True, gate=None):
         """
         The companion's view (feenstra.FeenstraWindow): the map at the current
         energy in four versions, the dI/dV of the pipeline with the division
@@ -865,11 +866,13 @@ class Map:
         on, with the marker curves of each in the current marker state; a
         file without the Current channel gives notes for the current, I/V,
         and ratio panels, the IETS channel a note for the ratio panel.
-        `calibrate` and `normalize` are the companion's own flags: the dI/dV
-        and the ratio through the pipeline with them; with `normalize` on the
-        current and the I/V are unit area per pixel (normalize_abs).
+        `calibrate`, `normalize` and `gate` are the companion's own flags and
+        gate settings: the dI/dV and the ratio through the pipeline with
+        them; with `normalize` on the current and the I/V are unit area per
+        pixel (normalize_abs).
         """
         g = self.grid
+        gate = self.gate if gate is None else gate
         q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
         at = f"at {self.V[self.e_index]:.3f} V"
         zs, width = self.iv_zero_sub, self.iv_width()
@@ -885,12 +888,12 @@ class Map:
         # The cubes depend on these settings only, never on the markers: computed once per setting.
         hp, sp = self.filters.params()
         hd, sd = self.filters.params_didv()
-        memo_key = (bool(calibrate), bool(normalize), repr(hp), repr(sp), repr(hd), repr(sd), zs, width, self.channel)
+        memo_key = (bool(calibrate), bool(normalize), gate, repr(hp), repr(sp), repr(hd), repr(sd), zs, width, self.channel)
         memo = getattr(self, '_cube_memo', None)
         if memo is not None and memo[0] == memo_key:
             cubes = memo[1]
         else:
-            cubes = self._feenstra_cubes(calibrate, normalize, zs, width)
+            cubes = self._feenstra_cubes(calibrate, normalize, zs, width, gate)
             self._cube_memo = (memo_key, cubes)
         if g.iv is None:
             for key in ('iv', 'ivv', 'ratio'):
@@ -902,10 +905,10 @@ class Map:
             versions[key].update({'top': cube[self.e_index], 'markers': markers, 'groups': groups})
         return self._feenstra_view_dict(g, at, versions, q)
 
-    def _feenstra_cubes(self, calibrate, normalize, zs, width):
+    def _feenstra_cubes(self, calibrate, normalize, zs, width, gate=None):
         """The companion's cubes (n_e, n_lines, n_fast) per version."""
         g = self.grid
-        cubes = {'didv': self._cube(False, calibrate, normalize)}
+        cubes = {'didv': self._cube(False, calibrate, normalize, gate)}
         if g.iv is not None:
             hp, sp = self.filters.params()
             iv_a = iv_corrected(g.energy, g.iv, zs, hp, sp)
@@ -916,7 +919,7 @@ class Map:
             cubes['iv'] = self._cube_of(iv_a)
             cubes['ivv'] = self._cube_of(ivv)
             if self.channel != 'iets':
-                cubes['ratio'] = self._cube(True, calibrate, normalize)
+                cubes['ratio'] = self._cube(True, calibrate, normalize, gate)
         return cubes
 
     def _feenstra_view_dict(self, g, at, versions, q):
@@ -953,7 +956,7 @@ class Map:
         try:
             c = g.curves(hp, sp, self.divide_iv, self.iv_width(), channel=self.channel, hampel_didv=hd, sgolay_didv=sd,
                          iv_zero_sub=self.iv_zero_sub, normalize=self.normalize,
-                         calibrate=self.calibrate)[self.order, :]                                  # (n_e, N)
+                         calibrate=self.calibrate, gate=self.gate)[self.order, :]                  # (n_e, N)
         except Exception as exc:
             print(f"Map window: {exc}")
             return

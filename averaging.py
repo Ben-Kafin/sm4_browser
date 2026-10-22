@@ -18,7 +18,7 @@ from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
 from scipy.integrate import cumulative_trapezoid
-from sm4_Browser import sm4file, fit, widgets, records
+from sm4_Browser import sm4file, fit, widgets, records, calibration
 from sm4_Browser.sts import STS, curve_units_of
 from sm4_Browser.feenstra import (feenstra_width, feenstra_titles, energy_has_zero, iv_corrected, iv_broadened,
                                   FeenstraWindow)
@@ -231,11 +231,11 @@ class Selection:
         return self.spectra.channels()
 
     def curves(self, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0, channel='didv',
-               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None):
-        """The chosen columns through the pipeline (npts, n), original energy order (STS.process)."""
+               iv_zero_sub=False, normalize=True, calibrate=True, hampel_didv=None, sgolay_didv=None, gate=None):
+        """The chosen columns through the pipeline (npts, n), original energy order (STS.process; `gate` the gate settings)."""
         return self.spectra.process(channel, hampel, sgolay, divide_iv, iv_broadening, iv_zero_sub=iv_zero_sub,
                                     normalize=normalize, calibrate=calibrate,
-                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                                    hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, gate=gate)
 
     @property
     def where_text(self):
@@ -700,6 +700,7 @@ class MultiAverageWindow:
         self.iv_broadened = bool(iv_broadened)
         self.calibrate = False                      # the 'calibrate' / 'normalize' box: both off at open, as in
         self.normalize = False                      # every window that uses Feenstra
+        self.gate = calibration.GATE_DEFAULT        # the box's 'gate' row and its 'H' / 'SG' boxes
         self.channel = channel if channel in STS.CHANNELS else 'didv'
         self.directory = os.path.abspath(directory)
         self.avg_dir = records.avg_dir_of(self.directory)
@@ -737,7 +738,7 @@ class MultiAverageWindow:
         self.resamples.on_change(self._on_resample_toggle)
         self.chk_feenstra = widgets.make(self.fig, 'Feenstra', 0.41, 0.12, value=self.divide_iv)
         self.chk_feenstra.on_change(self._on_feenstra_toggle)
-        self.pipeline = widgets.PipelineBox(self.fig, calibrate=self.calibrate, normalize=self.normalize)
+        self.pipeline = widgets.PipelineBox(self.fig, calibrate=self.calibrate, normalize=self.normalize, gate=self.gate)
         self.pipeline.on_change(self._on_pipeline_change)
         self.buttons = widgets.RunControls(self.fig, [('run', 0.425, 0.05), ('clear', 0.52, 0.05),
                                                       ('restore', 0.615, 0.05), ('Send to fit', 0.71, 0.05),
@@ -812,7 +813,7 @@ class MultiAverageWindow:
                 print(f"{self.tag}: a fit did not take the Feenstra settings: {exc}")
         return True
 
-    def feenstra_view(self, calibrate=True, normalize=True):
+    def feenstra_view(self, calibrate=True, normalize=True, gate=None):
         """
         The companion's view (FeenstraWindow): per active entry its kept
         sweeps in the four versions, dI/dV (the pipeline with the division
@@ -829,6 +830,7 @@ class MultiAverageWindow:
         ratio panels; the IETS channel gives a note for the ratio panel.
         """
         from sm4_Browser.normalization import normalize_abs
+        gate = self.gate if gate is None else gate
         hp, sp = self.filters.params()
         hd, sd = self.filters.params_didv()
         colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
@@ -865,7 +867,7 @@ class MultiAverageWindow:
             per = {}
             per['didv'] = f.curves(hp, sp, False, width, channel=self.channel, iv_zero_sub=zs,
                                    normalize=normalize, calibrate=calibrate,
-                                   hampel_didv=hd, sgolay_didv=sd)[order, :][:, f.acquired][:, kept]
+                                   hampel_didv=hd, sgolay_didv=sd, gate=gate)[order, :][:, f.acquired][:, kept]
             if f.iv is not None:
                 iv_a = iv_corrected(f.energy, f.iv, zs, hp, sp)
                 ivv = iv_broadened(f.energy, f.iv, width, zs, hp, sp)
@@ -876,7 +878,7 @@ class MultiAverageWindow:
                 per['ivv'] = ivv[order, :][:, f.acquired][:, kept]
                 if self.channel != 'iets':
                     per['ratio'] = f.curves(hp, sp, True, width, channel=self.channel, iv_zero_sub=zs,
-                                            normalize=normalize, calibrate=calibrate)[order, :][:, f.acquired][:, kept]
+                                            normalize=normalize, calibrate=calibrate, gate=gate)[order, :][:, f.acquired][:, kept]
             else:
                 for key in ('iv', 'ivv', 'ratio'):
                     versions[key].setdefault('note', f"{f.name} has no Current channel")
@@ -1000,6 +1002,7 @@ class MultiAverageWindow:
                 'iv_zero_sub': self.iv_zero_sub,
                 'calibrate': self.calibrate,
                 'normalize': self.normalize,
+                'gate': bool(self.gate.on), 'gate_hampel': list(self.gate.hampel), 'gate_sgolay': list(self.gate.sgolay),
                 'run': run,
                 'saved': datetime.now().isoformat(timespec='seconds')}
 
@@ -1017,7 +1020,7 @@ class MultiAverageWindow:
         print(f"{self.tag}: record written: {self.save()}")
 
     def restore(self, files, removed, hampel, sgolay, resample=None, channel='didv', calibrate=True, normalize=True,
-                hampel_didv=None, sgolay_didv=None):
+                hampel_didv=None, sgolay_didv=None, gate=None):
         """
         Rebuild the window from a record: the channel, the calibrate /
         normalize flags, the files added in order, the sweeps removed in the
@@ -1029,7 +1032,8 @@ class MultiAverageWindow:
         """
         self._set_channel(channel)
         self.calibrate, self.normalize = bool(calibrate), bool(normalize)
-        self.pipeline.set_state(self.calibrate, self.normalize)
+        self.gate = calibration.gate_settings(gate)
+        self.pipeline.set_state(self.calibrate, self.normalize, self.gate)
         self.filters.set_params(hampel, sgolay, hampel_didv, sgolay_didv)   # the sweeps are built with these settings
         self._set_resample(resample)
         for f in files:
@@ -1077,7 +1081,7 @@ class MultiAverageWindow:
         """Whether an entry with the same key is held (a file path; a selection's path and columns)."""
         return any(e['file'].key == point.key for e in self.entries)
 
-    def _sweeps_of(self, point, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None,
+    def _sweeps_of(self, point, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None, gate=None,
                    hampel_didv=None, sgolay_didv=None):
         """
         A file's acquired sweeps through the pipeline (point.curves: the
@@ -1096,7 +1100,8 @@ class MultiAverageWindow:
                          iv_zero_sub=self.iv_zero_sub,
                          normalize=self.normalize if normalize is None else normalize,
                          calibrate=self.calibrate if calibrate is None else calibrate,
-                         hampel_didv=hampel_didv, sgolay_didv=sgolay_didv)
+                         hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
+                         gate=self.gate if gate is None else gate)
         return c[order, :][:, point.acquired]
 
     def _rebuild_sweeps(self, note):
@@ -1125,12 +1130,13 @@ class MultiAverageWindow:
         self._rebuild_sweeps(widgets.filters_text(self.filters))
 
     def _on_pipeline_change(self, state):
-        """The 'calibrate' / 'normalize' box: every file's sweeps rebuilt with the flags and the run repeated."""
-        old = (self.calibrate, self.normalize)
-        self.calibrate, self.normalize = state['calibrate'], state['normalize']
-        if not self._rebuild_sweeps(f"calibration {'on' if self.calibrate else 'off'}, "
+        """The 'calibrate' / 'gate' / 'normalize' box: every file's sweeps rebuilt with the flags and the run repeated."""
+        old = (self.calibrate, self.normalize, self.gate)
+        self.calibrate, self.normalize, self.gate = state['calibrate'], state['normalize'], state.get('gate', self.gate)
+        if not self._rebuild_sweeps(f"calibration {'on' if self.calibrate else 'off'}, gate "
+                                    f"{'on' if self.gate.on else 'off'} ({self.gate.text}), "
                                     f"normalization {'on' if self.normalize else 'off'}"):
-            self.calibrate, self.normalize = old
+            self.calibrate, self.normalize, self.gate = old
             self.pipeline.set_state(*old)
 
     def _set_channel(self, channel):
@@ -1248,7 +1254,7 @@ class MultiAverageWindow:
         return np.hstack([s for _, s in sets])
 
     def _avg_sets(self, hampel=None, sgolay=None, use_controls=True, calibrate=None, normalize=None,
-                  hampel_didv=None, sgolay_didv=None):
+                  hampel_didv=None, sgolay_didv=None, gate=None):
         """
         The kept sweeps of the files that took part in the last run, one array
         (npts, n_kept) per file on the run's grid (brought there by the file's
@@ -1267,7 +1273,7 @@ class MultiAverageWindow:
                 continue
             sw = e['sweeps'] if use_controls else self._sweeps_of(e['file'], hampel, sgolay, use_controls=False,
                                                                   hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                                                   calibrate=calibrate, normalize=normalize)
+                                                                   calibrate=calibrate, normalize=normalize, gate=gate)
             sets.append((i, self._to_grid(sw[:, kept], mp)))
         return sets
 

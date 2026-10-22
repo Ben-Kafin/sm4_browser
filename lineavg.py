@@ -48,7 +48,7 @@ import os
 from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import topo, widgets, plots, records, align
+from sm4_Browser import topo, widgets, plots, records, align, calibration
 from sm4_Browser.sts import STS, curve_units_of
 from sm4_Browser.averaging import Averages, Selection, send_sets_to_fit
 from sm4_Browser.feenstra import FeenstraWindow, feenstra_titles, energy_has_zero, iv_corrected, iv_broadened
@@ -515,7 +515,7 @@ class LineAverage(Line):
     # --- the pipeline per member ---
 
     def _member_columns(self, m, divide_iv, calibrate, normalize, hampel, sgolay, channel=None,
-                        hampel_didv=None, sgolay_didv=None):
+                        hampel_didv=None, sgolay_didv=None, gate=None):
         """A member's columns (npts, N, the member's own energy order) through the pipeline (STS.process_arrays with the given division, calibrate / normalize flags and filter settings (the I(V) pair, then the dI/dV pair; the window's dI/dV settings when the latter are not given), the member's setpoint and forward-sweep reference, the window's Feenstra settings, the channel, and the normalization over the window's energy crop; never-acquired columns NaN).  ValueError for a member without an acquired spectrum, or without the I(V) when the calibration or the division needs it."""
         sel = m['selection']
         channel = self.channel if channel is None else channel
@@ -535,7 +535,8 @@ class LineAverage(Line):
                                channel=channel, acquired=acquired, iv_zero_sub=self._int_iv_zero_sub,
                                normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
                                norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
-                               ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'])
+                               ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'],
+                               gate=getattr(self, '_int_gate', None) if gate is None else gate)
         c = np.array(c, dtype=np.float64)
         c[:, ~acquired] = np.nan
         return c
@@ -991,6 +992,7 @@ class LineAverage(Line):
                 'hampel_didv_on': bool(hd_on), 'sgolay_didv_on': bool(sd_on),
                 'calibrate': bool(self._int_apply_calibration),
                 'normalize': bool(self._int_apply_normalize),
+                **calibration.gate_record(self._int_gate),
                 'divide_iv': bool(self._int_divide_iv),
                 'iv_broadening_V': float(self._int_iv_broadening),
                 'iv_broadened': bool(self._int_iv_broadened),

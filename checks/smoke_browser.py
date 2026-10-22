@@ -1791,7 +1791,8 @@ def _line_flags_off(b, exp):
     assert b.line_window_kwargs.get('apply_calibration', False) is False and b.line_window_kwargs.get('apply_normalize', False) is False
     w = open_line(b)
     assert w._int_apply_calibration is False and w._int_apply_normalize is False
-    assert w._int_pipeline_box.state() == {'calibrate': False, 'normalize': False}
+    st = w._int_pipeline_box.state()
+    assert (st['calibrate'], st['normalize']) == (False, False) and st['gate'] == w._int_gate
     plt.close(w._int_fig)
     b._goto(0)
 
@@ -2231,101 +2232,140 @@ def _rows(b, exp):
     b._goto(0)
 
 
-@check("N3 calibration anchored at the setpoint: one gain per file (V_mod or the joint fit), one offset per sweep; exact on every window and sweep direction, the forward reference, the refusals, the pipeline's notes; the file's curves")
-def _calibration_anchor(b, exp):
+@check("N3 calibration per sweep with nothing locked: a, b, c the sweep's own least squares; exact on every window and sweep direction, several columns with their own parameters, the standard errors, the IETS counterpart, the refusals, the pipeline's note; the file's curves")
+def _calibration_free(b, exp):
     import io
     import contextlib
     from scipy.integrate import cumulative_trapezoid
     from sm4_Browser import calibration
     from sm4_Browser.sts import STS
-    a_t, b_t, I_set = 2.0, 0.3, 1e-10
+    a_t, b_t, c_t = 2.0, 0.3, -0.7
 
-    def synth(V, i_a):
-        lia = 0.8 + 0.5 * np.sin(3.0 * V) + 0.3 * V ** 2
+    def synth(V, a=a_t, bb=b_t, c=c_t, k=0.0):
+        lia = 0.8 + 0.5 * np.sin(3.0 * V + k) + 0.3 * V ** 2
         X = cumulative_trapezoid(lia, V, initial=0)
-        X -= X[i_a]
-        return lia[:, None], (I_set + a_t * X + b_t * (V - V[i_a]))[:, None]
+        return lia, a * X + bb * V + c
 
-    for V, Vb in ((np.linspace(-1, 1, 201), 1.0), (np.linspace(1, -1, 201), 1.0), (np.linspace(2, 5, 301), 2.0),
-                  (np.linspace(-2, -0.8, 121), -0.8), (np.linspace(-1, 1, 201), -1.0)):
+    for V in (np.linspace(-1, 1, 201), np.linspace(1, -1, 201), np.linspace(2, 5, 301), np.linspace(-2, -0.8, 121),
+              np.linspace(-2, 1.5, 141)):
         order = np.argsort(V)
-        Vs = V[order]
-        i_a = calibration.anchor_index(Vs, Vb)
-        lia_s, I_s = synth(Vs, i_a)
+        lia_s, I_s = synth(V[order])
         inv = np.empty_like(order)
         inv[order] = np.arange(len(order))
-        cal, fits = calibration.calibrate(V, lia_s[inv], I_s[inv], V_bias=Vb, I_setpoint=I_set)   # no V_mod: the joint fit
-        assert fits[0].gain == 'joint' and abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and fits[0].c == I_set
-        assert np.allclose(cal[:, 0], a_t * lia_s[inv][:, 0] + b_t)
-        cal2, fits2 = calibration.calibrate(V, lia_s[inv], I_s[inv], vmod=1.0 / a_t, V_bias=Vb, I_setpoint=I_set)
-        assert fits2[0].gain == 'modulation' and fits2[0].a == a_t and abs(fits2[0].b - b_t) < 1e-9 and abs(fits2[0].a_joint - a_t) < 1e-9
-    # one gain for the file, one offset per column: three columns with their own offsets, exact without V_mod
-    offs = (-0.4, 0.3, 1.1)
-    lia3 = np.column_stack([0.8 + 0.5 * np.sin(3.0 * V + k) + 0.3 * V ** 2 for k in range(3)])
-    X3 = cumulative_trapezoid(lia3, V, axis=0, initial=0)
-    X3 -= X3[i_a0 := calibration.anchor_index(V, 1.0)]
-    I3 = I_set + a_t * X3 + np.asarray(offs)[None, :] * (V - V[i_a0])[:, None]
-    cal3, fits3 = calibration.calibrate(V, lia3, I3, V_bias=1.0, I_setpoint=I_set)
-    assert all(f.gain == 'joint' and abs(f.a - a_t) < 1e-9 for f in fits3)
-    assert all(abs(f.b - o) < 1e-9 for f, o in zip(fits3, offs)), [f.b for f in fits3]
-    cal3m, fits3m = calibration.calibrate(V, lia3, I3, vmod=0.02, V_bias=1.0, I_setpoint=I_set)
-    assert all(f.a == 50.0 and f.gain == 'modulation' and abs(f.a_joint - a_t) < 1e-9 for f in fits3m)
-    assert np.allclose(cal3m, 50.0 * lia3 + np.array([f.b for f in fits3m])[None, :])
-    # the reference: a column of other values takes the reference's a, b, applied to its own LIA
+        lia_c, I_c = lia_s[inv][:, None], I_s[inv][:, None]       # the column in the sweep's own order
+        cal, fits = calibration.calibrate(V, lia_c, I_c)
+        assert (abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and abs(fits[0].c - c_t) < 1e-9
+                and np.isnan(fits[0].a_mod)), (fits[0].a, fits[0].b, fits[0].c)
+        assert np.allclose(cal[:, 0], a_t * lia_c[:, 0] + b_t) and fits[0].rms < 1e-9
+        # a constant added to the current goes into c alone; the modulation amplitude only sets the check
+        _, f2 = calibration.calibrate(V, lia_c, I_c + 5.0, vmod=1.0 / a_t)
+        assert (abs(f2[0].a - a_t) < 1e-9 and abs(f2[0].b - b_t) < 1e-9 and abs(f2[0].c - (c_t + 5.0)) < 1e-9
+                and f2[0].a_mod == a_t)
+    # several columns, each its own a, b, c
     V = np.linspace(-1, 1, 201)
-    i_a = calibration.anchor_index(V, 1.0)
-    lia_f, I_f = synth(V, i_a)
-    lia_r, I_r = lia_f * 3.0 + 0.1, I_f * 0.5
-    cal, fits = calibration.calibrate(V, lia_r, I_r, V_bias=1.0, I_setpoint=I_set, ref=(lia_f, I_f))
-    assert abs(fits[0].a - a_t) < 1e-9 and abs(fits[0].b - b_t) < 1e-9 and np.allclose(cal[:, 0], a_t * lia_r[:, 0] + b_t)
-    ref_nan = (np.full_like(lia_f, np.nan), I_f)                      # no forward sweep: the column on its own
-    _, fits_own = calibration.calibrate(V, lia_f, I_f, V_bias=1.0, I_setpoint=I_set, ref=ref_nan)
-    assert abs(fits_own[0].a - a_t) < 1e-9
+    pars = ((2.0, -0.4, 0.1), (3.5, 0.3, -0.2), (1.2, 1.1, 0.0))
+    cols3 = [synth(V, a, bb, c, k) for k, (a, bb, c) in enumerate(pars)]
+    lia3 = np.column_stack([x[0] for x in cols3])
+    I3 = np.column_stack([x[1] for x in cols3])
+    cal3, fits3 = calibration.calibrate(V, lia3, I3)
+    for f, (a, bb, c) in zip(fits3, pars):
+        assert abs(f.a - a) < 1e-9 and abs(f.b - bb) < 1e-9 and abs(f.c - c) < 1e-9, (f.a, f.b, f.c)
+    assert np.allclose(cal3, lia3 * np.array([p[0] for p in pars])[None, :] + np.array([p[1] for p in pars])[None, :])
+    # the standard errors: with noise on the current the fit lands within a few standard errors of the truth
+    rng = np.random.default_rng(3)
+    _, fn = calibration.calibrate(V, lia3[:, :1], I3[:, :1] + 1e-3 * rng.standard_normal((V.size, 1)))
+    assert all(np.isfinite(fn[0].se)) and abs(fn[0].a - pars[0][0]) < 6 * fn[0].se[0] and abs(fn[0].b - pars[0][1]) < 6 * fn[0].se[1]
+    # the setpoint and the reference are accepted and not used: a reference of other values changes nothing
+    _, fr = calibration.calibrate(V, lia3, I3, V_bias=1.0, I_setpoint=1e-10, ref=(lia3 * 3.0 + 0.1, I3 * 0.5))
+    assert all(abs(f.a - g.a) < 1e-12 and abs(f.b - g.b) < 1e-12 for f, g in zip(fr, fits3))
+    # three columns: too few for the gate (the Savitzky-Golay length), every sweep its own pair
+    assert all(not f.gate.ran and f.replaced == '' and f.a == f.a_own and f.b == f.b_own for f in fits3)
+    # the gate: twelve consistent columns with a little noise and one disturbed sweep (its own fit far off);
+    # the disturbed sweep takes the trend's a on the a stage, b refitted, and the others keep their own pairs
+    rng = np.random.default_rng(5)
+    lia12 = np.column_stack([0.8 + 0.5 * np.sin(3.0 * V + 0.2 * k) + 0.3 * V ** 2 for k in range(12)])
+    X12 = cumulative_trapezoid(lia12, V, axis=0, initial=0)
+    par = np.array([[2.0 + 0.02 * rng.standard_normal(), 0.3 + 0.01 * rng.standard_normal(), -0.7] for _ in range(12)])
+    par[7] = (5.0, -2.0, -0.7)                                            # the disturbed sweep
+    I12 = X12 * par[:, 0][None, :] + V[:, None] * par[:, 1][None, :] + par[:, 2][None, :] + 1e-4 * rng.standard_normal(X12.shape)
+    cal12, f12 = calibration.calibrate(V, lia12, I12)
+    rec = f12[0].gate
+    assert rec.ran and rec.settings == calibration.GATE_DEFAULT and 7 in rec.replaced_a, (rec.replaced_a, rec.replaced_b)
+    assert f12[7].replaced in ('a', 'ab') and abs(f12[7].a_own - 5.0) < 0.05 and abs(f12[7].a - 2.0) < 0.1 and abs(f12[7].b - 0.3) < 0.1
+    assert all(f.replaced == '' and f.a == f.a_own for k, f in enumerate(f12) if k != 7 and k not in rec.replaced_a and k not in rec.replaced_b)
+    assert np.allclose(cal12, lia12 * np.array([f.a for f in f12])[None, :] + np.array([f.b for f in f12])[None, :])
+    assert "took the trend's a" in calibration.gate_text(f12)
+    # the gate off: every sweep its own pair, the record says why
+    _, f12o = calibration.calibrate(V, lia12, I12, gate=False)
+    assert all(f.a == f.a_own and f.b == f.b_own and f.replaced == '' for f in f12o) and 'off' in f12o[0].gate.note
+    # the settings: validated, from a record and back
+    g = calibration.gate_settings({'on': False, 'hampel': (2, 2.5), 'sgolay': (7, 1)})
+    assert g == calibration.GateSettings(False, (2, 2.5), (7, 1)) and g.text == "H 2,2.5 SG 7,1"
+    assert calibration.gate_from_record(calibration.gate_record(g)) == g and calibration.gate_from_record({}) == calibration.GATE_DEFAULT
+    for bad in ({'hampel': (0, 3)}, {'sgolay': (8, 2)}, {'sgolay': (3, 3)}, {'hampel': ('x', 3)}):
+        try:
+            calibration.gate_settings(bad)
+            raise AssertionError(f"not refused: {bad}")
+        except ValueError:
+            pass
+    _, f12g = calibration.calibrate(V, lia12, I12, gate={'sgolay': (11, 2)})
+    assert f12g[0].gate.settings.sgolay == (11, 2) and f12g[0].gate.ran
+    # the pipeline box: the gate row and its boxes, state and set_state, a refused edit put back
+    from sm4_Browser import widgets
+    figp = plt.figure(figsize=(6, 4))
+    pb = widgets.PipelineBox(figp, calibrate=True, normalize=False)
+    st = pb.state()
+    assert st['calibrate'] and not st['normalize'] and st['gate'] == calibration.GATE_DEFAULT and pb.gate.on
+    seen = []
+    pb.on_change(lambda state: seen.append(state))
+    pb.set_state(gate={'on': False, 'hampel': (2, 2), 'sgolay': (7, 1)})
+    assert not seen and not pb.gate.on and pb.gate.hampel == (2, 2.0) and pb.box_h.value == "2,2" and pb.box_sg.value == "7,1"
+    pb.box_sg.set("8,2")
+    pb._on_edit('sgolay', "8,2")                      # refused (even length): put back, nothing fired
+    assert pb.box_sg.value == "7,1" and not seen
+    pb._on_edit('sgolay', "9,2")                      # accepted: fired with the new settings
+    assert seen and seen[-1]['gate'].sgolay == (9, 2)
+    plt.close(figp)
     assert calibration.gain_from_modulation(0.01) == 100.0 and calibration.gain_from_modulation(0.01, 2) == 40000.0
     assert calibration.gain_from_modulation(None) is None and calibration.gain_from_modulation(0.0) is None
-    # the IETS counterpart on a window away from 0 V
+    # the IETS counterpart: a, b, c, d
     Vq = np.linspace(2, 5, 301)
-    i_q = calibration.anchor_index(Vq, 2.0)
     S = 0.4 + 0.3 * np.cos(2.0 * Vq)
-    Y = cumulative_trapezoid(S, Vq, initial=0)
-    Y -= Y[i_q]
-    Z = cumulative_trapezoid(Y, Vq, initial=0)
-    Z -= Z[i_q]
-    U = Vq - Vq[i_q]
-    Iq = I_set + a_t * Z + b_t * U ** 2 / 2 + 0.7 * U
-    _, fq = calibration.calibrate_iets(Vq, S[:, None], Iq[:, None], V_bias=2.0, I_setpoint=I_set)
-    assert abs(fq[0].a - a_t) < 1e-6 and abs(fq[0].b - b_t) < 1e-6 and abs(fq[0].c - 0.7) < 1e-6, (fq[0].a, fq[0].b, fq[0].c)
-    _, fq2 = calibration.calibrate_iets(Vq, S[:, None], Iq[:, None], vmod=np.sqrt(4.0 / a_t), V_bias=2.0, I_setpoint=I_set)
-    assert fq2[0].gain == 'modulation' and abs(fq2[0].a - a_t) < 1e-9 and abs(fq2[0].b - b_t) < 1e-6
-    # the refusals: no sample at the setpoint bias, no setpoint recorded
-    for kw in (dict(V_bias=1.5, I_setpoint=I_set), dict(V_bias=None, I_setpoint=I_set), dict(V_bias=1.0, I_setpoint=None)):
+    Z = cumulative_trapezoid(cumulative_trapezoid(S, Vq, initial=0), Vq, initial=0)
+    Iq = a_t * Z + b_t * Vq ** 2 / 2 + 0.7 * Vq - 0.2
+    calq, fq = calibration.calibrate_iets(Vq, S[:, None], Iq[:, None], vmod=np.sqrt(4.0 / a_t))
+    assert (abs(fq[0].a - a_t) < 1e-6 and abs(fq[0].b - b_t) < 1e-6 and abs(fq[0].c - 0.7) < 1e-6
+            and abs(fq[0].d + 0.2) < 1e-6), (fq[0].a, fq[0].b, fq[0].c, fq[0].d)
+    assert abs(fq[0].a_mod - a_t) < 1e-9 and np.allclose(calq[:, 0], a_t * S + b_t)
+    # the refusals: no current; a column the regression cannot determine (an all-zero LIA)
+    for args in ((V, lia3, None), (V, np.zeros_like(lia3), I3)):
         try:
-            calibration.calibrate(V, lia_f, I_f, **kw)
-            raise AssertionError(f"not refused: {kw}")
+            calibration.calibrate(*args)
+            raise AssertionError("not refused")
         except ValueError as exc:
-            assert 'setpoint' in str(exc), str(exc)
+            assert 'current' in str(exc) or 'not determined' in str(exc), str(exc)
     # the pipeline: a refused file is left in its units, said once
     STS._notes_said.clear()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        c1 = STS.process_arrays(V, lia_f, I_f, normalize=False, calibrate=True, V_bias=1.5, I_setpoint=I_set)
-        c2 = STS.process_arrays(V, lia_f, I_f, normalize=False, calibrate=True, V_bias=1.5, I_setpoint=I_set)
-    assert np.allclose(c1, lia_f) and np.allclose(c2, lia_f)
+        c1 = STS.process_arrays(V, np.zeros_like(lia3), I3, normalize=False, calibrate=True)
+        c2 = STS.process_arrays(V, np.zeros_like(lia3), I3, normalize=False, calibrate=True)
+    assert np.allclose(c1, 0.0) and np.allclose(c2, 0.0)
     assert buf.getvalue().count("calibration not applied") == 1, buf.getvalue()
-    # the file's curves: every acquired column a·LIA + b_j, a the file's gain 1/V_mod, b_j its own offset
+    # the file's curves: every acquired column a_j·LIA + b_j, the sweep's own least squares
     g = goto_kind(b, 'grid')
     cols = np.flatnonzero(np.asarray(g.acquired, dtype=bool))
-    _, fits = calibration.calibrate(g.energy, g.lia[:, cols], g.iv[:, cols], g.vmod, V_bias=g.V_bias, I_setpoint=g.I_setpoint)
-    assert g.vmod and all(cf.a == 1.0 / g.vmod and cf.gain == 'modulation' for cf in fits)
+    cal, fits = calibration.calibrate(g.energy, g.lia[:, cols], g.iv[:, cols], g.vmod)
+    assert g.vmod and all(np.isfinite(cf.a) and cf.a_mod == 1.0 / g.vmod for cf in fits)
+    assert np.allclose(cal, g.lia[:, cols] * np.array([cf.a for cf in fits])[None, :] + np.array([cf.b for cf in fits])[None, :])
     STS._notes_said.clear()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         c = g.curves(normalize=False, calibrate=True)
         g.curves(normalize=False, calibrate=True)
-    assert buf.getvalue().count("calibration gain a = ") == 1 and "1 / V_mod" in buf.getvalue(), buf.getvalue()
+    assert buf.getvalue().count("calibration per sweep") == 1 and "1 / V_mod" in buf.getvalue(), buf.getvalue()
     expect = np.column_stack([cf.a * g.lia[:, j] + cf.b for j, cf in zip(cols, fits)])
-    assert np.allclose(c[:, cols], expect, rtol=1e-9, atol=0), "the pipeline's calibration is the anchored regression"
-    assert all(cf.c == g.I_setpoint for cf in fits)
+    assert np.allclose(c[:, cols], expect, rtol=1e-9, atol=0), "the pipeline's calibration is the per-sweep regression"
     b._goto(0)
 
 

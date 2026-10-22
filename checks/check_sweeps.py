@@ -66,19 +66,18 @@ def run():
         c = f.curves(channel='didv', normalize=False, calibrate=True)
         ok(f"[{layout}] the pipeline runs on the view", c.shape == (21, 30) and np.isfinite(c).all())
         # The calibration's forward-sweep reference: none on the forward view, the forward sweeps' mean
-        # raw columns on the reverse and all-sweeps views; the reverse view calibrated with the forward
-        # sweeps' a, b (calibration.calibrate's `ref`), anchored at the setpoint.
+        # raw columns on the reverse and all-sweeps views (calibration.calibrate's `ref`, handed over and
+        # not used: every sweep is regressed on its own data).
         from sm4_Browser import calibration
         ok(f"[{layout}] the forward view is its own reference", fw.spectra.lia_ref is None and fw.spectra.iv_ref is None)
         ok(f"[{layout}] the reverse and all-sweeps views carry the forward sweeps' columns",
            rv.spectra.lia_ref is not None and np.allclose(rv.spectra.lia_ref, fw.spectra.lia)
            and np.allclose(rv.spectra.iv_ref, fw.spectra.iv) and av.spectra.lia_ref is not None
            and np.allclose(av.spectra.lia_ref, fw.spectra.lia))
-        _, fits = calibration.calibrate(fw.energy, fw.spectra.lia, fw.spectra.iv, fw.vmod, V_bias=fw.V_bias,
-                                        I_setpoint=fw.I_setpoint)
+        _, fits = calibration.calibrate(rv.energy, rv.spectra.lia, rv.spectra.iv, rv.vmod)
         cr = rv.curves(channel='didv', normalize=False, calibrate=True)
         exp = np.column_stack([cf.a * rv.spectra.lia[:, j] + cf.b for j, cf in enumerate(fits)])
-        ok(f"[{layout}] the reverse view takes the forward sweeps' a, b", np.allclose(cr, exp))
+        ok(f"[{layout}] the reverse view is calibrated on its own sweeps", np.allclose(cr, exp))
         try:
             img = f.topo_raw('forward')
             ok(f"[{layout}] the grid's topo pages read", img.shape == (5, 6))

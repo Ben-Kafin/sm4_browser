@@ -96,10 +96,12 @@ class STS:
     the dI/dV Hampel and Savitzky-Golay filters and the recorded current
     through the I(V) ones, each pair once (filters; the two targets have
     their own toggles, the same settings), calibration against that
-    current (calibration.calibrate / calibrate_iets: the gain-plus-offset
-    regression of calibration.py anchored at the setpoint; a view of
-    reverse sweeps regresses on the pixel's forward sweeps, lia_ref /
-    iv_ref), the division by the broadened I/V of the same current when
+    current (calibration.calibrate / calibrate_iets: per sweep the least
+    squares of the gain, the offset and the constant of integration of
+    calibration.py, nothing locked; every sweep on its own data; then the
+    gate on the dI/dV gains and offsets as the window's 'gate' row sets
+    it, calibration.gate_sweeps), the division by the broadened I/V of
+    the same current when
     divide_iv is on (feenstra; dI/dV only), and unit-area normalization
     (normalization).  Every step takes plain arrays, so the Line window
     (one chunk), the fit (its raw sets), the Map, and the averaging windows
@@ -693,9 +695,10 @@ class STS:
         A raw set dict: energy (npts,), lia and iv (npts, n) in physical units
         (the loader's data), the units of each (RHK_Zunits; None when not
         known), the modulation amplitude vmod (V; None when not recorded),
-        the setpoint V_bias (V) and I_setpoint (A) the calibration anchors
-        at, and the forward-sweep reference columns lia_ref / iv_ref (npts,
-        n; None when the columns are their own reference).
+        the setpoint V_bias (V) and I_setpoint (A) (recorded; the calibration
+        does not use them), and the forward-sweep reference columns lia_ref /
+        iv_ref (npts, n; None when the columns are their own reference; the
+        calibration does not use them either).
         """
         energy = np.asarray(energy, dtype=np.float64)
         lia = np.asarray(lia, dtype=np.float64)
@@ -800,50 +803,44 @@ class STS:
             print(text)
 
     @staticmethod
-    def _gain_text(name, fit, vmod, channel):
-        """One console line: the file's calibration gain, its source, and the joint fit's value beside it."""
+    def _gain_text(name, fits, vmod, channel, cols=None):
+        """One console line: the file's fitted gains (per sweep: their range and median), the gate's doing (dI/dV), and the modulation amplitude's check."""
         unit = "/V²" if channel == 'iets' else "/V"
-        if fit.gain == 'modulation':
-            rel = ("4 / V_mod²" if channel == 'iets' else "1 / V_mod")
-            return (f"{name}: calibration gain a = {fit.a:.4g} {unit} = {rel} (V_mod = {float(vmod) * 1e3:.3g} mV); "
-                    f"the joint fit over the columns gives {fit.a_joint:.3g} {unit}; the offset per sweep.")
-        return (f"{name}: no modulation amplitude recorded; the calibration gain is the joint fit over the "
-                f"columns, a = {fit.a:.4g} {unit}; the offset per sweep.")
-
-    @staticmethod
-    def _gate_text(name, gate, fits, cols):
-        """One console line: the offset gate's width and the sweeps it replaced (the file's column indices)."""
-        n = len(fits)
-        if not np.isfinite(gate.tol):
-            return (f"{name}: offset gate not run ({n} column(s), fewer than {calibration.GATE_MIN_COLUMNS}); "
-                    f"every sweep keeps its own offset.")
-        what = "; ".join(f"column {int(cols[k])}: {fits[k].b * 1e12:.4g} → the touching sweeps' mean {gate.ref[k] * 1e12:.4g}"
-                         + (f" × {gate.ratio[k]:.3g}" if k not in gate.plain else " (plain: the far end disturbed too)")
-                         + f" = {gate.b[k] * 1e12:.4g}" for k in gate.replaced)
-        return (f"{name}: offset gate ±{gate.tol * 1e12:.3g} pA/V ({calibration.GATE_FACTOR:g} × the robust scale of the "
-                f"departures from the two touching sweeps' mean) over {n} column(s): "
-                f"{gate.replaced.size} sweep(s) replaced" + (f" ({what})" if what else "") + ".")
+        a = np.array([ft.a for ft in fits], dtype=np.float64)
+        text = (f"{name}: calibration per sweep (a, b" + (", c, d" if channel == 'iets' else ", c")
+                + f" by least squares, nothing locked); gain a from {a.min():.4g} to {a.max():.4g} {unit}, "
+                f"median {np.median(a):.4g} {unit}")
+        if channel != 'iets':
+            text += "; " + calibration.gate_text(fits, cols)
+        a_mod = fits[0].a_mod
+        if np.isfinite(a_mod):
+            rel = "4 / V_mod²" if channel == 'iets' else "1 / V_mod"
+            return text + f"; {rel} = {a_mod:.4g} {unit} (V_mod = {float(vmod) * 1e3:.3g} mV) as the check."
+        return text + "; no modulation amplitude recorded."
 
     @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
                        calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
-                       hampel_didv=None, sgolay_didv=None, name=None):
+                       hampel_didv=None, sgolay_didv=None, name=None, gate=None):
         """
         Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
         the recorded current through the I(V) ones (hampel, sgolay), each
         once (filters.filter_lia), calibration of the channel's columns
         against that current (when present and `calibrate` is on;
-        calibration.calibrate for dI/dV, calibrate_iets for IETS, anchored
-        at the setpoint V_bias / I_setpoint; `ref` = (lia_ref, iv_ref) the
-        forward-sweep reference columns of a reverse-sweep view, through
-        the same filters; the gain one per file from the modulation
-        amplitude `vmod` with the joint fit over the columns beside it, the
-        offset per column; off, the columns stay in the channel page's
-        units; a file without a sample at its setpoint bias, or without the
-        setpoint, is not calibrated: calibration.anchor_index, said once on
-        the console; with `name` the file's, the gain and its check are said
+        calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep
+        the least squares of the gain, the offset and the constant of
+        integration, nothing locked, then the gate on the dI/dV gains and
+        offsets as `gate` sets it, calibration.GateSettings or None for the
+        defaults (the window's 'gate' row with its 'H' and 'SG' boxes:
+        calibration.gate_sweeps); V_bias / I_setpoint and `ref` =
+        (lia_ref, iv_ref), the forward-sweep reference columns of a
+        reverse-sweep view through the same filters, are handed over and
+        not used; off, the columns stay in the channel page's units; a
+        column the regression cannot determine refuses the file, said once
+        on the console; with `name` the file's, the gains, the gate's
+        doing and the check from the modulation amplitude `vmod` are said
         once per file), the division by the broadened I/V of the same current when
         divide_iv is on (dI/dV only; needs I(V); iv_broadening is the
         broadening width in volts, 0 the plain I/V; iv_zero_sub subtracts
@@ -851,22 +848,15 @@ class STS:
         feenstra.iv_corrected; the division is told not to filter again),
         unit-area normalization (normalization.normalize; skipped with
         `normalize` off: the areas are then NaN; norm_range (lo, hi) limits
-        the area to the samples inside that energy range).  The dI/dV offsets
-        pass the safety calibration.gate_offsets on the call's acquired
-        columns in their order: a sweep whose regressed b departs from the
-        two sweeps touching it beyond the file's scatter takes their mean b
-        scaled by its relation to them in the second regression anchored
-        at the sample nearest 0 V (calibration.far_offsets; said once per
-        file with the gate's width and the replaced sweeps; a call with
-        fewer columns than the gate needs says so).  The filters reach every
+        the area to the samples inside that energy range).  The filters reach every
         use of the current here, the calibration included.  Columns flagged
         as never acquired in `acquired` run through the division with the
         others (see the comment below), are left out of the calibration,
         and come back as zero columns (area 0).  With return_areas, returns
         (curves, areas).  vmod (the file's modulation amplitude,
-        RHK_CH1Drive_Amplitude) is handed to the calibration, which accepts
-        it and does not use it (calibration.py's regression needs none; a
-        calibration written to divide by the modulation amplitude would).
+        RHK_CH1Drive_Amplitude) is handed to the calibration for the check
+        it carries beside the fitted gains (calibration.py's regression
+        does not use it).
         """
         lia = np.asarray(lia, dtype=np.float64)
         if acquired is None:
@@ -890,19 +880,11 @@ class STS:
                          filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
             fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
             try:
-                cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f)
-                if channel != 'iets' and fits:
-                    # The safety on the offsets: the second regression at the other end of the window, the
-                    # gate on the two touching sweeps, the replaced sweeps' curves recomputed.
-                    b2 = calibration.far_offsets(energy, c[:, cols], iv[:, cols], fits[0].a, ref=ref_f)
-                    gate = calibration.gate_offsets([ft.b for ft in fits], b2)
-                    for k in gate.replaced:
-                        cal[:, k] = fits[k].a * c[:, cols[k]] + gate.b[k]
-                    if name:
-                        cls._note_once(cls._gate_text(name, gate, fits, cols))
+                cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f,
+                               gate=gate)
                 c[:, cols] = cal
                 if name and fits:
-                    cls._note_once(cls._gain_text(name, fits[0], vmod, channel))
+                    cls._note_once(cls._gain_text(name, fits, vmod, channel, cols))
             except ValueError as exc:
                 cls._note_once(f"calibration not applied: {exc}")
         if divide_iv and channel != 'iets':
@@ -921,8 +903,8 @@ class STS:
 
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                 return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,
-                hampel_didv=None, sgolay_didv=None):
-        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint and a sweep view's forward reference from the file)."""
+                hampel_didv=None, sgolay_didv=None, gate=None):
+        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint and a sweep view's forward reference from the file; `gate` the window's gate settings)."""
         ref = (getattr(self, 'iets_ref' if channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
         return self.process_arrays(self.energy, self.channel(channel), self.iv, hampel, sgolay, divide_iv,
                                    iv_broadening, return_areas=return_areas, channel=channel,
@@ -930,7 +912,7 @@ class STS:
                                    calibrate=calibrate, vmod=getattr(self, 'vmod', None),
                                    V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None),
                                    ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                   name=getattr(self, 'name', None))
+                                   name=getattr(self, 'name', None), gate=gate)
 
 
 if __name__ == '__main__':

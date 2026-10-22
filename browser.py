@@ -288,7 +288,8 @@ IETS by the 'channel' choice of the browser and of the windows) are never
 filtered.
 Order per curve (STS.process_arrays): calibration against the filtered
 I(V) (calibration.calibrate for dI/dV, calibration.calibrate_iets for
-IETS: the gain-plus-offset regression anchored at the setpoint); the division by the
+IETS: per sweep the least squares of the gain, the offset and the constant
+of integration, nothing locked); the division by the
 filtered, broadened I/V when the window's 'Feenstra' toggle is on (on by
 default; the browser has no toggle: its spectra panels always show the
 Feenstra set; Feenstra's normalized conductance: each calibrated dI/dV
@@ -597,7 +598,7 @@ import weakref
 from collections import deque
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import fit, widgets, plots
+from sm4_Browser import fit, widgets, plots, calibration
 from sm4_Browser.sm4file import (Sm4File, list_sm4_files, header_cache, file_duration_s, kind_from_types, filename_stamp,
                                  stamp_text, geom_contains)
 from sm4_Browser.sts import STS, curve_units
@@ -1580,12 +1581,12 @@ class _BrowserCore:
             zs, width = self.iv_zero_sub, self.iv_width()
             hp, sp = self.filters.params()
             hd, sd = self.filters.params_didv()
-            cal, norm = self.pipeline.calibrate, self.pipeline.normalize
+            cal, norm, gate = self.pipeline.calibrate, self.pipeline.normalize, self.pipeline.gate
             try:
                 c = f.curves(hp, sp, False, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal,
-                             hampel_didv=hd, sgolay_didv=sd)
+                             hampel_didv=hd, sgolay_didv=sd, gate=gate)
                 c_ratio = (f.curves(hp, sp, True, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal,
-                                    hampel_didv=hd, sgolay_didv=sd)
+                                    hampel_didv=hd, sgolay_didv=sd, gate=gate)
                            if four else None)
             except Exception as exc:
                 ax.text(0.5, 0.5, f"spectra not processed: {exc}", ha='center', va='center',
@@ -1598,7 +1599,8 @@ class _BrowserCore:
                 # dashed, through the same pipeline (sweeps.py); the other panels show the default view.
                 try:
                     ca = f.spectra_all.process(channel, hp, sp, False, width, iv_zero_sub=zs, normalize=norm,
-                                               calibrate=cal and f.iv is not None, hampel_didv=hd, sgolay_didv=sd)
+                                               calibrate=cal and f.iv is not None, hampel_didv=hd, sgolay_didv=sd,
+                                               gate=gate)
                     keep = np.asarray(f.spectra_all.acquired, dtype=bool)
                     dirs = f.sweep_info['dir']
                     for sgn, ls in ((1, '-'), (-1, '--')):
@@ -1612,7 +1614,7 @@ class _BrowserCore:
                 ax.plot(V, c[order, :][:, f.acquired], lw=0.5, alpha=0.6)
             # Sweeps stopped before their end (left out of every average and fit) are shown here too,
             # dashed, over the points they recorded, through the same pipeline.
-            unf = self._unfinished_curves(f, channel, hp, sp, width, zs, norm, cal, four, hd, sd)
+            unf = self._unfinished_curves(f, channel, hp, sp, width, zs, norm, cal, four, hd, sd, gate)
             for key, a in (('main', ax), ('ratio', self.ax_spec_ratio), ('iv', self.ax_spec_iv),
                            ('ivv', self.ax_spec_ivv)):
                 if key != 'main' and not four:
@@ -1675,7 +1677,7 @@ class _BrowserCore:
             ax.set_xticks([])
             ax.set_yticks([])
 
-    def _unfinished_curves(self, f, channel, hp, sp, width, zs, norm, cal, four, hd=None, sd=None):
+    def _unfinished_curves(self, f, channel, hp, sp, width, zs, norm, cal, four, hd=None, sd=None, gate=None):
         """
         The sweeps of the file stopped before their end (written, but ending in never-written
         samples, so not kept): each through the same pipeline as the kept ones over the points
@@ -1705,12 +1707,12 @@ class _BrowserCore:
                 setpoint = dict(V_bias=getattr(sp_, 'V_bias', None), I_setpoint=getattr(sp_, 'I_setpoint', None))
                 c = STS.process_arrays(e, lia, iv, hp, sp, False, width, channel=channel, iv_zero_sub=zs,
                                        normalize=norm, calibrate=cal and iv is not None, vmod=getattr(sp_, 'vmod', None),
-                                       hampel_didv=hd, sgolay_didv=sd, **setpoint)
+                                       hampel_didv=hd, sgolay_didv=sd, gate=gate, **setpoint)
                 out['main'].append((e[o], c[o, 0]))
                 if four and iv is not None:
                     r = STS.process_arrays(e, lia, iv, hp, sp, True, width, channel=channel, iv_zero_sub=zs,
                                            normalize=norm, calibrate=cal, vmod=getattr(sp_, 'vmod', None),
-                                           hampel_didv=hd, sgolay_didv=sd, **setpoint)
+                                           hampel_didv=hd, sgolay_didv=sd, gate=gate, **setpoint)
                     out['ratio'].append((e[o], r[o, 0]))
                     a = iv_corrected(e, iv, zs, hp, sp)
                     b = iv_broadened(e, iv, width, zs, hp, sp)
@@ -1820,8 +1822,9 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _on_pipeline_change(self, state):
-        """The 'calibrate' / 'normalize' box: the spectra panels redrawn with the two pipeline steps as set."""
-        print(f"spectra panels: calibrate {'on' if state['calibrate'] else 'off'}, normalize {'on' if state['normalize'] else 'off'}.")
+        """The 'calibrate' / 'gate' / 'normalize' box: the spectra panels redrawn with the pipeline steps as set."""
+        print(f"spectra panels: calibrate {'on' if state['calibrate'] else 'off'}, gate "
+              f"{'on' if state['gate'].on else 'off'} ({state['gate'].text}), normalize {'on' if state['normalize'] else 'off'}.")
         self._draw_spectra()
         self.fig.canvas.draw_idle()
 
@@ -2295,6 +2298,7 @@ class _BrowserCore:
             brd = bool(rec.get('iv_broadened', bro > 0))
             cal = bool(rec.get('calibrate', True))         # format 5: the pipeline flags; older records: both on
             nrm = bool(rec.get('normalize', True))
+            gt = calibration.gate_from_record(rec)         # the gate settings; older records: the defaults
         else:
             index = self._next_avg_index()
             name = None                                    # avg<index>
@@ -2352,7 +2356,8 @@ class _BrowserCore:
         try:
             w = self._new_avg_window(index, divide_iv=div, iv_broadening=bro if div else self.iv_broadening,
                                      channel=ch, name=name, iv_zero_sub=zs, iv_broadened=brd)
-            w.restore(files, removed, hp, sp, rs, ch, calibrate=cal, normalize=nrm, hampel_didv=hd, sgolay_didv=sd)
+            w.restore(files, removed, hp, sp, rs, ch, calibrate=cal, normalize=nrm, hampel_didv=hd, sgolay_didv=sd,
+                      gate=gt)
         except Exception as exc:
             print(f"avg{index} load: {exc}")
             return
@@ -2402,6 +2407,7 @@ class _BrowserCore:
         kw['sgolay_filter_params'] = rec.get('sgolay', kw.get('sgolay_filter_params'))
         kw['apply_calibration'] = bool(rec.get('calibrate', True))
         kw['apply_normalize'] = bool(rec.get('normalize', True))
+        kw['gate'] = calibration.gate_from_record(rec)
         kw['divide_by_iv'] = bool(rec.get('divide_iv', True))
         kw['iv_broadening_V'] = float(rec.get('iv_broadening_V', self.iv_broadening))
         kw['iv_zero_sub'] = bool(rec.get('iv_zero_sub', self.iv_zero_sub))
@@ -2931,13 +2937,38 @@ class QStepButtons(widgets.StepButtons):
 
 
 class QPipelineBox(widgets.PipelineBox):
-    """widgets.PipelineBox (the 'calibrate' / 'normalize' rows, callback(state)) on a native box."""
+    """
+    widgets.PipelineBox on native widgets: one group box with the rows 'calibrate', 'gate' (indented),
+    the gate's 'H' and 'SG' boxes on a row each under it, and 'normalize' (the settings column stays
+    as narrow as the two-row box was); callback(state).
+    """
 
-    def __init__(self, calibrate=True, normalize=True):
-        self.box = QChecks('pipeline', widgets.SPECS['pipeline']['labels'], [calibrate, normalize])
+    def __init__(self, calibrate=True, normalize=True, gate=None):
+        from sm4_Browser import calibration
+        self._gate = calibration.gate_settings(gate)
+        self.box = QChecks('pipeline', widgets.SPECS['pipeline']['labels'], [calibrate, self._gate.on, normalize])
+        self.box_h = QText('gate H', self._fmt(self._gate.hampel), label='H', width=36)
+        self.box_sg = QText('gate SG', self._fmt(self._gate.sgolay), label='SG', width=36)
         self._cb = None
-        self.box.on_change(lambda label, states: self._fire())
+        self._quiet = False
+        self.box.on_change(lambda label, states: self._on_toggle())
+        self.box_h.on_change(lambda text: self._on_edit('hampel', text))
+        self.box_sg.on_change(lambda text: self._on_edit('sgolay', text))
+        # The two boxes as two rows under the gate row, inside the group box (one row each: the
+        # settings column must stay as narrow as the box was, so that the window still goes portrait).
+        lay = self.box.qt.layout()
+        for i, qtext in enumerate((self.box_h, self.box_sg)):
+            row = QtWidgets.QWidget()
+            rl = QtWidgets.QHBoxLayout(row)
+            rl.setContentsMargins(18, 0, 0, 0)
+            rl.setSpacing(2)
+            rl.addWidget(qtext.qt)
+            rl.addStretch(1)
+            lay.insertWidget(2 + i, row)
         self.qt = self.box.qt
+
+    def show(self, flag):
+        self.qt.setVisible(bool(flag))
 
 
 class QTopoProcessorBox(widgets.TopoProcessorBox):
