@@ -532,10 +532,20 @@ class LineAverage(Line):
                                normalize=normalize, calibrate=calibrate, vmod=sel.vmod,
                                norm_range=self._int_e_range, V_bias=sel.V_bias, I_setpoint=sel.I_setpoint,
                                ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, name=m['name'],
-                               gate=getattr(self, '_int_gate', None) if gate is None else gate)
+                               gate=getattr(self, '_int_gate', None) if gate is None else gate,
+                               sweeps=self._member_sweeps(sel, raw.shape[1]))
         c = np.array(c, dtype=np.float64)
         c[:, ~acquired] = np.nan
         return c
+
+    @staticmethod
+    def _member_sweeps(sel, n):
+        """A member's columns' sweep directions for the Vbias lock (STS.sweep_pins), None when they do not match its n columns."""
+        try:
+            sw = sel.spectra.sweep_pins()
+        except Exception:
+            return None
+        return sw if len(sw[0]) == n else None
 
     def _member_current(self, m, normalize):
         """A member's current in amps (filters and 0Vsub as set), unit area per location with `normalize`; None without the channel."""

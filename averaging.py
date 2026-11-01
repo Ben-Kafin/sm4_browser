@@ -1025,7 +1025,7 @@ class MultiAverageWindow:
                 'iv_zero_sub': self.iv_zero_sub,
                 'calibrate': self.calibrate,
                 'normalize': self.normalize,
-                'gate': bool(self.gate.on), 'gate_hampel': list(self.gate.hampel), 'gate_sgolay': list(self.gate.sgolay),
+                **calibration.gate_record(self.gate),      # the gate and the locks (gate_from_record reads them)
                 'run': run,
                 'saved': datetime.now().isoformat(timespec='seconds')}
 
@@ -1157,7 +1157,7 @@ class MultiAverageWindow:
         old = (self.calibrate, self.normalize, self.gate)
         self.calibrate, self.normalize, self.gate = state['calibrate'], state['normalize'], state.get('gate', self.gate)
         if not self._rebuild_sweeps(f"calibration {'on' if self.calibrate else 'off'}, gate "
-                                    f"{'on' if self.gate.on else 'off'} ({self.gate.text}), "
+                                    f"{'on' if self.gate.on else 'off'} ({self.gate.text}), {self.gate.locks_text}, "
                                     f"normalization {'on' if self.normalize else 'off'}"):
             self.calibrate, self.normalize, self.gate = old
             self.pipeline.set_state(*old)

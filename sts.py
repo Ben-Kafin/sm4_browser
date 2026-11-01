@@ -98,9 +98,10 @@ class STS:
     their own toggles, the same settings), calibration against that
     current (calibration.calibrate / calibrate_iets: per sweep the least
     squares of the gain, the offset and the constant of integration of
-    calibration.py, nothing locked; every sweep on its own data; then the
-    gate on the dI/dV gains and offsets as the window's 'gate' row sets
-    it, calibration.gate_sweeps), the division by the broadened I/V of
+    calibration.py, through the pins of the window's '0-lock' and 'Vbias
+    lock' rows when on (off at open); every sweep on its own data; then the
+    gate on the gains and offsets as the window's 'gate' row sets it,
+    calibration.gate_sweeps), the division by the broadened I/V of
     the same current when
     divide_iv is on (feenstra; dI/dV only), and unit-area normalization
     (normalization).  Every step takes plain arrays, so the Line window
@@ -427,6 +428,49 @@ class STS:
                         out[:, p] = a[:, kc].mean(axis=1)
                 setattr(s, attr + '_ref', out)
         return s
+
+    def sweep_pins(self):
+        """
+        Per column (direction, first), what the calibration's Vbias lock
+        needs (calibration.calibrate's `sweeps`): the column's sweep
+        direction, +1 for the sweep that left the setpoint (the pixel's
+        first sweep and those running like it), -1 for one running the
+        other way, 0 for a view's column that averages sweeps of both
+        directions; and the index of its first acquired sample on the
+        energy axis (0, or the last index for a sweep acquired down the
+        axis; -1 for a mixed column).  The file's own columns read
+        sweep_info; a view's columns their chosen kept sweeps; a subset
+        (select) the columns it took; one sweep per pixel: every column
+        forward from index 0.
+        """
+        n = int(getattr(self, 'n_spectra', 0))
+        npts = len(self.energy)
+        own = getattr(self, '_sweep_pins', None)
+        if own is not None and len(own[0]) == n:
+            return own
+        info = getattr(self, 'sweep_info', None)
+        if info is not None and len(info['dir']) == n:
+            d = np.asarray(info['dir'], dtype=int)
+            return d.copy(), np.where(np.asarray(info['acq_desc'], dtype=bool), npts - 1, 0).astype(int)
+        parent = getattr(self, 'parent', None)
+        chosen = getattr(self, 'view_cols', None)
+        pinfo = getattr(parent, 'sweep_info', None) if parent is not None else None
+        if pinfo is not None and chosen is not None and len(chosen) == n:
+            d = np.ones(n, dtype=int)
+            first = np.zeros(n, dtype=int)
+            for p, c in enumerate(chosen):
+                if not len(c):
+                    continue
+                kc = c[parent.acquired[c]] if np.any(parent.acquired[c]) else c
+                ds = np.asarray(pinfo['dir'])[kc]
+                desc = np.asarray(pinfo['acq_desc'], dtype=bool)[kc]
+                if np.all(ds == ds[0]) and np.all(desc == desc[0]):
+                    d[p] = int(ds[0])
+                    first[p] = npts - 1 if desc[0] else 0
+                else:
+                    d[p], first[p] = 0, -1
+            return d, first
+        return np.ones(n, dtype=int), np.zeros(n, dtype=int)
 
     @classmethod
     def from_pages(cls, pages, page_type, name='', _group=True):
@@ -761,6 +805,7 @@ class STS:
         for attr in ('lia_ref', 'iets_ref', 'iv_ref'):           # the forward-sweep reference, the same columns
             a = getattr(self, attr, None)
             setattr(s, attr, None if a is None else a[:, cols].copy())
+        s._sweep_pins = tuple(a[cols].copy() for a in self.sweep_pins())   # the columns' sweep directions (sweep_pins)
         s.zscale_iv = self.zscale_iv
         s.zoffset_iv = getattr(self, 'zoffset_iv', None)
         s.zoffset_lia = getattr(self, 'zoffset_lia', None)
@@ -804,14 +849,20 @@ class STS:
 
     @staticmethod
     def _gain_text(name, fits, vmod, channel, cols=None):
-        """One console line: the file's fitted gains (per sweep: their range and median), the gate's doing (dI/dV), and the modulation amplitude's check."""
+        """One console line: the file's fitted gains (per sweep: their range and median), the locks, the gate's doing, and the modulation amplitude's check."""
         unit = "/V²" if channel == 'iets' else "/V"
         a = np.array([ft.a for ft in fits], dtype=np.float64)
+        settings = fits[0].gate.settings
+        locks = settings.locks_text
+        if settings.lockv:
+            n_mixed = sum(1 for ft in fits if not any(p[0] == 'Vbias' for p in ft.pins))
+            if n_mixed:
+                locks += (f" ({n_mixed} column(s) average forward and reverse sweeps: no single first sample, "
+                          f"no Vbias pin)")
         text = (f"{name}: calibration per sweep (a, b" + (", c, d" if channel == 'iets' else ", c")
-                + f" by least squares, nothing locked); gain a from {a.min():.4g} to {a.max():.4g} {unit}, "
+                + f" by least squares, {locks}); gain a from {a.min():.4g} to {a.max():.4g} {unit}, "
                 f"median {np.median(a):.4g} {unit}")
-        if channel != 'iets':
-            text += "; " + calibration.gate_text(fits, cols)
+        text += "; " + calibration.gate_text(fits, cols)
         a_mod = fits[0].a_mod
         if np.isfinite(a_mod):
             rel = "4 / V_mod²" if channel == 'iets' else "1 / V_mod"
@@ -822,7 +873,7 @@ class STS:
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
                        calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
-                       hampel_didv=None, sgolay_didv=None, name=None, gate=None):
+                       hampel_didv=None, sgolay_didv=None, name=None, gate=None, sweeps=None):
         """
         Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
@@ -831,13 +882,16 @@ class STS:
         against that current (when present and `calibrate` is on;
         calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep
         the least squares of the gain, the offset and the constant of
-        integration, nothing locked, then the gate on the dI/dV gains and
-        offsets as `gate` sets it, calibration.GateSettings or None for the
-        defaults (the window's 'gate' row with its 'H' and 'SG' boxes:
-        calibration.gate_sweeps); V_bias / I_setpoint and `ref` =
-        (lia_ref, iv_ref), the forward-sweep reference columns of a
-        reverse-sweep view through the same filters, are handed over and
-        not used; off, the columns stay in the channel page's units; a
+        integration, through the pins of the locks that are on, then the
+        gate on the gains and offsets, as `gate` sets them,
+        calibration.GateSettings or None for the defaults (the window's
+        'gate' row with its 'H' and 'SG' boxes and its '0-lock' and 'Vbias
+        lock' rows: calibration.gate_sweeps, calibration.calibrate);
+        V_bias / I_setpoint the Vbias lock's setpoint, `sweeps` = (direction,
+        first) per column of `lia` (STS.sweep_pins; None: every column a
+        forward sweep); `ref` = (lia_ref, iv_ref), the forward-sweep
+        reference columns of a reverse-sweep view through the same filters,
+        is handed over and not used; off, the columns stay in the channel page's units; a
         column the regression cannot determine refuses the file, said once
         on the console; with `name` the file's, the gains, the gate's
         doing and the check from the modulation amplitude `vmod` are said
@@ -879,9 +933,10 @@ class STS:
                 ref_f = (filters.filter_lia(np.asarray(ref[0], dtype=np.float64), hampel_didv, sgolay_didv)[:, cols],
                          filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
             fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
+            sw = None if sweeps is None else tuple(np.asarray(a)[cols] for a in sweeps)
             try:
                 cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f,
-                               gate=gate)
+                               gate=gate, sweeps=sw)
                 c[:, cols] = cal
                 if name and fits:
                     cls._note_once(cls._gain_text(name, fits, vmod, channel, cols))
@@ -904,7 +959,7 @@ class STS:
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                 return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,
                 hampel_didv=None, sgolay_didv=None, gate=None):
-        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint and a sweep view's forward reference from the file; `gate` the window's gate settings)."""
+        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint, the columns' sweep directions and a sweep view's forward reference from the file; `gate` the window's gate and lock settings)."""
         ref = (getattr(self, 'iets_ref' if channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
         return self.process_arrays(self.energy, self.channel(channel), self.iv, hampel, sgolay, divide_iv,
                                    iv_broadening, return_areas=return_areas, channel=channel,
@@ -912,7 +967,7 @@ class STS:
                                    calibrate=calibrate, vmod=getattr(self, 'vmod', None),
                                    V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None),
                                    ref=ref, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                   name=getattr(self, 'name', None), gate=gate)
+                                   name=getattr(self, 'name', None), gate=gate, sweeps=self.sweep_pins())
 
 
 if __name__ == '__main__':

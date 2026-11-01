@@ -428,7 +428,7 @@ class Control:
         if self._zoom is not None and abs(z - self._zoom) < 1e-6:
             return
         self._zoom = z
-        widgets._refont_widgets([(self.qt, self._fs())], z)
+        widgets._refont_widgets([(self.qt, self._fs())] + [(w, self._fs()) for w in getattr(self, '_font_also', [])], z)
         self._after_zoom(z)
 
     def _after_zoom(self, z):
@@ -536,7 +536,8 @@ class Checks(Control):
     """
     A box frame of toggle rows: value is the list of states; set(i, flag) never fires;
     callback(label, states) after a click (the clicked row already flipped).  `indents` gives a
-    left indent in pixels per row (the calibrate box's rows under 'calibrate').
+    left indent per row: pixels, or a text whose width (in the box's font) is the indent (the
+    calibrate box's rows under 'calibrate').
     """
 
     def __init__(self, fig, name, values=None, labels=None, title=None, indents=None):
@@ -560,10 +561,21 @@ class Checks(Control):
             cb = QtWidgets.QCheckBox(lab)
             cb.setChecked(v)
             cb.toggled.connect(lambda _f, lab=lab: self._fire(lab, self.value))
-            ind = int(indents[k]) if indents is not None and k < len(indents) else 0
-            if ind:
+            ind = indents[k] if indents is not None and k < len(indents) else 0
+            if isinstance(ind, str) and ind:
+                # An indent given as text: a label holding it, so the indent follows the box's font.
                 r = QtWidgets.QHBoxLayout()
-                r.setContentsMargins(ind, 0, 0, 0)
+                r.setContentsMargins(0, 0, 0, 0)
+                r.setSpacing(0)
+                pad = QtWidgets.QLabel(ind)
+                pad.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                r.addWidget(pad)
+                r.addWidget(cb)
+                r.addStretch(1)
+                lay.addLayout(r)
+            elif ind:
+                r = QtWidgets.QHBoxLayout()
+                r.setContentsMargins(int(ind), 0, 0, 0)
                 r.addWidget(cb)
                 r.addStretch(1)
                 lay.addLayout(r)
@@ -1448,39 +1460,58 @@ class FilterControls:
 
 class PipelineBox:
     """
-    The 'calibrate' / 'gate' / 'normalize' box: the two pipeline steps switchable on their own, and
-    under 'calibrate', indented, its 'gate' row (calibration.gate_sweeps: the safety on the
+    The 'calibrate' / 'normalize' box with, under 'calibrate', the calibration's own rows: the two
+    pipeline steps switchable on their own; 'gate' (calibration.gate_sweeps: the safety on the
     per-sweep gains and offsets, on at open) with two small boxes, 'H' holding the gate's Hampel
     'window,n_sigma' and 'SG' its Savitzky-Golay 'length,order' (calibration.GATE_HAMPEL /
-    GATE_SGOLAY at open).  hs='beside' puts the two boxes left of the box on the gate row (the
-    figure windows); hs='rows' puts them on a row each under the gate row inside the box (the
-    browser, whose settings column stays narrow).  A box edit that does not parse, or breaks the
-    gate's rules (calibration.gate_settings), is reported on the console and the box put back.  The
-    gate row is ignored while 'calibrate' is off.  state() gives {'calibrate': bool, 'normalize':
-    bool, 'gate': calibration.GateSettings}; set_state() sets the rows and boxes without firing;
-    on_change(callback) runs callback(state) after a click or an accepted edit.
+    GATE_SGOLAY at open); '0-lock' and 'Vbias lock' (calibration.calibrate's pins, off at open),
+    each on its own and with the gate in any combination.  The checkboxes of 'gate', '0-lock' and
+    'Vbias lock' are indented by the width of four spaces of the box's text (INDENT).  hs='beside'
+    puts the two boxes left of the box on the gate row, the locks under the gate row (the figure
+    windows: calibrate / gate / 0-lock / Vbias lock / normalize); hs='rows' puts them on a row each
+    under the gate row inside the box, the locks after them (the browser, whose settings column
+    stays narrow: calibrate / gate / H / SG / 0-lock / Vbias lock / normalize).  steps=False leaves
+    the 'calibrate' and 'normalize' rows out (the calibration's own window).  A box edit that does
+    not parse, or breaks the gate's rules (calibration.gate_settings), is reported on the console
+    and the box put back.  The gate and lock rows are ignored while 'calibrate' is off.  state()
+    gives {'calibrate': bool, 'normalize': bool, 'gate': calibration.GateSettings (the gate and the
+    locks)}; set_state() sets the rows and boxes without firing; on_change(callback) runs
+    callback(state) after a click or an accepted edit.
     """
 
-    def __init__(self, fig, calibrate=True, normalize=True, gate=None, hs='beside'):
+    INDENT = '    '          # the gate and lock rows' indent: four spaces of the box's own text
+    _ROWS = ('calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize')
+
+    def __init__(self, fig, calibrate=True, normalize=True, gate=None, hs='beside', steps=True):
         from sm4_Browser import calibration
         self.fig = fig
         self._gate = calibration.gate_settings(gate)
+        self._steps = bool(steps)
+        self._calibrate, self._normalize = bool(calibrate), bool(normalize)
         labels = list(SPECS['pipeline']['labels'])
-        self.box = Checks(fig, 'pipeline', values=[bool(calibrate), bool(self._gate.on), bool(normalize)], labels=labels)
+        values = [bool(calibrate), bool(self._gate.on), bool(self._gate.lock0), bool(self._gate.lockv), bool(normalize)]
+        self._idx = [0, 1, 2, 3, 4] if self._steps else [1, 2, 3]   # the rows shown, as indices of _ROWS
+        sub = [i in (1, 2, 3) for i in self._idx]                   # the calibration's own rows: indented
+        labs = [labels[i] for i in self._idx]
+        vals = [values[i] for i in self._idx]
         self.box_h = Text(fig, 'gate H', self._fmt(self._gate.hampel), width=36)
         self.box_sg = Text(fig, 'gate SG', self._fmt(self._gate.sgolay), width=36)
+        r_gate = self._idx.index(1)
         if hs == 'rows':
+            self.box = Checks(fig, 'pipeline', values=vals, labels=labs,
+                              indents=[self.INDENT if f else 0 for f in sub])
             lay = self.box.qt.layout()
             for i, t in enumerate((self.box_h, self.box_sg)):
                 r = QtWidgets.QHBoxLayout()
                 r.setContentsMargins(18, 0, 0, 0)
                 r.addWidget(t.qt)
                 r.addStretch(1)
-                lay.insertLayout(2 + i, r)
+                lay.insertLayout(r_gate + 1 + i, r)
             self.qt = self.box.qt
         else:
             # The two boxes left of the toggle box, on the gate row: one grid, the box frame behind
-            # the three rows of column 2, so the boxes share the gate row's height exactly.
+            # every row of column 2, so the boxes share the gate row's height exactly.
+            self.box = Checks(fig, 'pipeline', values=vals, labels=labs)
             w = QtWidgets.QWidget()
             grid = QtWidgets.QGridLayout(w)
             grid.setContentsMargins(0, 0, 0, 0)
@@ -1491,21 +1522,40 @@ class PipelineBox:
             cbs = list(self.box.boxes)
             for cb in cbs:
                 lay.removeWidget(cb)                             # the frame keeps its look, the rows go in the grid
-            grid.addWidget(frame, 0, 2, 3, 1)
-            for r, cb in enumerate(cbs):
+            grid.addWidget(frame, 0, 2, len(cbs), 1)
+            moved = []
+            for r, (cb, indented) in enumerate(zip(cbs, sub)):
                 cell = QtWidgets.QHBoxLayout()
                 cell.setContentsMargins(6, 3 if r == 0 else 0, 6, 3 if r == len(cbs) - 1 else 0)
+                cell.setSpacing(0)
+                if indented:
+                    pad = QtWidgets.QLabel(self.INDENT)
+                    pad.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                    cell.addWidget(pad)
+                    moved.append(pad)
                 cell.addWidget(cb)
+                cell.addStretch(1)
                 grid.addLayout(cell, r, 2)
                 cb.raise_()
-            grid.addWidget(self.box_h.qt, 1, 0)
-            grid.addWidget(self.box_sg.qt, 1, 1)
+                moved.append(cb)
+            for m in moved:
+                m.raise_()
+            self.box._font_also = moved                          # the rows left the frame: they take its font still
+            grid.addWidget(self.box_h.qt, r_gate, 0)
+            grid.addWidget(self.box_sg.qt, r_gate, 1)
             self.qt = w
         self._cb = None
         self._quiet = False
         self.box.on_change(lambda label, states: self._on_toggle())
         self.box_h.on_change(lambda text: self._on_edit('hampel', text))
         self.box_sg.on_change(lambda text: self._on_edit('sgolay', text))
+
+    def _rows_now(self):
+        """The five rows' states (calibrate, gate, 0-lock, Vbias lock, normalize); the rows not shown as kept."""
+        out = [self._calibrate, bool(self._gate.on), bool(self._gate.lock0), bool(self._gate.lockv), self._normalize]
+        for i, v in zip(self._idx, self.box.value):
+            out[i] = bool(v)
+        return out
 
     @staticmethod
     def _fmt(pair):
@@ -1516,8 +1566,9 @@ class PipelineBox:
             self._cb(self.state())
 
     def _on_toggle(self):
-        c, g, n = self.box.value[:3]
-        self._gate = self._gate._replace(on=bool(g))
+        c, g, l0, lv, n = self._rows_now()
+        self._calibrate, self._normalize = c, n
+        self._gate = self._gate._replace(on=g, lock0=l0, lockv=lv)
         self._fire()
 
     def _on_edit(self, which, text):
@@ -1554,8 +1605,8 @@ class PipelineBox:
         self._cb = callback
 
     def state(self):
-        c, g, n = self.box.value[:3]
-        return {'calibrate': bool(c), 'normalize': bool(n), 'gate': self._gate._replace(on=bool(g))}
+        c, g, l0, lv, n = self._rows_now()
+        return {'calibrate': c, 'normalize': n, 'gate': self._gate._replace(on=g, lock0=l0, lockv=lv)}
 
     @property
     def calibrate(self):
@@ -1567,19 +1618,27 @@ class PipelineBox:
 
     @property
     def gate(self):
-        """The gate as set: calibration.GateSettings (its `on` the gate row)."""
+        """The gate and the locks as set: calibration.GateSettings (`on` the gate row, lock0 / lockv the lock rows)."""
         return self.state()['gate']
+
+    def _set_row(self, i, flag):
+        if i in self._idx:
+            self.box.set(self._idx.index(i), bool(flag))
 
     def set_state(self, calibrate=None, normalize=None, gate=None):
         """The rows and boxes set without firing; `gate` a GateSettings, dict, bool or None (unchanged)."""
         from sm4_Browser import calibration
         if calibrate is not None:
-            self.box.set(0, bool(calibrate))
+            self._calibrate = bool(calibrate)
+            self._set_row(0, calibrate)
         if normalize is not None:
-            self.box.set(2, bool(normalize))
+            self._normalize = bool(normalize)
+            self._set_row(4, normalize)
         if gate is not None:
             self._gate = calibration.gate_settings(gate)
-            self.box.set(1, bool(self._gate.on))
+            self._set_row(1, self._gate.on)
+            self._set_row(2, self._gate.lock0)
+            self._set_row(3, self._gate.lockv)
             self._set_boxes()
 
     def show(self, flag):

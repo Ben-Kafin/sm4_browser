@@ -289,7 +289,8 @@ filtered.
 Order per curve (STS.process_arrays): calibration against the filtered
 I(V) (calibration.calibrate for dI/dV, calibration.calibrate_iets for
 IETS: per sweep the least squares of the gain, the offset and the constant
-of integration, nothing locked); the division by the
+of integration, through the pins of the '0-lock' and 'Vbias lock' rows
+when on, then the gate); the division by the
 filtered, broadened I/V when the window's 'Feenstra' toggle is on (on by
 default; the browser has no toggle: its spectra panels always show the
 Feenstra set; Feenstra's normalized conductance: each calibrated dI/dV
@@ -1679,6 +1680,7 @@ class _BrowserCore:
         pts = getattr(sp_, 'points_acquired', None)
         cols = sp_.channel(channel)
         E = np.asarray(f.energy, dtype=np.float64)
+        sw_dir, sw_first = sp_.sweep_pins()             # the Vbias lock's direction and first sample per column
         for j in stopped:
             p = int(pts[j]) if pts is not None and j < len(pts) else 0
             if p < self.MIN_UNFINISHED_POINTS:
@@ -1688,7 +1690,8 @@ class _BrowserCore:
             lia = cols[:p, j:j + 1]
             iv = f.iv[:p, j:j + 1] if f.iv is not None else None
             try:
-                setpoint = dict(V_bias=getattr(sp_, 'V_bias', None), I_setpoint=getattr(sp_, 'I_setpoint', None))
+                setpoint = dict(V_bias=getattr(sp_, 'V_bias', None), I_setpoint=getattr(sp_, 'I_setpoint', None),
+                                sweeps=(sw_dir[j:j + 1], np.minimum(sw_first[j:j + 1], p - 1)))
                 c = STS.process_arrays(e, lia, iv, hp, sp, False, width, channel=channel, iv_zero_sub=zs,
                                        normalize=norm, calibrate=cal and iv is not None, vmod=getattr(sp_, 'vmod', None),
                                        hampel_didv=hd, sgolay_didv=sd, gate=gate, **setpoint)
@@ -1789,9 +1792,9 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
 
     def _on_pipeline_change(self, state):
-        """The 'calibrate' / 'gate' / 'normalize' box: the spectra panels redrawn with the pipeline steps as set."""
+        """The 'calibrate' / 'gate' / '0-lock' / 'Vbias lock' / 'normalize' box: the spectra panels redrawn with the pipeline steps as set."""
         print(f"spectra panels: calibrate {'on' if state['calibrate'] else 'off'}, gate "
-              f"{'on' if state['gate'].on else 'off'} ({state['gate'].text}), normalize {'on' if state['normalize'] else 'off'}.")
+              f"{'on' if state['gate'].on else 'off'} ({state['gate'].text}), {state['gate'].locks_text}, normalize {'on' if state['normalize'] else 'off'}.")
         self._draw_spectra()
         self.fig.canvas.draw_idle()
 

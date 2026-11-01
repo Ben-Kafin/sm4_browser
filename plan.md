@@ -174,15 +174,30 @@ Status marks: `[ ]` to do, `[~]` in progress, `[x]` done.
       an empty Feenstra-settings frame in the browser.
 - [x] Approved and pushed (Phases 1-3 in one commit).  Next: Phase 4, the calibration locks.
 
-### Phase 4: calibration locks  [ ]
-- [ ] 4.1 calibration.py: GateSettings fields, parsing, text, record keys; pins; one- and two-pin
-      fits; refits with pins; IETS locks and gate; console text.
-- [ ] 4.2 Per-column sweep direction reaches calibrate (forward / reverse / 'all sweeps').
-- [ ] 4.3 Boxes: the rows and indent (2.6) in the shared pipeline box (figure windows and browser).
-- [ ] 4.4 Records: saved and restored in every window; older records off.
-- [ ] 4.5 The calibration window's controls (2.6).
-- [ ] 4.6 Checks: each lock passes the fit through its point, both together, gate keeps the pins,
-      IETS, boxes, records. README and comments.
+### Phase 4: calibration locks  [x]
+- [x] 4.1 calibration.py: GateSettings.lock0 / lockv (off at open), parsing, locks_text, record keys;
+      anchor_index (6761a76's, ANCHOR_TOL 0.5); _pins (0-lock: nearest 0 V, recorded current;
+      Vbias: forward at the setpoint sample to I_setpoint, reverse at its own first acquired sample
+      to the recorded current, a column averaging both directions no Vbias pin); _pinned_solve (one
+      pin: the far_offsets exact-pin form; two: one-parameter least squares in a); the gate's refits
+      keep the pins (_pinned_rest; stage 2's c from the Vbias pin, else the 0-lock pin, else the
+      mean); IETS pinned the same way and gated on a and b; console text lists the locks.
+- [x] 4.2 STS.sweep_pins: per column (direction, first sample) for the file's columns, every sweep
+      view (forward +1, reverse -1, an all-sweeps average 0) and subsets; process / process_arrays
+      pass it (`sweeps`); the Line window slices it like its reference; the line average and the
+      browser's stopped sweeps pass theirs.
+- [x] 4.3 PipelineBox: calibrate / gate / 0-lock / Vbias lock / normalize (figure windows, H and SG
+      beside the gate row); calibrate / gate / H / SG / 0-lock / Vbias lock / normalize (browser);
+      the gate and lock checkboxes indented by four spaces of the box's font (INDENT); the gate
+      label lost its spaces.
+- [x] 4.4 Records: gate_record / gate_from_record carry lock0 / lockv (the averaging window now writes
+      through gate_record); older records open with the locks off.
+- [x] 4.5 The calibration window: PipelineBox(steps=False): gate, H, SG, 0-lock, Vbias lock; a change
+      recalibrates and redraws; a lock the file cannot hold is refused and the box put back.
+- [x] 4.6 Check N5 (each lock, both, with the gate, IETS, the sweep views, the box rows, the records);
+      README pipeline section rewritten (it still described the old one-gain method); docstrings.
+- Open: a column averaging forward and reverse sweeps (the 'all sweeps' view) takes no Vbias pin,
+  said on the console; reported to the owner.
 
 ### Phase 5: final  [ ]
 - [ ] Full smoke checks pass; every window rendered and checked; README and comments current;

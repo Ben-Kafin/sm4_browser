@@ -455,7 +455,7 @@ class Map:
             self.calibrate, self.normalize, self.gate = old
             self.pipeline.set_state(*old)
             return
-        print(f"calibration {'on' if self.calibrate else 'off'}, gate {'on' if self.gate.on else 'off'} ({self.gate.text}), "
+        print(f"calibration {'on' if self.calibrate else 'off'}, gate {'on' if self.gate.on else 'off'} ({self.gate.text}), {self.gate.locks_text}, "
               f"normalization {'on' if self.normalize else 'off'}: the map window shows {self._quantity()}.")
 
     def _on_cmap_norm(self, flag):

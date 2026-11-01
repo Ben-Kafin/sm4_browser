@@ -332,6 +332,9 @@ class Line:
         # A sweep view's forward-sweep reference (the calibration's `ref`, sliced like the chunk).
         self._lia_ref_all = getattr(self.spectra, 'iets_ref' if self.channel == 'iets' else 'lia_ref', None)
         self._iv_ref_all = getattr(self.spectra, 'iv_ref', None)
+        # Every column's sweep direction and first acquired sample (the Vbias lock's pin; STS.sweep_pins),
+        # sliced like the reference.
+        self._sweeps_all = self.spectra.sweep_pins()
 
         # --- Chunk the LIA data (and I(V) in parallel) ---
         if self._user_scan_mode == 'single':
@@ -394,7 +397,7 @@ class Line:
 
     def _pipeline(self, raw, iv, hampel_filter_params, sgolay_filter_params, apply_calibration,
                   divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False,
-                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None, gate=None):
+                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None, gate=None, sweeps=None):
         """
         The package's one pipeline (STS.process_arrays) on this line's
         columns (npts, N), each step when switched on: the columns through
@@ -402,8 +405,11 @@ class Line:
         I(V) ones, each once, the calibration against that current
         (calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep
         the least squares of the gain, the offset and the constant of
-        integration, nothing locked; `ref` the forward-sweep reference
-        columns of a reverse-sweep view, handed over and not used), the
+        integration, through the pins of the locks that are on, then the
+        gate; `sweeps` the columns' sweep directions for the Vbias lock,
+        the displayed line's own when not given and the widths agree; `ref`
+        the forward-sweep reference columns of a reverse-sweep view, handed
+        over and not used), the
         division by the broadened I/V of the same current (dI/dV only;
         iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
         value at 0 V, feenstra.iv_corrected), unit-area normalization (over
@@ -431,6 +437,9 @@ class Line:
                 "No I(V) current channel found in this SM4 file. "
                 "Cannot perform linear-regression calibration."
             )
+        if sweeps is None:
+            own = getattr(self, '_int_sweeps', None)
+            sweeps = own if own is not None and len(own[0]) == raw.shape[1] else None
         curves, areas = STS.process_arrays(self.energy, raw, iv, hampel_filter_params, sgolay_filter_params,
                                            divide_iv, iv_broadening, return_areas=True, channel=self.channel,
                                            acquired=acquired, iv_zero_sub=iv_zero_sub,
@@ -440,7 +449,8 @@ class Line:
                                            I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
                                            hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
                                            name=os.path.basename(str(self.ifile)),
-                                           gate=getattr(self, '_int_gate', None) if gate is None else gate)
+                                           gate=getattr(self, '_int_gate', None) if gate is None else gate,
+                                           sweeps=sweeps)
         curves = np.array(curves, dtype=np.float64)
         areas = np.array(areas, dtype=np.float64)
         curves[:, ~acquired] = np.nan
@@ -468,7 +478,7 @@ class Line:
     # ------------------------------------------------------------------ #
 
     def _int_load_source(self):
-        """The raw LIA and I(V) columns of the displayed line (the pipeline's input) from the current slicing, and the calibration's forward-sweep reference sliced the same way (None when the columns are their own reference)."""
+        """The raw LIA and I(V) columns of the displayed line (the pipeline's input) from the current slicing, and the calibration's forward-sweep reference and the columns' sweep directions sliced the same way (the reference None when the columns are their own)."""
         if self.scan_mode in ['single', 'combined']:
             self._int_raw = self.chunk.copy()
             self._int_iv = self.iv_chunk
@@ -485,6 +495,15 @@ class Line:
             if self._ref_pairs:
                 la, ia = (la[:, 0::2] + la[:, 1::2]) / 2.0, (ia[:, 0::2] + ia[:, 1::2]) / 2.0
             self._int_ref = (la, ia)
+        self._int_sweeps = None
+        sw = getattr(self, '_sweeps_all', None)
+        if sw is not None:
+            d, f = sw[0][self._ref_sl], sw[1][self._ref_sl]
+            if self._ref_pairs:
+                # A column averaging two: one direction when both run alike, else mixed (0, no first sample).
+                same = (d[0::2] == d[1::2]) & (f[0::2] == f[1::2])
+                d, f = np.where(same, d[0::2], 0), np.where(same, f[0::2], -1)
+            self._int_sweeps = (d, f)
 
     def _int_orient(self, c):
         """Columns (npts, N) of the line oriented like the heatmap (row j = spectrum j at self.pos[j], energy ascending)."""
@@ -591,7 +610,7 @@ class Line:
         self._int_apply_calibration, self._int_apply_normalize = state['calibrate'], state['normalize']
         self._int_gate = state.get('gate', self._int_gate)      # a state without the gate keeps it
         note = (f"calibration {'on' if state['calibrate'] else 'off'}, gate {'on' if self._int_gate.on else 'off'} "
-                f"({self._int_gate.text}), normalization {'on' if state['normalize'] else 'off'}")
+                f"({self._int_gate.text}), {self._int_gate.locks_text}, normalization {'on' if state['normalize'] else 'off'}")
         if not self._int_apply_feenstra(note):
             self._int_apply_calibration, self._int_apply_normalize, self._int_gate = old
             self._int_pipeline_box.set_state(*old)

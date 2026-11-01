@@ -176,20 +176,28 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
 1. the filters (`filters.py`): Hampel (spikes), then Savitzky-Golay (smoothing), each with one
    toggle for the lock-in channel's columns (`dI/dV`) and one for the recorded current I(V), the
    same settings for both targets, every toggle off by default;
-2. the calibration of the lock-in channel against that current (`calibration.py`: dI/dV =
-   a·LIA + b with one gain a per file and one offset b per curve. The gain is the lock-in's,
-   1/V_mod from the file's modulation amplitude (4/V_mod² for the second harmonic); the joint
-   fit of one gain over every curve of the file is printed beside it on the console as a check,
-   and is the gain when no modulation amplitude is recorded. The offset is the least-squares fit
-   of the integrated LIA to the recorded current anchored at the setpoint, the sample at the
-   setpoint bias RHK_Bias whose current is the setpoint current RHK_Current, where the feedback
-   loop was opened; the relation is exact in V − V_bias, so no bias window and no sweep direction
-   biases it and nothing refers to 0 V. Fitting the gain per curve as well is not done: where the
-   lock-in signal is nearly flat the gain trades off against the offset and scatters, and flips
-   sign, across the curves of one file. A pixel's reverse sweeps, which start at the far end,
-   take the offsets fitted on its forward sweeps; a sweep without a sample at the setpoint bias,
-   or a file without the setpoint, is not calibrated, said once on the console; `calibrate_iets`
-   for the second-harmonic channel);
+2. the calibration of the lock-in channel against that current (`calibration.py`): per sweep the
+   recorded current is I(V) = a·X(V) + b·V + c, X the integral of the lock-in output, and a, b, c
+   are that sweep's own least squares; the calibrated dI/dV is a·LIA + b. The gain the modulation
+   amplitude would give, 1/V_mod (4/V_mod² for the second harmonic), is printed beside the fitted
+   gains as a check. Under `calibrate` three indented rows refine it, each on its own and in any
+   combination:
+   - `gate`, with its `H` and `SG` boxes (on at open): a sweep whose a, or then b, departs from
+     the two sweeps touching it beyond the file's robust scale takes the trend's value (the
+     sweeps' values through a Hampel filter, `H` window,nσ, then a Savitzky-Golay smoothing,
+     `SG` length,order), so one disturbed current cannot break the calibration;
+   - `0-lock` (off at open): every fit passes through the recorded current at the sample nearest
+     0 V;
+   - `Vbias lock` (off at open): a forward sweep's fit passes through the setpoint current
+     RHK_Current at the setpoint-bias sample RHK_Bias, where the feedback loop was opened; a
+     reverse sweep, which has no setpoint current, passes through the recorded current at its own
+     first sample; a column averaging a pixel's forward and reverse sweeps (the `all sweeps` view)
+     takes no Vbias pin. While it is on, a forward sweep without a sample at the setpoint bias, or
+     a file without the setpoint, is not calibrated, said once on the console.
+
+   With one lock the constant c follows from the pin; with both, b and c follow from a. The gate's
+   refits keep the pins. `calibrate_iets` does the same for the second-harmonic channel, with
+   I = a·Z + b·V²/2 + c·V + d (Z the double integral), the same locks and the gate on a and b;
 3. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
    current (`feenstra.py`): Feenstra's normalized conductance (dI/dV)/(I/V), with `0Vsub` the
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
@@ -199,9 +207,11 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
 
 The browser's spectra panels always show the Feenstra set with no toggle; every other window has
 its own `Feenstra` toggle and its Feenstra companion window. `calibrate` and `normalize` are the two
-flags of each window's pipeline box, both off at open in every window (a saved record restores the
-flags it was saved with). A spectrum whose column is all zeros was never acquired and takes part in
-nothing.
+flags of each window's pipeline box, both off at open in every window, with the `gate`, `0-lock` and
+`Vbias lock` rows indented under `calibrate` (in the figure windows the `H` and `SG` boxes sit beside
+the gate row; in the browser they sit on rows of their own under it). A saved record restores the
+flags, the gate and the locks it was saved with; an older record opens with the locks off. A spectrum
+whose column is all zeros was never acquired and takes part in nothing.
 
 ### Drift
 
@@ -665,11 +675,13 @@ calibration, the Feenstra division and the normalization in that order on any se
 
 The four pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
-`calibration.calibrate` calibrates each lock-in column against its filtered current
-(`ColumnFit`: the file's gain from the modulation amplitude, `gain_from_modulation`, or the joint
-fit over the columns, `_joint_gain`; the column's offset anchored at the setpoint; `anchor_index`
-finds the sample at the setpoint bias and refuses a sweep without one; `ref` carries a
-reverse-sweep view's forward columns), `calibrate_iets` the second-harmonic channel. `feenstra.divide_by_iv` divides by the
+`calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
+the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;
+`GateSettings` holds the gate and the two locks; `_pinned_solve` is the least squares through the
+pins; `anchor_index` finds the sample at the setpoint bias and refuses a sweep without one;
+`gate_sweeps` is the gate; `gain_from_modulation` the check; `gate_record` / `gate_from_record`
+the record keys), `calibrate_iets` the second-harmonic channel (`IetsColumnFit`). `sts.STS.sweep_pins`
+gives every column's sweep direction and first sample for the Vbias lock. `feenstra.divide_by_iv` divides by the
 I/V (`iv_corrected` for the 0 V subtraction, `iv_broadened` for the exponential broadening),
 `feenstra_titles` names the four panels, `iv_zero_crossings` is the diagnostic, and
 `FeenstraWindow` is the companion window. `normalization.normalize` scales every curve to unit area
@@ -828,7 +840,7 @@ of the documentation review (M: the anchor toggle, the Line window's flags, the 
 occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
 heatmap shear, the qtplot rules, the records helpers) and the layout (N: every spatial panel edge to
 edge around everything drawn; every row of panels at one height; the calibration per sweep with
-nothing locked; the dI/dV filter toggles). The other
+nothing locked; the dI/dV filter toggles; the calibration locks). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
 pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on

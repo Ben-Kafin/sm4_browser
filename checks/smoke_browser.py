@@ -2472,5 +2472,98 @@ def _didv_filters(b, exp):
     b._goto(0)
 
 
+@check("N5 calibration locks: the 0-lock and the Vbias lock each pass every fit through its pin, both together, with the gate (its refits keep the pins), on IETS; forward, reverse and averaged sweep views; the box rows; the records; older records off")
+def _calibration_locks(b, exp):
+    import io
+    import contextlib
+    from sm4_Browser import calibration
+    rng = np.random.default_rng(3)
+    V = np.linspace(-1, 1, 41)
+    N = 12
+    lia = np.array([1e-11 * (1.0 + 2.0 * np.exp(-((V - 0.1 * (j % 4 - 1.5)) ** 2) / 0.02)) for j in range(N)]).T
+    X = np.array([np.concatenate([[0], np.cumsum(0.5 * (lia[1:, j] + lia[:-1, j]) * np.diff(V))]) for j in range(N)]).T
+    I = 10.0 * X + 2e-12 * V[:, None] - 1e-10 + rng.normal(0, 2e-13, X.shape)
+    I[:, 5] += 3e-11 * V                                        # one disturbed sweep: the gate replaces it
+    direction = np.array([1, -1] * (N // 2))
+    first = np.where(direction < 0, len(V) - 1, 0)              # the reverse sweeps start at +1 V
+    V_bias, I_set = 0.6, float(I[32, 0])
+    # the locks off: the unlocked fit, no pins
+    c0, f0 = calibration.calibrate(V, lia, I, gate=False)
+    c1, f1 = calibration.calibrate(V, lia, I, gate={'on': False}, sweeps=(direction, first))
+    assert np.array_equal(c0, c1) and all(ft.pins == () for ft in f1)
+    for g in ({'on': False, 'lock0': True}, {'on': False, 'lockv': True}, {'on': False, 'lock0': True, 'lockv': True},
+              {'on': True, 'lock0': True}, {'on': True, 'lockv': True}, {'on': True, 'lock0': True, 'lockv': True}):
+        _, fits = calibration.calibrate(V, lia, I, V_bias=V_bias, I_setpoint=I_set, gate=g, sweeps=(direction, first))
+        assert all(len(ft.pins) == int(g.get('lock0', False)) + int(g.get('lockv', False)) for ft in fits), g
+        for j, ft in enumerate(fits):
+            for name, v, ip in ft.pins:
+                k = int(np.argmin(np.abs(V - v)))
+                if name == '0':
+                    assert abs(v) < 1e-12 and ip == I[k, j], (g, j, v, ip)
+                elif direction[j] > 0:
+                    assert abs(v - V_bias) < 1e-12 and ip == I_set, (g, j, v, ip)
+                else:
+                    assert k == first[j] and ip == I[k, j], (g, j, v, ip)
+                assert abs(ft.model[k] - ip) < 1e-20, (g, j, name, ft.model[k] - ip)        # the sweep's own fit
+                if ft.replaced == 'a' or (ft.replaced == 'ab' and name == ft.pins[0][0]):
+                    assert abs(ft.a * X[k, j] + ft.b * V[k] + ft.c - ip) < 1e-20, (g, j, name)   # the gate's refit too
+        if g['on']:
+            assert any(ft.replaced for ft in fits), g
+    # a forward sweep without the setpoint is refused while the Vbias lock is on
+    for kw, word in ((dict(V_bias=1.5, I_setpoint=I_set), 'no sample at the setpoint bias'),
+                     (dict(V_bias=V_bias, I_setpoint=None), 'RHK_Current')):
+        try:
+            calibration.calibrate(V, lia, I, gate={'lockv': True}, **kw)
+            raise AssertionError(kw)
+        except ValueError as exc:
+            assert word in str(exc), str(exc)
+    # a column averaging both directions: no Vbias pin, the 0-lock still
+    _, fits = calibration.calibrate(V, lia, I, V_bias=V_bias, I_setpoint=I_set, gate={'on': False, 'lock0': True, 'lockv': True},
+                                    sweeps=(np.zeros(N, int), np.full(N, -1)))
+    assert all([p[0] for p in ft.pins] == ['0'] for ft in fits)
+    # IETS: the same pins, the gate on a and b
+    S = np.gradient(lia, V, axis=0)
+    Y = np.array([np.concatenate([[0], np.cumsum(0.5 * (S[1:, j] + S[:-1, j]) * np.diff(V))]) for j in range(N)]).T
+    Z = np.array([np.concatenate([[0], np.cumsum(0.5 * (Y[1:, j] + Y[:-1, j]) * np.diff(V))]) for j in range(N)]).T
+    I2 = 3.0 * Z + 1e-12 * V[:, None] ** 2 / 2 + 2e-12 * V[:, None] - 5e-11 + rng.normal(0, 1e-14, Z.shape)
+    _, fi = calibration.calibrate_iets(V, S, I2, V_bias=V_bias, I_setpoint=float(I2[32, 0]),
+                                       gate={'on': True, 'lock0': True, 'lockv': True}, sweeps=(direction, first))
+    assert fi[0].gate.ran and all(len(ft.pins) == 2 for ft in fi)
+    for ft in fi:
+        for name, v, ip in ft.pins:
+            k = int(np.argmin(np.abs(V - v)))
+            assert abs(ft.model[k] - ip) < 1e-20, (name, ft.model[k] - ip)
+    # the sweep views of a file with a forward and a reverse sweep per pixel
+    tmp = tempfile.mkdtemp(prefix='sm4locks_')
+    with contextlib.redirect_stdout(io.StringIO()):
+        e2 = synth.Experiment(tmp)
+        e2.grid(synth.T_REF, n_fast=4, n_lines=3, npts=21, sweeps=('forward', 'reverse'))
+        synth.install(e2)
+        from sm4_Browser import sm4file
+        gf = sm4file.Sm4File(sm4file.list_sm4_files(tmp)[0])
+    parent = getattr(gf.spectra, 'parent', None) or gf.spectra
+    want = {'forward sweeps': ({1}, {0}), 'reverse sweeps': ({-1}, {20}), 'all sweeps': ({0}, {-1})}
+    for mode, (dirs, firsts) in want.items():
+        dv, fv = parent.sweep_view(mode).sweep_pins()
+        assert set(dv.tolist()) == dirs and set(fv.tolist()) == firsts, (mode, set(dv.tolist()), set(fv.tolist()))
+    synth.install(exp)
+    # the box: calibrate / gate / 0-lock / Vbias lock / normalize (the browser: H and SG under gate), off at open
+    labels = b.pipeline.box.labels
+    assert labels == ['calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize'], labels
+    st = b.pipeline.state()
+    assert not st['gate'].lock0 and not st['gate'].lockv
+    b.pipeline.set_state(gate={'lock0': True, 'lockv': False})
+    assert b.pipeline.box.value[2:4] == [True, False] and b.pipeline.gate.lock0 and not b.pipeline.gate.lockv
+    b.pipeline.set_state(gate=calibration.GATE_DEFAULT)
+    assert b.pipeline.box.value[2:4] == [False, False]
+    # the records: the locks saved with the gate; an older record opens with them off
+    g = calibration.gate_settings({'lock0': True, 'lockv': True})
+    rec = calibration.gate_record(g)
+    assert rec['lock0'] is True and rec['lockv'] is True and calibration.gate_from_record(rec) == g
+    old = {'gate': True, 'gate_hampel': [3, 3], 'gate_sgolay': [9, 2]}
+    assert not calibration.gate_from_record(old).lock0 and not calibration.gate_from_record(old).lockv
+    assert calibration.GATE_DEFAULT.locks_text == "nothing locked" and g.locks_text == "0-lock and Vbias lock on"
+
+
 if __name__ == '__main__':
     sys.exit(0 if run(sys.argv[1:]) else 1)

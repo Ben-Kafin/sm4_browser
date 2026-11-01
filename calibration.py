@@ -1,19 +1,27 @@
 """
 Calibration of the lock-in channels against the co-acquired I(V) current,
-one least squares per sweep with nothing locked, and the gate on the
-per-sweep gains and offsets.  The true dI/dV relates to the lock-in
-output by a·LIA + b, so the recorded current is
+one least squares per sweep, through the pins of the locks that are on,
+and the gate on the per-sweep gains and offsets.  The true dI/dV relates
+to the lock-in output by a·LIA + b, so the recorded current is
 
     I(V) = a · X(V) + b · V + c,     X(V) = ∫ LIA dV
 
 the constant c the constant of integration: it carries where the
-integral starts and the current's own level, so no sample is privileged
-and no current (the setpoint's or any recorded one) is subtracted.  For
-each sweep a, b and c are the least squares of that relation over every
-point of the sweep (the normal equations of the sum of squares in a, b,
-c); the calibrated dI/dV is a · LIA + b.  The gain the modulation
-amplitude would give, 1 / V_mod, is carried beside the fitted a as the
-check and is not used.
+integral starts and the current's own level.  For each sweep a, b and c
+are the least squares of that relation over every point of the sweep
+(the normal equations of the sum of squares in a, b, c); the calibrated
+dI/dV is a · LIA + b.  The gain the modulation amplitude would give,
+1 / V_mod, is carried beside the fitted a as the check and is not used.
+
+The locks (GateSettings.lock0 and lockv, the window's '0-lock' and
+'Vbias lock' rows under 'gate', off at open, each on its own and with
+the gate in any combination; calibrate): a lock pins the fit to a
+sample whose current is known.  The 0-lock pins it at the sample nearest
+0 V to the recorded current there; the Vbias lock pins a forward sweep
+at the setpoint-bias sample to the setpoint current, and a reverse
+sweep, which has no setpoint current, at its own first acquired sample
+to the recorded current there.  With one pin the constant follows from
+the pin; with both, the offset and the constant follow from the gain.
 
 The gate (gate_sweeps; GateSettings, the window's 'gate' row with its
 'H' and 'SG' boxes): one sweep with a disturbed current must not break
@@ -21,29 +29,32 @@ the calibration.  Along the acquisition order, a sweep's a is compared
 with the mean a of the two sweeps touching it; a departure beyond
 GATE_FACTOR times the robust scale of those departures over the file,
 confirmed against the touching sweeps that passed, marks the sweep, and
-it takes the trend's a with its b and c refitted.  The same test on b
-then marks sweeps that take the trend's pair.  The trend is the
+it takes the trend's a with its b and c refitted, keeping the pins.  The
+same test on b then marks sweeps that take the trend's pair (c from the
+Vbias pin, else the 0-lock pin, else the mean of what is left).  The trend is the
 sequence of the per-sweep values through the package's Hampel filter
 (filters.hampel, window and n_sigma from the 'H' box) and then a
 Savitzky-Golay smoothing (length and order from the 'SG' box): where a
 sweep's regression should sit among the sweeps around it.  The gate
-needs as many sweeps as the Savitzky-Golay length and runs on dI/dV
-only.
+needs as many sweeps as the Savitzky-Golay length and runs on dI/dV and
+IETS alike.
 
 The IETS (second-harmonic) channel is the double-derivative
 counterpart: I(V) = a · Z(V) + b · V² / 2 + c · V + d with Z the double
 integral of the second-harmonic signal, four parameters per sweep, the
-calibrated d2I/dV2 a · S + b, no gate.  calibrate and calibrate_iets
+calibrated d2I/dV2 a · S + b, the same locks (one pin removes d, two
+remove c and d) and the gate on a and b.  calibrate and calibrate_iets
 return (calibrated, fits), every fit entry carrying the parameters,
-their standard errors, X / Z, the model and the residual; the dI/dV
-entries also the sweep's own pair beside the applied one, the stage
-that replaced it, the trend's pair and the Gate record.  Plain arrays
+their standard errors, X / Z, the model and the residual, the sweep's
+own pair beside the applied one, the stage that replaced it, the trend's
+pair, the Gate record and the pins.  Plain arrays
 in, columns = spectra; the pipeline (sts.STS.process_arrays) calls these
 on the acquired columns only, after the channel and the current have
 been through their filters and before the Feenstra division.  Run as a
 file, the __main__ block draws one file's calibration (its inputs, the
 fit in the I(V) frame, the calibrated curve in the dI/dV frame, and the
-cost surface), one sweep at a time.
+cost surface), one sweep at a time, with the gate, its H and SG boxes
+and both locks to set.
 """
 
 if __package__ in (None, ''):
@@ -64,18 +75,33 @@ GATE_FACTOR = 2.0
 # each side) and n_sigma, the Savitzky-Golay length (sweeps, odd) and polynomial order.
 GATE_HAMPEL = (3, 3.0)
 GATE_SGOLAY = (9, 2)
+# The Vbias lock's setpoint sample: the setpoint bias must lie within this fraction of the energy step
+# of a sample (anchor_index).
+ANCHOR_TOL = 0.5
 
 
 class GateSettings(NamedTuple):
-    """The gate as a window sets it: on / off, the Hampel (window, n_sigma), the Savitzky-Golay (length, order)."""
+    """
+    The gate and the locks as a window sets them: the gate on / off, its Hampel (window, n_sigma)
+    and Savitzky-Golay (length, order); the '0-lock' (lock0) and the 'Vbias lock' (lockv), each on
+    its own (both off at open; see calibrate).
+    """
     on: bool = True
     hampel: tuple = GATE_HAMPEL
     sgolay: tuple = GATE_SGOLAY
+    lock0: bool = False
+    lockv: bool = False
 
     @property
     def text(self):
         """The short form shown beside the toggle: 'H 3,3 SG 9,2'."""
         return f"H {self.hampel[0]:g},{self.hampel[1]:g} SG {self.sgolay[0]:g},{self.sgolay[1]:g}"
+
+    @property
+    def locks_text(self):
+        """The locks for the console: 'nothing locked', '0-lock on', 'Vbias lock on' or '0-lock and Vbias lock on'."""
+        on = [name for name, flag in (('0-lock', self.lock0), ('Vbias lock', self.lockv)) if flag]
+        return " and ".join(on) + " on" if on else "nothing locked"
 
 
 GATE_DEFAULT = GateSettings()
@@ -84,8 +110,9 @@ GATE_DEFAULT = GateSettings()
 def gate_settings(gate):
     """
     The GateSettings of `gate`: None (the defaults), a GateSettings, a dict
-    with 'on', 'hampel', 'sgolay' (missing keys the defaults), or a bool
-    (on / off at the defaults).  Validated: the Hampel window a whole number
+    with 'on', 'hampel', 'sgolay', 'lock0', 'lockv' (missing keys the
+    defaults; the locks off), or a bool (the gate on / off at the defaults,
+    the locks off).  Validated: the Hampel window a whole number
     of at least 1 and n_sigma positive; the Savitzky-Golay length an odd
     whole number greater than the order, the order a whole number of at
     least 0.  ValueError otherwise, naming the box.
@@ -98,7 +125,8 @@ def gate_settings(gate):
         g = GateSettings(on=bool(gate))
     elif isinstance(gate, dict):
         g = GateSettings(on=bool(gate.get('on', True)), hampel=tuple(gate.get('hampel', GATE_HAMPEL)),
-                         sgolay=tuple(gate.get('sgolay', GATE_SGOLAY)))
+                         sgolay=tuple(gate.get('sgolay', GATE_SGOLAY)), lock0=bool(gate.get('lock0', False)),
+                         lockv=bool(gate.get('lockv', False)))
     else:
         raise ValueError(f"gate settings must be None, a bool, a dict or GateSettings; got {gate!r}.")
     try:
@@ -111,7 +139,7 @@ def gate_settings(gate):
         raise ValueError(f"gate 'H' box: the window must be a whole number of at least 1 and n_sigma positive (got {hw:g},{hs:g}).")
     if sl != int(sl) or so != int(so) or so < 0 or sl <= so or int(sl) % 2 == 0:
         raise ValueError(f"gate 'SG' box: the length must be an odd whole number greater than the order, the order at least 0 (got {sl:g},{so:g}).")
-    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)))
+    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)), bool(g.lock0), bool(g.lockv))
 
 
 class Gate(NamedTuple):
@@ -153,6 +181,7 @@ class ColumnFit(NamedTuple):
     replaced: str = ''                # '' (its own pair), 'a' (the a stage: the trend's a, b and c refitted), 'ab' (the b stage: the trend's pair)
     trend: tuple = (float('nan'),) * 2   # the trend's (a, b) at this column, NaN when the gate did not run
     gate: Gate = _NO_GATE             # the call's gate record (the same object in every column's entry)
+    pins: tuple = ()                  # the locks' pins: ((name, V, I), ...), 'Vbias' before '0'; () with nothing locked
 
 
 class IetsColumnFit(NamedTuple):
@@ -170,8 +199,14 @@ class IetsColumnFit(NamedTuple):
     model: np.ndarray      # a·Z + b·V²/2 + c·V + d (I units)
     residual: np.ndarray   # I(V) − model (I units)
     rms: float             # rms of the residual (I units)
-    se: tuple = (float('nan'),) * 4   # the standard errors of (a, b, c, d)
+    se: tuple = (float('nan'),) * 4   # the standard errors of (a, b, c, d); NaN for a parameter a pin fixes
     a_mod: float = float('nan')       # the gain the modulation amplitude would give, 4 / V_mod² (the check)
+    a_own: float = float('nan')       # the sweep's own (a, b) (equal to a, b when the gate left it)
+    b_own: float = float('nan')
+    replaced: str = ''                # '' (its own pair), 'a' (the trend's a, the rest refitted), 'ab' (the trend's pair)
+    trend: tuple = (float('nan'),) * 2   # the trend's (a, b) at this column, NaN when the gate did not run
+    gate: Gate = _NO_GATE             # the call's gate record
+    pins: tuple = ()                  # the locks' pins: ((name, V, I), ...), as ColumnFit's
 
 
 def gain_from_modulation(vmod, order=1):
@@ -207,6 +242,123 @@ def _solve(A, y, what):
     dof = max(A.shape[0] - A.shape[1], 1)
     cov = float(residual @ residual) / dof * np.linalg.inv(As.T @ As)
     return sol / norms, np.sqrt(np.abs(np.diag(cov))) / norms, residual
+
+
+def anchor_index(energy, V_bias):
+    """
+    The anchor sample: the index in `energy` (any order) of the sample at
+    the setpoint bias V_bias (RHK_Bias), within ANCHOR_TOL of the energy
+    step.  The feedback loop was opened there at the setpoint current, so
+    the current of that sample is known: I_setpoint.  Raises ValueError
+    when V_bias is not recorded or no sample lies at it: a sweep that never
+    passes the bias it was stabilised at has no known current and is not
+    calibrated (the pipeline says so once on the console).
+    """
+    e = np.asarray(energy, dtype=np.float64)
+    if V_bias is None or not np.isfinite(V_bias):
+        raise ValueError("no setpoint bias (RHK_Bias) recorded; the calibration anchors at the setpoint.")
+    if e.size == 0:
+        raise ValueError("no energy samples.")
+    i = int(np.argmin(np.abs(e - float(V_bias))))
+    step = float(np.median(np.abs(np.diff(np.sort(e))))) if e.size > 1 else 0.0
+    if abs(e[i] - float(V_bias)) > max(ANCHOR_TOL * step, 1e-12):
+        raise ValueError(f"no sample at the setpoint bias {float(V_bias):+.4f} V (the sweep runs "
+                         f"{e.min():+.4f} to {e.max():+.4f} V); the file is not calibrated.")
+    return i
+
+
+def _sweep_arrays(sweeps, n):
+    """The per-column (direction, first acquired sample) of `sweeps` for n columns; None: every column forward."""
+    if sweeps is None or sweeps[0] is None:
+        return np.ones(n, dtype=int), np.zeros(n, dtype=int)
+    d = np.asarray(sweeps[0], dtype=int).reshape(-1)
+    f = np.asarray(sweeps[1], dtype=int).reshape(-1)
+    if d.size != n or f.size != n:
+        raise ValueError(f"the sweep directions hold {d.size} columns, the data {n}.")
+    return d, f
+
+
+def _pins(settings, e_sorted, sort_idx, I, direction, first, V_bias, I_setpoint):
+    """
+    The pins of one sweep (the energies sorted, I its current on them):
+    [(index on the sorted axis, current, name)], the Vbias pin before the
+    0-lock pin.  0-lock: the sample nearest 0 V (whichever is closest, not
+    exactly 0) at the recorded current there.  Vbias lock: a forward sweep
+    (direction +1, the one that left the setpoint) at the setpoint-bias
+    sample (anchor_index) at I_setpoint; a reverse sweep (-1, no setpoint
+    current) at its own first acquired sample (`first`, an index on the
+    column's original order) at the recorded current there; a column that
+    averages sweeps of both directions (0) has no single first sample and
+    takes no Vbias pin.  A forward sweep without the setpoint is refused
+    with anchor_index's message.
+    """
+    pins = []
+    if settings.lockv:
+        if direction > 0:
+            if I_setpoint is None or not np.isfinite(I_setpoint):
+                raise ValueError("no setpoint current (RHK_Current) recorded; the calibration anchors at the setpoint.")
+            pins.append((anchor_index(e_sorted, V_bias), float(I_setpoint), 'Vbias'))
+        elif direction < 0:
+            k = int(np.flatnonzero(sort_idx == int(first))[0])
+            pins.append((k, float(I[k]), 'Vbias'))
+    if settings.lock0:
+        k = int(np.argmin(np.abs(e_sorted)))
+        pins.append((k, float(I[k]), '0'))
+    return pins
+
+
+def _pinned_solve(R, I, pins, what):
+    """
+    The least squares of I against the columns of R (npts, k) with the fit
+    forced through every pin (index p, current I_p): with m pins the last m
+    parameters follow from the others through the pins, and the rest are
+    the least squares of what is left.  One pin on (X, V, 1):
+    I − I_p = a (X − X_p) + b (V − V_p), c from the pin; two pins: b and c
+    follow from a, one-parameter least squares in a.  Returns (parameters
+    (k,), standard errors (k,; NaN for the parameters the pins fix),
+    residual of the free fit).  ValueError when the pins leave the
+    parameters undetermined.
+    """
+    k = R.shape[1]
+    m = len(pins)
+    if m == 0:
+        return _solve(R, I, what)
+    P = np.array([p for p, _, _ in pins], dtype=int)
+    Ip = np.array([v for _, v, _ in pins], dtype=np.float64)
+    M = R[P, k - m:]
+    if not np.isfinite(np.linalg.cond(M)) or abs(np.linalg.det(M)) == 0.0:
+        raise ValueError(f"{what}: the pins do not determine the parameters.")
+    Minv = np.linalg.inv(M)
+    A = R[P, :k - m]
+    theta = np.empty(k)
+    se = np.full(k, np.nan)
+    if k - m > 0:
+        R_eff = R[:, :k - m] - R[:, k - m:] @ Minv @ A
+        y_eff = I - R[:, k - m:] @ (Minv @ Ip)
+        free, se_free, residual = _solve(R_eff, y_eff, what)
+        theta[:k - m] = free
+        se[:k - m] = se_free
+    else:
+        free = np.zeros(0)
+        residual = I - R @ np.concatenate([free, Minv @ Ip])
+    theta[k - m:] = Minv @ (Ip - A @ free)
+    return theta, se, residual
+
+
+def _pinned_rest(R, I, pins, held, what):
+    """
+    The parameters after the `held` ones (the first len(held) of R's
+    columns, fixed) by the least squares keeping the pins (_pinned_solve on
+    what the held ones leave); with more pins than free parameters the
+    first pins are kept (the Vbias pin before the 0-lock pin).
+    """
+    held = np.asarray(held, dtype=np.float64)
+    h = held.size
+    y = I - R[:, :h] @ held
+    keep = pins[:R.shape[1] - h]
+    shifted = [(p, v - float(R[p, :h] @ held), n) for p, v, n in keep]
+    theta, _, _ = _pinned_solve(R[:, h:], y, shifted, what)
+    return theta
 
 
 def _touching_flags(x, factor):
@@ -250,13 +402,15 @@ def _trend(x, settings):
 def gate_sweeps(a, b, refit, gate=None, factor=GATE_FACTOR):
     """
     The gate on the per-sweep gains a and offsets b (N,) in acquisition
-    order, `refit(j, a_j)` giving the (b, c) of sweep j refitted with its
-    a held (calibrate's).  Stage 1: the touching-sweep test on a
+    order, `refit(j, a_j)` giving the b of sweep j and the rest of its
+    parameters (dI/dV: c; IETS: (c, d)) refitted with its a held and the
+    pins kept (calibrate's, calibrate_iets').  Stage 1: the touching-sweep test on a
     (_touching_flags); a flagged sweep takes the trend's a (_trend) and
     its b and c refitted.  Stage 2: the test on the b that came out of
     stage 1; a flagged sweep takes the trend's a and b, the trends drawn
-    on the sequences after stage 1.  Returns (a, b, c-or-None per column,
-    Gate): the applied values and the record.  With the gate off, or
+    on the sequences after stage 1.  Returns (a, b, the rest or None per
+    column (None: the caller fits it for the applied pair), Gate): the
+    applied values and the record.  With the gate off, or
     fewer sweeps than the Savitzky-Golay length, nothing is replaced and
     the record says why.
     """
@@ -287,12 +441,12 @@ def gate_sweeps(a, b, refit, gate=None, factor=GATE_FACTOR):
 
 
 # vmod (the modulation amplitude, V) gives the check carried beside the fitted gain (gain_from_modulation);
-# V_bias, I_setpoint and ref are accepted for the callers and not used: the regression locks nothing.
-def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None, gate=None):
+# V_bias and I_setpoint are the Vbias lock's setpoint; ref is accepted for the callers and not used.
+def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None, gate=None, sweeps=None):
     """
     Calibrate dI/dV (LIA) curves against the co-acquired I(V) current
-    channel: per sweep the least squares of a, b, c, nothing locked, then
-    the gate.
+    channel: per sweep the least squares of a, b, c, through the pins of
+    the locks that are on (none at open), then the gate.
 
     Physics
     -------
@@ -307,9 +461,9 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     where X(V) is the cumulative integral of the experimental LIA signal
     (cumulative trapezoidal rule from the lowest-energy sample) and c the
     constant of integration.  The constant carries where the integral
-    starts and the level of the current, so no sample is privileged, no
-    current is subtracted, and the fit does not depend on where X starts
-    (a shift of X by a constant is absorbed by c).  For each spectrum j the
+    starts and the level of the current, so with no lock on no sample is
+    privileged, no current is subtracted, and the fit does not depend on
+    where X starts (a shift of X by a constant is absorbed by c).  For each spectrum j the
     least squares of
 
         S_j(a, b, c) = Σₙ [I_j(Vₙ) − a·X_j(Vₙ) − b·Vₙ − c]²
@@ -321,9 +475,26 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     gain from the modulation amplitude, 1 / V_mod, is carried in the fits
     (a_mod) as the check beside a_j; it is not used.
 
+    The locks (GateSettings.lock0, lockv; each on its own, any
+    combination with the gate): a pin is a sample the fit must pass
+    through at a known current.  '0-lock': the sample nearest 0 V
+    (whichever is closest, not exactly 0) at the recorded (filtered)
+    current there.  'Vbias lock': a forward sweep (the one that left the
+    setpoint) at the setpoint-bias sample (anchor_index, within
+    ANCHOR_TOL of the energy step) at I_setpoint; a reverse sweep, which
+    has no setpoint current, at its own first acquired sample at the
+    recorded current there; a column averaging sweeps of both directions
+    takes no Vbias pin.  One pin p: I − I_p = a (X − X_p) + b (V − V_p),
+    the least squares of a and b, c from the pin (the exact-pin form of
+    the far-anchor regression); two pins: b and c follow from a, a
+    one-parameter least squares in a (_pinned_solve).
+
     The gate (gate_sweeps, the module docstring) then runs on the per-sweep
-    a and b in the columns' order: a replaced sweep's calibrated curve uses
-    the pair it took.  The calibrated dI/dV is a_j · LIA_j(V) + b_j with the
+    a and b in the columns' order: a sweep that takes the trend's a has b
+    and c refitted keeping the pins; one that takes the trend's pair has c
+    from the Vbias pin when that lock is on, else from the 0-lock pin, else
+    the mean of what is left.  A replaced sweep's calibrated curve uses the
+    pair it took.  The calibrated dI/dV is a_j · LIA_j(V) + b_j with the
     applied pair.
 
     Parameters
@@ -342,13 +513,22 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     vmod : float or None
         The modulation amplitude (V, peak; RHK_CH1Drive_Amplitude): the
         check's source.
-    V_bias, I_setpoint, ref
-        Accepted for the callers (the setpoint and a sweep view's
-        forward-sweep reference) and not used: every sweep is regressed on
-        its own data.
+    V_bias, I_setpoint : float or None
+        The setpoint (RHK_Bias in V, RHK_Current in A): the Vbias lock's
+        pin of a forward sweep; a forward sweep without them, or without a
+        sample at V_bias, is refused while that lock is on.
+    ref
+        A sweep view's forward-sweep reference, accepted for the callers
+        and not used: every sweep is regressed on its own data.
     gate : GateSettings, dict, bool or None
-        The gate as the window sets it (gate_settings); None the defaults
-        (on, Hampel 3,3, Savitzky-Golay 9,2).
+        The gate and the locks as the window sets them (gate_settings);
+        None the defaults (the gate on, Hampel 3,3, Savitzky-Golay 9,2;
+        the locks off).
+    sweeps : (direction, first) or None
+        Per column its sweep direction (+1 forward, -1 reverse, 0 an
+        average of both) and the index of its first acquired sample in the
+        column's original order (STS.sweep_pins); None: every column a
+        forward sweep.
 
     Returns
     -------
@@ -357,8 +537,8 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
         in A)
     fits : list of ColumnFit, one per column (the applied a, b, c, X, model,
         residual, rms and se of the sweep's own fit, a_mod, the own pair,
-        the stage that replaced it, the trend's pair, the Gate record; the
-        arrays in the original energy ordering)
+        the stage that replaced it, the trend's pair, the Gate record, the
+        pins; the arrays in the original energy ordering)
 
     A column whose regressors are dependent (an all-zero LIA column: X is
     then zero) raises ValueError naming it; the pipeline passes the
@@ -380,31 +560,40 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     g = gain_from_modulation(vmod, 1)
     a_mod = float('nan') if g is None else float(g)
     n_curves = curves.shape[1]
-    Xs, Is, own, ses = [], [], [], []
+    settings = gate_settings(gate)
+    direction, first = _sweep_arrays(sweeps, n_curves)
+    Xs, Is, Rs, pins, own, ses = [], [], [], [], [], []
     for j in range(n_curves):
         # X(V) = cumulative integral of the LIA from the lowest-energy sample.
         X = cumulative_trapezoid(curves[sort_idx, j], e_sorted, initial=0)
         I = iv_data[sort_idx, j]
-        sol, se, _ = _solve(np.column_stack([X, e_sorted, one]), I, f"column {j}")
+        R = np.column_stack([X, e_sorted, one])
+        pj = _pins(settings, e_sorted, sort_idx, I, direction[j], first[j], V_bias, I_setpoint)
+        sol, se, _ = _pinned_solve(R, I, pj, f"column {j}")
         Xs.append(X)
         Is.append(I)
+        Rs.append(R)
+        pins.append(pj)
         own.append(sol)
         ses.append(se)
     own = np.array(own) if n_curves else np.zeros((0, 3))
 
     def refit(j, a_j):
-        """The (b, c) of column j with a held at a_j."""
-        sol, _, _ = _solve(np.column_stack([e_sorted, one]), Is[j] - a_j * Xs[j], f"column {j}")
-        return float(sol[0]), float(sol[1])
+        """The (b, c) of column j with a held at a_j, the pins kept."""
+        b_, c_ = _pinned_rest(Rs[j], Is[j], pins[j], [a_j], f"column {j}")
+        return float(b_), float(c_)
 
-    a_app, b_app, c_app, record = gate_sweeps(own[:, 0], own[:, 1], refit, gate) if n_curves else \
+    a_app, b_app, c_app, record = gate_sweeps(own[:, 0], own[:, 1], refit, settings) if n_curves else \
         (np.zeros(0), np.zeros(0), [], _NO_GATE)
     calibrated = np.empty_like(curves, dtype=np.float64)
     fits = []
     for j in range(n_curves):
         a_j, b_j = float(a_app[j]), float(b_app[j])
         if c_app[j] is None:
-            c_j = own[j, 2] if (a_j == own[j, 0] and b_j == own[j, 1]) else refit_c(Xs[j], Is[j], e_sorted, a_j, b_j)
+            # The trend's pair (or the sweep's own): c from the Vbias pin, else the 0-lock pin, else the
+            # mean of what the pair leaves (_pinned_rest keeps the first pin).
+            c_j = own[j, 2] if (a_j == own[j, 0] and b_j == own[j, 1]) else \
+                float(_pinned_rest(Rs[j], Is[j], pins[j], [a_j, b_j], f"column {j}")[0])
         else:
             c_j = float(c_app[j])
         calibrated[:, j] = a_j * curves[:, j] + b_j
@@ -416,20 +605,17 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
         trend = (float(record.trend_a[j]), float(record.trend_b[j])) if record.ran else (float('nan'),) * 2
         fits.append(ColumnFit(a_j, b_j, float(c_j), X_orig, model, residual,
                               float(np.sqrt(np.mean(residual * residual))), tuple(float(s) for s in ses[j]), a_mod,
-                              float(own[j, 0]), float(own[j, 1]), float(own[j, 2]), replaced, trend, record))
+                              float(own[j, 0]), float(own[j, 1]), float(own[j, 2]), replaced, trend, record,
+                              tuple((n, float(e_sorted[p]), float(v)) for p, v, n in pins[j])))
     return calibrated, fits
 
 
-def refit_c(X, I, V, a, b):
-    """The level c of a sweep for a given pair (a, b): the mean of I − a·X − b·V over the sweep (sorted arrays)."""
-    return float(np.mean(I - a * X - b * V))
-
-
-def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None, gate=None):
+def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=None, gate=None, sweeps=None):
     """
     Calibrate IETS (second-harmonic lock-in) curves against the co-acquired
     I(V) current channel, the double-derivative counterpart of calibrate:
-    per sweep the least squares of a, b, c, d, nothing locked, no gate.
+    per sweep the least squares of a, b, c, d through the pins of the
+    locks that are on, then the gate on a and b.
 
     The true d2I/dV2 relates to the raw second-harmonic signal S by
 
@@ -444,21 +630,31 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
     dI/dV level) and d of the second (the current level).  For each
     spectrum j the least squares in (a, b, c, d) over every point of the
     sweep, the 4 by 4 normal equations on the regressors (Z, V²/2, V, 1).
-    The calibrated curve is a_j · S_j(V) + b_j (in the Current page's units
-    per V²), in the original energy ordering.  The gain the modulation
-    amplitude would give, 4 / V_mod², is carried as the check (a_mod).
+    The locks pin it as they pin calibrate's fit (the same pins): one pin
+    removes d, two remove c and d (_pinned_solve).  The gate (gate_sweeps)
+    then runs on a and b as on dI/dV: a sweep that takes the trend's a has
+    b, c and d refitted keeping the pins; one that takes the trend's pair
+    has c and d refitted keeping the pins (the Vbias pin first).  The
+    calibrated curve is a_j · S_j(V) + b_j with the applied pair (in the
+    Current page's units per V²), in the original energy ordering.  The
+    gain the modulation amplitude would give, 4 / V_mod², is carried as
+    the check (a_mod).
 
     Parameters: as calibrate (energy in V, any order; curves the
     second-harmonic page's data as the loader gives it, through the dI/dV
     filters when they are on; iv the recorded current through the
     pipeline's filters, None raises ValueError; vmod the modulation
-    amplitude; V_bias, I_setpoint, ref and gate accepted and not used).
+    amplitude; V_bias, I_setpoint the Vbias lock's setpoint; gate the gate
+    and the locks; sweeps the columns' directions; ref accepted and not
+    used).
 
     Returns
     -------
     calibrated : ndarray, same shape as *curves*, float64
-    fits : list of IetsColumnFit, one per column (a, b, c, d, Z, model,
-        residual, rms, se, a_mod; the arrays in the original energy ordering)
+    fits : list of IetsColumnFit, one per column (the applied a, b, c, d,
+        Z, model, residual, rms and se of the sweep's own fit, a_mod, the
+        own pair, the stage that replaced it, the trend's pair, the Gate
+        record, the pins; the arrays in the original energy ordering)
     """
     if iv is None:
         raise ValueError(
@@ -476,39 +672,73 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
     g = gain_from_modulation(vmod, 2)
     a_mod = float('nan') if g is None else float(g)
     n_curves = curves.shape[1]
-    calibrated = np.empty_like(curves, dtype=np.float64)
-    fits = []
+    settings = gate_settings(gate)
+    direction, first = _sweep_arrays(sweeps, n_curves)
+    Zs_all, Is_all, Rs, pins, own, ses = [], [], [], [], [], []
     for j in range(n_curves):
         # Y(V) = cumulative integral of S from the lowest-energy sample; Z(V) = its integral.
         Y = cumulative_trapezoid(curves[sort_idx, j], e_sorted, initial=0)
         Zs = cumulative_trapezoid(Y, e_sorted, initial=0)
         Is = iv_data[sort_idx, j]
-        (a_j, b_j, c_j, d_j), se, _ = _solve(np.column_stack([Zs, 0.5 * e_sorted * e_sorted, e_sorted, one]), Is,
-                                             f"column {j}")
+        R = np.column_stack([Zs, 0.5 * e_sorted * e_sorted, e_sorted, one])
+        pj = _pins(settings, e_sorted, sort_idx, Is, direction[j], first[j], V_bias, I_setpoint)
+        sol, se, _ = _pinned_solve(R, Is, pj, f"column {j}")
+        Zs_all.append(Zs)
+        Is_all.append(Is)
+        Rs.append(R)
+        pins.append(pj)
+        own.append(sol)
+        ses.append(se)
+    own = np.array(own) if n_curves else np.zeros((0, 4))
+
+    def refit(j, a_j):
+        """The b and the (c, d) of column j with a held at a_j, the pins kept."""
+        b_, c_, d_ = _pinned_rest(Rs[j], Is_all[j], pins[j], [a_j], f"column {j}")
+        return float(b_), (float(c_), float(d_))
+
+    a_app, b_app, cd_app, record = gate_sweeps(own[:, 0], own[:, 1], refit, settings) if n_curves else \
+        (np.zeros(0), np.zeros(0), [], _NO_GATE)
+    calibrated = np.empty_like(curves, dtype=np.float64)
+    fits = []
+    for j in range(n_curves):
+        a_j, b_j = float(a_app[j]), float(b_app[j])
+        if cd_app[j] is not None:
+            c_j, d_j = cd_app[j]
+        elif a_j == own[j, 0] and b_j == own[j, 1]:
+            c_j, d_j = float(own[j, 2]), float(own[j, 3])
+        else:
+            c_j, d_j = (float(v) for v in _pinned_rest(Rs[j], Is_all[j], pins[j], [a_j, b_j], f"column {j}"))
         calibrated[:, j] = a_j * curves[:, j] + b_j
-        Z_orig = np.empty_like(Zs)
-        Z_orig[sort_idx] = Zs
-        model = a_j * Z_orig + b_j * 0.5 * energy * energy + c_j * energy + d_j
+        Z_orig = np.empty_like(Zs_all[j])
+        Z_orig[sort_idx] = Zs_all[j]
+        a_o, b_o, c_o, d_o = (float(v) for v in own[j])
+        model = a_o * Z_orig + b_o * 0.5 * energy * energy + c_o * energy + d_o
         residual = iv_data[:, j] - model
-        fits.append(IetsColumnFit(float(a_j), float(b_j), float(c_j), float(d_j), Z_orig, model, residual,
-                                  float(np.sqrt(np.mean(residual * residual))), tuple(float(s) for s in se), a_mod))
+        replaced = 'ab' if j in record.replaced_b else ('a' if j in record.replaced_a else '')
+        trend = (float(record.trend_a[j]), float(record.trend_b[j])) if record.ran else (float('nan'),) * 2
+        fits.append(IetsColumnFit(a_j, b_j, float(c_j), float(d_j), Z_orig, model, residual,
+                                  float(np.sqrt(np.mean(residual * residual))), tuple(float(s) for s in ses[j]), a_mod,
+                                  a_o, b_o, replaced, trend, record,
+                                  tuple((n, float(e_sorted[p]), float(v)) for p, v, n in pins[j])))
     return calibrated, fits
 
 
 def gate_from_record(rec):
-    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order]); a record without them (older) gives the defaults."""
+    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order], 'lock0', 'lockv'); a record without them (older) gives the defaults, the locks off."""
     try:
         return gate_settings({'on': rec.get('gate', True), 'hampel': rec.get('gate_hampel', GATE_HAMPEL),
-                              'sgolay': rec.get('gate_sgolay', GATE_SGOLAY)})
+                              'sgolay': rec.get('gate_sgolay', GATE_SGOLAY), 'lock0': rec.get('lock0', False),
+                              'lockv': rec.get('lockv', False)})
     except ValueError as exc:
         print(f"record: the gate settings are not usable ({exc}); the defaults are used.")
         return GATE_DEFAULT
 
 
 def gate_record(settings):
-    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay'} (gate_from_record reads them)."""
+    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv'} (gate_from_record reads them)."""
     return {'gate': bool(settings.on), 'gate_hampel': [settings.hampel[0], settings.hampel[1]],
-            'gate_sgolay': [settings.sgolay[0], settings.sgolay[1]]}
+            'gate_sgolay': [settings.sgolay[0], settings.sgolay[1]], 'lock0': bool(settings.lock0),
+            'lockv': bool(settings.lockv)}
 
 
 def gate_text(fits, cols=None):
@@ -525,8 +755,9 @@ def gate_text(fits, cols=None):
     name = (lambda k: int(cols[k])) if cols is not None else int
     ra = [name(k) for k in rec.replaced_a]
     rb = [name(k) for k in rec.replaced_b]
+    unit_b = "pA/V²" if isinstance(fits[0], IetsColumnFit) else "pA/V"
     return (f"gate {rec.settings.text}, factor {GATE_FACTOR:g}: tolerance ±{rec.tol_a:.3g} on a, "
-            f"±{rec.tol_b * 1e12:.3g} pA/V on b; {len(ra)} sweep(s) took the trend's a" + (f" ({ra})" if ra else "")
+            f"±{rec.tol_b * 1e12:.3g} {unit_b} on b; {len(ra)} sweep(s) took the trend's a" + (f" ({ra})" if ra else "")
             + f", {len(rb)} the trend's pair" + (f" ({rb})" if rb else ""))
 
 
@@ -547,7 +778,9 @@ if __name__ == '__main__':
     column = 0        # the starting sweep: an index among the acquired columns (0 = the first)
     hampel = None     # the current filters as the windows set them (None = off), e.g. {'window': 4, 'n_sigma': 3}
     sgolay = None     # e.g. {'window_length': 6, 'polyorder': 3}
-    gate = None       # the gate as the window sets it: None the defaults, False off, or {'on': True, 'hampel': (3, 3), 'sgolay': (9, 2)}
+    gate = None       # the gate and the locks at open: None the defaults (the gate on, the locks off), False the gate off, or
+    #                   {'on': True, 'hampel': (3, 3), 'sgolay': (9, 2), 'lock0': False, 'lockv': False}; the window's
+    #                   'gate' row, its 'H' and 'SG' boxes and the '0-lock' / 'Vbias lock' rows change them
 
     f = sm4file.Sm4File(path)
     cols = np.flatnonzero(f.acquired)
@@ -562,7 +795,15 @@ if __name__ == '__main__':
     iv_raw = np.asarray(f.iv[:, cols], dtype=np.float64)
     filtered = hampel is not None or sgolay is not None
     iv = filters.filter_lia(iv_raw, hampel, sgolay)   # the recorded current through the filters (a copy when off)
-    cal, fits = calibrate(V, lia, iv, f.vmod, gate=gate)
+    sweeps = tuple(a[cols] for a in f.spectra.sweep_pins())   # every column's direction (the Vbias lock's pin)
+    run = {'gate': gate_settings(gate)}
+
+    def fit_all():
+        """The file's calibration with the window's gate and locks: (calibrated, fits)."""
+        return calibrate(V, lia, iv, f.vmod, V_bias=f.spectra.V_bias, I_setpoint=f.spectra.I_setpoint,
+                         gate=run['gate'], sweeps=sweeps)
+
+    cal, fits = fit_all()
     uL = f.units_lia or 'no units'                    # the LIA page's RHK_Zunits (the loader's data are in it)
     uI = f.units_iv or 'no units'                     # the Current page's RHK_Zunits
     ua = "1/V" if uI == uL else f"{uI}/({uL}·V)"      # the units of the stretch a
@@ -570,20 +811,28 @@ if __name__ == '__main__':
     order = np.argsort(V)
     Vs = V[order]
     a_all = np.array([cf.a for cf in fits])
-    print(f"{f.name}: {n_sweeps} acquired column(s), bias {V.min():+.3f} to {V.max():+.3f} V; per sweep the least "
-          f"squares of a, b, c, nothing locked"
-          + (f"; current filters Hampel {hampel}, SG {sgolay}" if filtered else "; current filters off"))
-    print(f"gain a per sweep (applied): {a_all.min():.4g} to {a_all.max():.4g} {ua}, median {np.median(a_all):.4g}; "
-          + (f"1 / V_mod = {fits[0].a_mod:.4g} {ua} (V_mod = {f.vmod * 1e3:.3g} mV) as the check"
-             if np.isfinite(fits[0].a_mod) else "no modulation amplitude recorded"))
-    print(gate_text(fits, cols))
-    for j, cf in zip(cols, fits):
-        print(f"column {j}: own a = {cf.a_own:.4g} ± {cf.se[0]:.2g} {ua}, b = {sm4file.si_text(cf.b_own, uI + '/V')} ± "
-              f"{sm4file.si_text(cf.se[1], uI + '/V')}, c = {sm4file.si_text(cf.c_own, uI)}, "
-              f"rms residual = {sm4file.si_text(cf.rms, uI)}"
-              + (f"; replaced on the {'b' if cf.replaced == 'ab' else 'a'} stage: a = {cf.a:.4g}, "
-                 f"b = {sm4file.si_text(cf.b, uI + '/V')}" if cf.replaced else ""))
 
+    def report():
+        """The file's calibration on the console: the method, the gains, the gate's doing, every column's parameters and pins."""
+        a_all = np.array([cf.a for cf in fits])
+        print(f"{f.name}: {n_sweeps} acquired column(s), bias {V.min():+.3f} to {V.max():+.3f} V; per sweep the least "
+              f"squares of a, b, c, {run['gate'].locks_text}"
+              + (f"; current filters Hampel {hampel}, SG {sgolay}" if filtered else "; current filters off"))
+        print(f"gain a per sweep (applied): {a_all.min():.4g} to {a_all.max():.4g} {ua}, median {np.median(a_all):.4g}; "
+              + (f"1 / V_mod = {fits[0].a_mod:.4g} {ua} (V_mod = {f.vmod * 1e3:.3g} mV) as the check"
+                 if np.isfinite(fits[0].a_mod) else "no modulation amplitude recorded"))
+        print(gate_text(fits, cols))
+        for j, cf in zip(cols, fits):
+            se_b = (f"± {sm4file.si_text(cf.se[1], uI + '/V')}" if np.isfinite(cf.se[1]) else "(from the pins)")
+            print(f"column {j}: own a = {cf.a_own:.4g} ± {cf.se[0]:.2g} {ua}, b = {sm4file.si_text(cf.b_own, uI + '/V')} "
+                  f"{se_b}, c = {sm4file.si_text(cf.c_own, uI)}, "
+                  f"rms residual = {sm4file.si_text(cf.rms, uI)}"
+                  + "".join(f"; {'Vbias' if n == 'Vbias' else '0'} pin at {v:+.3f} V, {sm4file.si_text(i_, uI)}"
+                            for n, v, i_ in cf.pins)
+                  + (f"; replaced on the {'b' if cf.replaced == 'ab' else 'a'} stage: a = {cf.a:.4g}, "
+                     f"b = {sm4file.si_text(cf.b, uI + '/V')}" if cf.replaced else ""))
+
+    report()
     X_all = np.column_stack([c.X for c in fits])
     faint = dict(color='0.6', lw=0.5, alpha=0.5)
     bold = dict(color='C0', lw=1.2)
@@ -636,7 +885,8 @@ if __name__ == '__main__':
 
         axes = fig.subplots(2, 3)
         state['axes'].extend(axes.flat)
-        fig.suptitle(f"{f.name}: calibration of column {cols[k]}, the sweep's own least squares of a, b, c"
+        fig.suptitle(f"{f.name}: calibration of column {cols[k]}, the sweep's own least squares of a, b, c, "
+                     f"{run['gate'].locks_text}"
                      + (f", replaced by the gate on the {'b' if cf.replaced == 'ab' else 'a'} stage" if cf.replaced else "")
                      + f"  (bias {V.min():+.3f} to {V.max():+.3f} V" + (", current filtered" if filtered else "") + ")")
 
@@ -732,11 +982,37 @@ if __name__ == '__main__':
         state['k'] = new
         draw(new)
 
-    # The sweep buttons bottom centre, the sweep text beside them.
+    def on_gate(st):
+        """The 'gate' row, its 'H' / 'SG' boxes, '0-lock' or 'Vbias lock': the file calibrated again, the shown sweep redrawn."""
+        if refit(gate_settings(st['gate']._asdict())):
+            report()
+            draw(state['k'])
+
+    def refit(settings):
+        """The calibration with new settings; a refused one (a lock the file cannot hold) is said and the old kept."""
+        global cal, fits, X_all
+        old = run['gate']
+        run['gate'] = settings
+        try:
+            cal, fits = fit_all()
+        except ValueError as exc:
+            print(f"calibration not changed: {exc}")
+            run['gate'] = old
+            box.set_state(gate=old._asdict())
+            return False
+        X_all = np.column_stack([c.X for c in fits])
+        return True
+
+    # The sweep buttons bottom centre, the sweep text beside them, the gate and the locks at the right
+    # (controls.PipelineBox without its calibrate / normalize rows: the calibration is this window's subject).
+    # The settings cross as dicts: run as a file this module is __main__, whose GateSettings is not the
+    # package's that the box uses.
     from sm4_Browser import controls
     steps = controls.StepButtons(fig, '< sweep', 'sweep >')
     steps.on_change(on_step)
     sweep_text = controls.Label(fig, 'sweep text', fs=9)
-    fig.layout_root().addLayout(controls.row('stretch', steps, sweep_text, 'stretch'))
+    box = controls.PipelineBox(fig, gate=run['gate']._asdict(), steps=False)
+    box.on_change(on_gate)
+    fig.layout_root().addLayout(controls.row('stretch', steps, sweep_text, 'stretch', box))
     draw(state['k'])
     plt.show()
