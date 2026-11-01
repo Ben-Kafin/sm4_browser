@@ -254,7 +254,7 @@ class SavedAveragesWindow:
     LABEL_RE = re.compile(r'^(?P<path>.*?) \| average of (?P<n>\d+) sweeps from (?P<k>\d+) files '
                           r'(?P<times>.*?)(?: minus (?P<minus>.*))?$')
     TIME_RE = re.compile(r'^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$')
-    ROW_H = 0.045          # figure fraction per row
+    ROW_H = 0.045          # one row's height: this fraction of the design height (at the text zoom)
     MAX_TIMES = 8          # file times shown per row before '+k more'
 
     DESIGN = (16, 6)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
@@ -272,8 +272,20 @@ class SavedAveragesWindow:
             self.fig.canvas.manager.set_window_title(f"saved averages: {self.directory}")
         except Exception:
             pass
-        self.txt = self.fig.text(0.03, 0.96, '', fontsize=9, ha='left', va='top')
-        self.buttons = widgets.RunControls(self.fig, [('load', 0.03, 0.03), ('rescan', 0.13, 0.03)])
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        self.txt = controls.Label(self.fig, 'header', fs=9, wrap=True)
+        self.buttons = controls.RunControls(self.fig, ['load', 'rescan'])
+        # automatic layout: the one rule for every window (nothing placed by hand).  The header line,
+        # the list (its cell as tall as its rows, at most the room the window has: _draw_list), the
+        # buttons at the bottom left.
+        self._list_cell = self.fig.cell(min_px=(40, 20))
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(self.txt.qt)
+        root.addWidget(self._list_cell, 1)
+        root.addStretch(0)
+        root.addLayout(controls.row(self.buttons['load'], self.buttons['rescan'], 'stretch'))
+        self.fig.set_layout(root)
         self.buttons.on('load', self._on_load)
         self.buttons.on('rescan', self.scan)
         self.fig.canvas.mpl_connect('button_press_event', self._on_press)
@@ -499,8 +511,11 @@ class SavedAveragesWindow:
         self.txt.set_text(f"{n} saved record(s) in {self.avg_dir}   "
                           f"(averages by index, old label-named fit histories of the directory itself, "
                           f"line markers, line averages; click a row, then 'load')")
-        height = min(0.78, self.ROW_H * n) if n else 0.78
-        ax = self.fig.add_axes([0.03, 0.90 - height, 0.94, height])
+        # The list's cell: ROW_H of the design height per row (at the text zoom), the empty list or a
+        # list taller than the window filling the room there is.
+        row_px = self.ROW_H * self.fig._design_px[1] * self.fig.font_zoom
+        self._list_cell.setMaximumHeight(int(row_px * n) if n else 16777215)
+        ax = self.fig.add_axes(cell=self._list_cell)
         ax.set_navigate(False)
         ax.set_xticks([])
         ax.set_yticks([])

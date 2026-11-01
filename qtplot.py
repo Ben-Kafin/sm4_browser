@@ -13,9 +13,10 @@ PySide6 / pyqtgraph:
   rcParams, get_cmap                         the pyplot functions
   Figure, FigureCanvas, Axes                 a figure is a Qt window with one
                                              pyqtgraph scene; every axes is a
-                                             bare ViewBox placed exactly at its
-                                             figure-fraction rectangle, its
-                                             tick axes outside it (as in
+                                             bare ViewBox placed in its cell of
+                                             the window's Qt layout (or, given
+                                             a rect, at that figure fraction),
+                                             its tick axes outside it (as in
                                              matplotlib), every tick drawn
                                              where the view box maps its
                                              value (_Axis, the tick rule)
@@ -42,11 +43,26 @@ lookup tables pyqtgraph draws with.  matplotlib, when installed, is used
 only to read the colour values of a map given by name or object and, in
 mplexport, to write the publication files; it never draws on screen.
 
+Layout (automatic layout: the one rule for every window; nothing is placed by
+hand): a window's panels and controls sit in one Qt layout installed on its
+canvas (Figure.set_layout).  A panel is a cell of that layout (Figure.cell,
+a PanelCell): its axes takes the cell's rectangle less its tick axes and
+title (Axes(cell=...)); a row of panels keeps one height (Figure.align_row)
+and a spatial panel its x:y ratio (set_aspect / set_box_aspect); a figure
+text may sit in a cell (text(..., cell=)).  The controls (controls.py) are
+Qt widgets in the same layout.  The matplotlib-style calls (add_subplot,
+subplots) put their axes in an automatic grid of cells (Figure.layout_root);
+an axes given an explicit rect keeps that figure fraction.  When a window is
+too small for its controls' text, the text shrinks to CONTROL_FIT_MIN of its
+zoom (Figure._fit_controls, fits_controls) and then the window's smallest
+size is raised, so nothing overlaps and no window scrolls.  The publication
+export lays a window out at its design size (Figure.at_design_size).
+
 Text size: every window declares its design size as a DESIGN constant
 (inches, the figsize it opens with, at DPI logical pixels per inch) and
 its text zoom is window_zoom(W, H, W0, H0) = min(W / W0, H / H0) limited to
 ZOOM_MIN .. ZOOM_MAX (Figure.font_zoom, set in Figure._relayout on every
-resize): plots, ticks, legends, the controls of widgets.py, the info panel
+resize): plots, ticks, legends, the controls of controls.py, the info panel
 and the toolbar follow it.  Shape: a figure window taller than it is wide
 is in portrait (Figure.portrait, set_portrait): its controls show their
 short labels (widgets.SHORT_LABELS) and a panel title that is a file name
@@ -61,7 +77,7 @@ MouseEvent, KeyEvent, PickEvent, CloseEvent), the navigation toolbar
 (Figure.savefig: publication files through mplexport, pyqtgraph's own
 exporters, a screenshot, or the curves as CSV; export_vector writes PDF /
 SVG / EPS through Qt when matplotlib is missing), the registry of the Qt
-controls a figure places (Figure._register_control, used by widgets.py),
+controls in a figure's layout (Figure._register_control, used by controls.py),
 and the crash log (CRASH_LOG, log_note, watchdog) for hangs and native
 crashes inside Qt.
 """
@@ -72,6 +88,7 @@ import sys
 import math
 import html
 import itertools
+import contextlib
 import traceback
 import types
 
@@ -234,6 +251,19 @@ FONT_SCALE = 1.25         # every text (plots, legends, controls) this much larg
 DPI = 100.0               # logical pixels per inch: figure sizes, widget sizes, and font points as matplotlib's
 ANTIALIAS = True          # antialiased curves (False draws faster, with jagged lines)
 ZOOM_MIN, ZOOM_MAX = 0.5, 4.0   # the text zoom of any window: its size relative to its design size, within these
+CONTROL_FIT_MIN = 0.75          # the controls' text shrinks to at most this fraction of the zoom to fit its window (every window: Figure._fit_controls, browser._WindowZoom)
+CONTROL_FIT_SLACK = 8           # px: a larger control text is taken only when the controls fit with this to spare (no flip-flop at the edge)
+
+
+def fits_controls(need, room, zoom, current):
+    """
+    The text-fit rule's test (every window: Figure._fit_controls, browser._WindowZoom): the controls'
+    need (w, h) fits the room (w, h) at `zoom`; a zoom above the one now applied (`current`) must fit
+    with CONTROL_FIT_SLACK to spare, so a window at the edge keeps its text size instead of switching
+    between two sizes on every layout pass.
+    """
+    s = CONTROL_FIT_SLACK if current is not None and zoom > current + 1e-9 else 0
+    return need[0] <= room[0] - s and need[1] <= room[1] - s
 pg.setConfigOptions(imageAxisOrder='row-major', background='w', foreground='k', antialias=ANTIALIAS)
 
 
@@ -2201,12 +2231,16 @@ class Text(Artist):
     def __init__(self, owner, x, y, s, coords='data', fontsize=None, ha='left', va='baseline', color='k',
                  family=None, fontweight=None, weight=None, bbox=None, visible=True, zorder=None, offset=(0, 0),
                  linespacing=None, clip_on=False, wrap=False, rotation=0, fontfamily=None, size=None,
-                 horizontalalignment=None, verticalalignment=None, label=None, **kw):
+                 horizontalalignment=None, verticalalignment=None, label=None, cell=None, **kw):
         axes = owner if isinstance(owner, Axes) else None
         super().__init__(axes, label, zorder, None, visible)
         self.figure = owner if isinstance(owner, Figure) else owner.figure
         self._owner = owner
         self._coords = coords
+        # A figure text in a layout cell (automatic layout: the one rule for every window): x, y are
+        # fractions of the cell's rectangle, the text placed again whenever the cell moves.
+        self._cell = cell if coords == 'figure' else None
+        self._place_pending = False
         self._x, self._y = float(x), float(y)
         self._text = '' if s is None else str(s)
         self._size = font_pt(size if fontsize is None else fontsize)
@@ -2242,6 +2276,8 @@ class Text(Artist):
                 self.item.setVisible(False)
         else:
             self.figure.canvas.scene().addItem(self.item)
+            if self._cell is not None:
+                self._cell.bind(self)
             self._place()
         self._items.append(self.item)
 
@@ -2261,14 +2297,31 @@ class Text(Artist):
         ti.updateTextPos()
 
     def _place(self):
+        self._place_pending = False
         if self._coords == 'data':
             return
         if self._coords == 'axes':
             x0, y0, w, h = self.axes._px_rect()
             self.item.setPos(x0 + self._x * w, y0 + (1.0 - self._y) * h)
+        elif self._cell is not None:
+            x0, y0, w, h = self._cell.rect_px()
+            self.item.setPos(x0 + self._x * w, y0 + (1.0 - self._y) * h)
         else:
             W, H = self.figure._canvas_size()
             self.item.setPos(self._x * W, (1.0 - self._y) * H)
+
+    def _request_place(self):
+        if not self._place_pending:
+            self._place_pending = True
+            QtCore.QTimer.singleShot(0, self._place)
+
+    def figure_xy(self):
+        """A figure text's anchor in figure fractions (from its cell when it has one)."""
+        if self._cell is None:
+            return self._x, self._y
+        W, H = self.figure._canvas_size()
+        x0, y0, w, h = self._cell.rect_px()
+        return (x0 + self._x * w) / W, 1.0 - (y0 + (1.0 - self._y) * h) / H
 
     def set_text(self, s):
         s = '' if s is None else str(s)
@@ -2321,6 +2374,8 @@ class Text(Artist):
                 self.item.scene().removeItem(self.item)
         except Exception:
             pass
+        if self._cell is not None:
+            self._cell.unbind(self)
         self._items = []
         if isinstance(self._owner, Axes):
             self._owner._forget(self)
@@ -2519,11 +2574,136 @@ class SecondaryAxis:
             self._axis.set_tick_pt(labelsize)
 
 
+# ---------------------------------------------------------------------- #
+#  Automatic layout                                                        #
+# ---------------------------------------------------------------------- #
+#
+# automatic layout: the one rule for every window (nothing placed by hand).  A window's controls
+# and its panels share one Qt layout on the canvas's viewport (Figure.set_layout): a control is a
+# real Qt widget in that layout, a panel is a PanelCell in it, and the axes, colour bars and texts
+# bound to a cell (Figure.add_axes(cell=...), Figure.text(..., cell=...)) are drawn on the canvas
+# inside the cell's rectangle.  Qt's layout sizes and places the controls and the cells together,
+# so a control meant to sit under a panel sits under it, nothing overlaps, and no position is
+# picked by hand.  A panel keeps its own rules inside its cell: a spatial panel keeps its x:y ratio
+# (an adjustable-'box' aspect shrinks the box about the cell's centre) and a row of panels keeps
+# one height (Figure.align_row).
+
+class PanelCell(QtWidgets.QWidget):
+    """
+    A panel's place in its window's Qt layout (automatic layout: the one rule for every window): an
+    empty, mouse-transparent widget whose rectangle the layout sets.  The objects bound to it (an
+    Axes made with cell=..., a figure text made with cell=...) are placed again whenever the cell,
+    or any widget holding it, moves or changes size.  `stretch` (horizontal, vertical) says whether
+    the cell takes the room the layout has to spare in that direction; `min_px` is its smallest size.
+    """
+
+    def __init__(self, figure, min_px=(40, 40), stretch=(True, True), inner_w=None):
+        super().__init__()
+        self.figure = figure
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        pol = QtWidgets.QSizePolicy.Policy
+        # inner_w: a narrow panel (a colour bar, a ramp) whose box is inner_w pixels wide at text
+        # zoom 1; the cell is as wide as that box plus its tick axes and label (sizeHint).
+        self.inner_w = inner_w
+        if inner_w is not None:
+            self.setSizePolicy(pol.Fixed, pol.Expanding if stretch[1] else pol.Preferred)
+            self.setMinimumHeight(int(min_px[1]))
+        else:
+            self.setSizePolicy(pol.Expanding if stretch[0] else pol.Preferred,
+                               pol.Expanding if stretch[1] else pol.Preferred)
+            self.setMinimumSize(int(min_px[0]), int(min_px[1]))
+        self._bound = []
+        self._watched = []
+        self._decor_w = 0.0
+        self._title_w = 0.0
+
+    def _want_w(self):
+        z = getattr(self.figure, 'font_zoom', 1.0)
+        return int(round(max(self.inner_w * z + self._decor_w, self._title_w + 2.0)))
+
+    def sizeHint(self):
+        if self.inner_w is None:
+            return super().sizeHint()
+        return QtCore.QSize(self._want_w(), max(self.minimumHeight(), 40))
+
+    def minimumSizeHint(self):
+        if self.inner_w is None:
+            return super().minimumSizeHint()
+        return QtCore.QSize(self._want_w(), self.minimumHeight())
+
+    def _note_decor(self, left_right, title_w=0.0):
+        """The tick axes and label, and the title, of the axes in a narrow cell (Axes._cell_px): the cell's width follows."""
+        if self.inner_w is not None and (abs(left_right - self._decor_w) > 0.5 or abs(title_w - self._title_w) > 0.5):
+            self._decor_w = float(left_right)
+            self._title_w = float(title_w)
+            self.updateGeometry()
+
+    def bind(self, obj):
+        """Place `obj` (it has _request_place) in this cell from now on."""
+        if obj not in self._bound:
+            self._bound.append(obj)
+        self._watch_ancestors()
+
+    def unbind(self, obj):
+        try:
+            self._bound.remove(obj)
+        except ValueError:
+            pass
+
+    def rect_px(self):
+        """The cell's rectangle (x0, y0, w, h) in canvas pixels from the top left."""
+        vp = self.figure.canvas.viewport()
+        p = self.mapTo(vp, QtCore.QPoint(0, 0)) if vp.isAncestorOf(self) else self.pos()
+        return float(p.x()), float(p.y()), float(self.width()), float(self.height())
+
+    def _changed(self):
+        # Placed at once (not on a timer): two panels whose axes are linked must never be seen at
+        # different geometries, or the link maps one's range onto the other's off by the difference.
+        for obj in list(self._bound):
+            place = getattr(obj, '_place', None)
+            if place is not None:
+                place()
+            else:
+                obj._request_place()
+
+    def _watch_ancestors(self):
+        """A move of any widget holding the cell moves the cell on the canvas too: watched here."""
+        vp = self.figure.canvas.viewport()
+        w = self.parentWidget()
+        while w is not None and w is not vp:
+            if w not in self._watched:
+                w.installEventFilter(self)
+                self._watched.append(w)
+            w = w.parentWidget()
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QtCore.QEvent.Type.Move, QtCore.QEvent.Type.Resize):
+            self._changed()
+        return False
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._changed()
+
+    def moveEvent(self, ev):
+        super().moveEvent(ev)
+        self._changed()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._watch_ancestors()
+        self._changed()
+
+
 class Axes:
     """
-    One axes: a pyqtgraph ViewBox placed exactly at its figure-fraction
-    rectangle (`rect`, or a SubplotSpec `spec`, or inside `inset_parent`;
-    matplotlib's axes box, framed), its x and y tick axes outside the box
+    One axes: a pyqtgraph ViewBox placed in its cell of the window's
+    layout (`cell`, a PanelCell: automatic layout, the one rule for every
+    window; the cell holds the box with its tick axes and title), or at a
+    figure-fraction rectangle (`rect`, or a SubplotSpec `spec`; the
+    standalone drawings that keep matplotlib's own placement), or inside
+    `inset_parent` (matplotlib's axes box, framed), its x and y tick axes outside the box
     (_Axis: every tick drawn where the view box maps its value),
     the title above it.  The plotting methods return artists with
     matplotlib's interface (remove, set_visible, get_label, ...).  sharex /
@@ -2532,11 +2712,12 @@ class Axes:
     is on; otherwise the windows handle their own mouse events.
     """
 
-    def __init__(self, fig, rect=None, spec=None, sharex=None, sharey=None, inset_parent=None, label=''):
+    def __init__(self, fig, rect=None, spec=None, sharex=None, sharey=None, inset_parent=None, label='', cell=None):
         self._place_pending = False    # set first: the axis items' zoom below may already ask for a placement
         self.figure = fig
         self._rect = list(rect) if rect is not None else None
         self._spec = spec
+        self._cell = cell              # the PanelCell of the window's layout holding this axes (None: rect / spec)
         self._inset_parent = inset_parent
         self._insets = []
         scene = fig.canvas.scene()
@@ -2585,6 +2766,8 @@ class Axes:
         if inset_parent is not None:
             inset_parent._insets.append(self)
         fig._axes.append(self)
+        if cell is not None:
+            cell.bind(self)
         self._place()
 
     # --- artists bookkeeping ---
@@ -2633,6 +2816,11 @@ class Axes:
     # --- geometry ---
 
     def get_position(self, original=False):
+        if self._cell is not None:
+            # A panel in the window's layout: its box as the cell gives it, in figure fractions.
+            W, H = self.figure._canvas_size()
+            x0, y0, w, h = self._cell_px()
+            return Bbox(x0 / W, 1.0 - (y0 + h) / H, w / W, h / H)
         if self._inset_parent is not None:
             px0, py0, pw, ph = self._inset_parent.get_position().bounds
             x, y, w, h = self._rect
@@ -2645,6 +2833,9 @@ class Axes:
 
     def set_position(self, pos, which='both'):
         b = pos.bounds if hasattr(pos, 'bounds') else tuple(pos)
+        if self._cell is not None:     # an explicit rectangle takes the axes out of its layout cell
+            self._cell.unbind(self)
+            self._cell = None
         if self._inset_parent is not None:
             self._inset_parent = None
         self._rect = [float(v) for v in b]
@@ -2653,14 +2844,70 @@ class Axes:
     def get_subplotspec(self):
         return self._spec
 
+    def _decor_px(self):
+        """
+        The room the box's surroundings take inside its layout cell, (left, top, right, bottom) in
+        pixels: the y tick axis with its label on the left, the title band on top (lifted over a
+        power-of-ten label as _place lifts it), the side axes on the right, the x tick axis with
+        its label at the bottom.
+        """
+        xa, ya = self.xaxis_item, self.yaxis_item
+        left = float(ya.maximumWidth()) if ya.isVisible() else 0.0
+        bottom = float(xa.maximumHeight()) if xa.isVisible() else 0.0
+        right = float(sum(a.maximumWidth() for a in self._side_axes if a.isVisible()))
+        top = 0.0
+        t = self._title
+        if t is not None and t.get_text() and t.item.isVisible():
+            lift = 15.0 if any(getattr(a, '_had_sci', False) for a in [ya] + self._side_axes) else 0.0
+            top = float(t.item.boundingRect().height()) + abs(t._offset_px[1]) + lift
+        elif ya.isVisible() or self._side_axes:
+            top = 0.5 * float(QtGui.QFontMetricsF(qfont(10.0, zoom=self.figure.font_zoom)).height())   # the top tick value's half
+        # The room only grows at one text zoom: the box keeps its size while tick values come and go
+        # (a pan, a zoom, a new file), as a figure-fraction box did; a new zoom measures afresh.
+        z = self.figure.font_zoom
+        cur = (left, top, right, bottom)
+        prev = getattr(self, '_decor_max', None)
+        if prev is not None and getattr(self, '_decor_zoom', None) == z:
+            cur = tuple(max(a, b) for a, b in zip(cur, prev))
+        self._decor_max, self._decor_zoom = cur, z
+        return cur
+
     def _cell_px(self):
-        """The axes' cell: its figure-fraction rectangle in canvas pixels from the top left, (x0, y0, w, h)."""
+        """
+        The axes' cell in canvas pixels from the top left, (x0, y0, w, h): the box's room in its
+        layout cell (the cell less _decor_px), or its figure-fraction rectangle.
+        """
+        if self._cell is not None:
+            cell = self._cell
+            cx, cy, cw, ch = cell.rect_px()
+            left, top, right, bottom = self._decor_px()
+            if cell.inner_w is not None:
+                # A narrow panel (a colour bar, a ramp): its box keeps its own width, the box with its
+                # tick axes centred in the cell, which is wide enough for them and for the title.
+                t = self._title
+                tw = float(t.item.boundingRect().width()) if t is not None and t.get_text() else 0.0
+                cell._note_decor(left + right, tw)
+                bw = cell.inner_w * self.figure.font_zoom
+                off = max(0.5 * (cw - (left + bw + right)), 0.0)
+                return (cx + off + left, cy + top, max(bw, 1.0), max(ch - top - bottom, 1.0))
+            return (cx + left, cy + top, max(cw - left - right, 1.0), max(ch - top - bottom, 1.0))
         W, H = self.figure._canvas_size()
         x, y, w, h = self.get_position().bounds
         return (x * W, (1.0 - y - h) * H, w * W, h * H)
 
+    def set_box_aspect(self, aspect=None):
+        """matplotlib's box aspect: the box's height over its width fixed at `aspect` whatever the limits (None frees it); the box shrinks in its cell to it."""
+        self._box_aspect = None if aspect is None else float(aspect)
+        self._request_place()
+
+    def get_box_aspect(self):
+        return getattr(self, '_box_aspect', None)
+
     def _aspect_want(self):
-        """The box's height over its width that an adjustable-'box' locked aspect asks for, from the limits set; None when the box is free."""
+        """The box's height over its width that a box aspect (set_box_aspect) or an adjustable-'box' locked aspect asks for, from the limits set; None when the box is free."""
+        ba = getattr(self, '_box_aspect', None)
+        if ba is not None:
+            return ba
         if not (getattr(self, '_adjust_box', False) and self.vb.state['aspectLocked']):
             return None
         tx, ty = getattr(self, '_target_x', None), getattr(self, '_target_y', None)
@@ -2687,17 +2934,35 @@ class Axes:
         x0, y0, w, h = self._cell_px()
         row = getattr(self, '_row', None)
         if row is not None:
-            hh = min([m._own_height() for m in row if m._visible and m.figure is self.figure] + [h])
+            members = [m for m in row if m._visible and m.figure is self.figure]
+            if self._cell is not None and members and all(m._cell is not None for m in members):
+                # A row of panels in layout cells: every box in the band all of them have room for
+                # (below the tallest title, above the deepest x axis), so the boxes share one top and
+                # one bottom (the row rule; linked axes then show the same range).
+                bands = [m._cell_px() for m in members]
+                top = max(b[1] for b in bands)
+                bot = min(b[1] + b[3] for b in bands)
+                if bot > top:
+                    y0, h = top, bot - top
+                hh = h
+                for m, b in zip(members, bands):
+                    want = m._aspect_want()
+                    if want is not None and b[2] > 0:
+                        hh = min(hh, b[2] * want)
+            else:
+                hh = min([m._own_height() for m in members] + [h])
         else:
             hh = self._own_height()
+        fx, fy = getattr(self, '_anchor_f', (0.5, 0.5))
         if hh < h and w > 0 and h > 0:
-            y0, h = y0 + 0.5 * (h - hh), hh
+            y0, h = y0 + fy * (h - hh), hh
         want = self._aspect_want()
         if want is not None and w > 0 and h > 0:
-            # matplotlib's adjustable='box': the box shrinks (about its centre) to the data's aspect.
+            # matplotlib's adjustable='box': the box shrinks to the data's aspect, about its anchor
+            # (set_anchor; the centre unless set).
             nw = h / want
             if nw < w:
-                x0, w = x0 + 0.5 * (w - nw), nw
+                x0, w = x0 + fx * (w - nw), nw
         r = (x0, y0, w, h)
         other = getattr(self, '_clear_of', None)
         if other is not None and other._visible:
@@ -2819,6 +3084,22 @@ class Axes:
         x0, y0, w, h = self._px_rect()
         w, h = max(w, 1.0), max(h, 1.0)
         self.vb.setGeometry(QtCore.QRectF(x0, y0, w, h))
+        self._placed_rect = (round(x0, 2), round(y0, 2), round(w, 2), round(h, 2))
+        row = getattr(self, '_row', None)
+        if row is not None and self._cell is not None and not getattr(self.figure, '_row_placing', False):
+            # The row's band depends on every member's cell and axes: a member placed with an older band
+            # is placed again at once (the boxes of a row share one top and one bottom).
+            self.figure._row_placing = True
+            try:
+                for m in row:
+                    if m is self or m._cell is None or not m._visible or m.figure is not self.figure:
+                        continue
+                    mx, my, mw, mh = m._px_rect()
+                    if getattr(m, '_placed_rect', None) != (round(mx, 2), round(my, 2), round(max(mw, 1.0), 2),
+                                                            round(max(mh, 1.0), 2)):
+                        m._place()
+            finally:
+                self.figure._row_placing = False
         if self.vb.state['aspectLocked'] and getattr(self, '_target_x', None) is not None \
                 and getattr(self, '_target_y', None) is not None and not self.figure.canvas.toolbar.mode:
             self._apply_targets()
@@ -2963,6 +3244,9 @@ class Axes:
             fig._axes.remove(self)
         except ValueError:
             pass
+        if self._cell is not None:
+            self._cell.unbind(self)
+            fig._auto_dispose(self._cell)
         fig._set_info(self, '')
 
     # --- clearing ---
@@ -3031,6 +3315,16 @@ class Axes:
         if self.vb.state['yInverted']:
             self.vb.invertY(False)
         self.vb.enableAutoRange(x=True, y=True)
+        # matplotlib's clear (Axes.__clear, Axes.sharex / sharey): an axis shared with another axes
+        # keeps that axes' limits instead of autoscaling on this one's data.  pyqtgraph's link follows
+        # the other view only when one of the two changes range or size, so it is synced here (which
+        # also turns this view's autoscale off on that axis); otherwise this view's autoscale would
+        # pull the shared range of every linked panel to its own data at its next limit change.
+        for axis, src in ((pg.ViewBox.XAxis, getattr(self, '_shared_x', None)),
+                          (pg.ViewBox.YAxis, getattr(self, '_shared_y', None))):
+            if src is not None:
+                self.vb.enableAutoRange(axis, False)
+                self.vb.linkedViewChanged(src.vb, axis)
         self._home = None
         self._target_x = self._target_y = None
         self._legend_clear = False
@@ -3074,6 +3368,8 @@ class Axes:
             pass
         t.item.setVisible(self._visible)
         self._title = t
+        if self._cell is not None:
+            self._request_place()          # in a layout cell the title takes room from the box (_decor_px)
         return t
 
     def get_title(self, loc='center'):
@@ -3309,7 +3605,25 @@ class Axes:
         a, b = self._view_range()[1]
         return (b, a) if self.vb.state['yInverted'] else (a, b)
 
+    _ANCHORS = {'C': (0.5, 0.5), 'N': (0.5, 0.0), 'S': (0.5, 1.0), 'E': (1.0, 0.5), 'W': (0.0, 0.5),
+                'NE': (1.0, 0.0), 'NW': (0.0, 0.0), 'SE': (1.0, 1.0), 'SW': (0.0, 1.0)}
+
+    def set_anchor(self, anchor, share=False):
+        """
+        Where a box shrunk to its aspect (or to its row's height) sits in its room: matplotlib's
+        anchors 'C' (centre, the default), 'N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'.  A window
+        whose controls sit directly under a panel anchors the panel at 'S' (the drift window).
+        """
+        self._anchor_f = self._ANCHORS[str(anchor).upper()]
+        self._request_place()
+
+    def get_anchor(self):
+        f = getattr(self, '_anchor_f', (0.5, 0.5))
+        return next(k for k, v in self._ANCHORS.items() if v == f)
+
     def set_aspect(self, aspect, adjustable=None, anchor=None, share=False):
+        if anchor is not None:
+            self.set_anchor(anchor)
         self._aspect = aspect
         was = getattr(self, '_adjust_box', False)
         self._adjust_box = adjustable in (None, 'box')
@@ -4370,8 +4684,9 @@ _figures = {}
 
 class Figure:
     """
-    A figure: axes at figure fractions, figure texts, the Qt controls of widgets.py, and (in its
-    own window) a navigation toolbar and an info panel.  Its text zoom (font_zoom) and shape
+    A figure: axes in the cells of its window's Qt layout (or at figure fractions), figure texts,
+    the Qt controls of controls.py in the same layout, and (in its own window) a navigation toolbar
+    and an info panel.  Its text zoom (font_zoom) and shape
     (portrait) follow the canvas (_relayout, on every resize); the design size it was opened with
     (_design_px) is the reference of both and the size of the publication export.
     """
@@ -4401,7 +4716,13 @@ class Figure:
         self.canvas.scene().setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
         self._axes = []
         self._texts = []
-        self._qt_controls = []         # objects with _place(W, H): the widgets of widgets.py
+        self._qt_controls = []         # the controls of widgets.py on this figure (short labels, text zoom)
+        self._layout = None            # the window's Qt layout on the canvas's viewport (set_layout)
+        self._size_override = None     # (W, H) while the layout is applied at another size (at_design_size)
+        self._title_cell = None        # the layout cell of the figure's title (set_title_cell)
+        self._fitting = False
+        self._fit_zoom = None          # the control zoom the last fit settled on
+        self.control_zoom = 1.0        # the controls' text zoom: font_zoom, reduced to fit (_fit_controls)
         self._suptitle = None
         self._shown = False
         self._closed = False
@@ -4463,6 +4784,8 @@ class Figure:
     # --- size ---
 
     def _canvas_size(self):
+        if self._size_override is not None:
+            return float(self._size_override[0]), float(self._size_override[1])
         if self._shown and (not self._embedded or self.canvas.isVisible()):
             vp = self.canvas.viewport()
             return float(max(vp.width(), 1)), float(max(vp.height(), 1))
@@ -4481,6 +4804,9 @@ class Figure:
         win = self.manager.window
         if win is not None:
             win.resize(win.width() + tw - int(cw), win.height() + th - int(ch))
+            if self._layout is not None and self._shown:
+                # The window's layout passes run now (its resize applied as matplotlib's forward=True does).
+                QtWidgets.QApplication.sendPostedEvents()
         self._relayout()
 
     @property
@@ -4502,34 +4828,171 @@ class Figure:
             self.set_portrait(H > W, relayout=False)   # an embedded figure takes its window's shape from its owner
         z = window_zoom(W, H, W0, H0)        # the one rule: the size relative to the design size, ZOOM_MIN to ZOOM_MAX
         if abs(z - self.font_zoom) > 0.03 * self.font_zoom:
-            self.font_zoom = z
-            for tb in self._toolbars:
-                try:
-                    k = int(round(22 * screen_scale() * z))
-                    tb.setIconSize(QtCore.QSize(k, k))
-                    tb.coords.setFont(qfont(9, zoom=z))
-                except RuntimeError:
-                    pass
-            for ax in list(self._axes):
-                ax._refont(z)
-            for t in self._texts:
-                t._apply()
-            if hasattr(self.manager, 'info'):
-                try:
-                    self.manager.info.setFont(qfont(7.5, zoom=z))
-                    self.manager.info.setFixedHeight(int(pt2px(7.5) * FONT_SCALE * z * 4.2))
-                except RuntimeError:
-                    pass
+            self._apply_zoom(z)
+        if self._layout is not None:
+            self._fit_controls()
         for ax in self._axes:
             ax._place()
         for t in self._texts:
             t._place()
         W, H = self._canvas_size()
         for c in self._qt_controls:
+            place = getattr(c, '_place', None)
+            if place is None:
+                continue                       # a control in the window's layout: Qt places it
             try:
-                c._place(W, H)
+                place(W, H)
             except Exception:
                 traceback.print_exc()
+
+    def _apply_zoom(self, z):
+        """Every text of the figure at the zoom z: the toolbars, the axes, the figure texts, the info panel, the controls."""
+        self.font_zoom = z
+        for tb in self._toolbars:
+            try:
+                k = int(round(22 * screen_scale() * z))
+                tb.setIconSize(QtCore.QSize(k, k))
+                tb.coords.setFont(qfont(9, zoom=z))
+            except RuntimeError:
+                pass
+        for ax in list(self._axes):
+            ax._refont(z)
+        for t in self._texts:
+            t._apply()
+        if hasattr(self.manager, 'info'):
+            try:
+                self.manager.info.setFont(qfont(7.5, zoom=z))
+                self.manager.info.setFixedHeight(int(pt2px(7.5) * FONT_SCALE * z * 4.2))
+            except RuntimeError:
+                pass
+        if self._layout is not None:
+            self._set_control_zoom(z)
+
+    def _set_control_zoom(self, z):
+        self.control_zoom = z
+        for c in list(self._qt_controls):
+            f = getattr(c, '_set_zoom', None)
+            if f is not None:
+                try:
+                    f(z)
+                except RuntimeError:
+                    pass
+
+    # --- automatic layout: the one rule for every window (nothing placed by hand) ---
+
+    def set_layout(self, layout):
+        """
+        The window's Qt layout, on the canvas's viewport: its controls (Qt widgets) and its panels'
+        PanelCells, arranged by Qt together (automatic layout: the one rule for every window).  The
+        window cannot shrink below what the layout needs at the smallest control text
+        (_fit_controls), Qt's own rule; a row of controls that wraps (controls.FlowLayout) lets a
+        narrow window keep everything without overlap.
+        """
+        vp = self.canvas.viewport()
+        layout.setContentsMargins(6, 6, 6, 6)
+        vp.setLayout(layout)
+        self._layout = layout
+        self._set_control_zoom(self.font_zoom)
+        self._fit_controls()
+
+    def cell(self, min_px=(40, 40), stretch=(True, True), inner_w=None):
+        """A new PanelCell of this figure for the window's layout (an axes or a text goes in it with cell=...); inner_w for a narrow panel (a colour bar)."""
+        return PanelCell(self, min_px=min_px, stretch=stretch, inner_w=inner_w)
+
+    def set_title_cell(self, cell):
+        """The layout cell the figure's title (suptitle) is centred in from now on."""
+        self._title_cell = cell
+        if self._suptitle is not None:
+            self.suptitle(getattr(self, '_suptitle_full', self._suptitle.get_text()), fontsize=self._suptitle.get_fontsize())
+
+    def _fit_controls(self):
+        """
+        The controls' text is never cut and the window never scrolls: at the window's text zoom the
+        layout is measured; when it needs more room than the canvas has, the controls' font is
+        reduced step by step, to at most CONTROL_FIT_MIN of the zoom, until it fits (the browser's
+        window follows the same rule, browser._WindowZoom); when even that does not fit, the
+        canvas's smallest size is raised to what the layout needs, so nothing overlaps.
+        """
+        lay = self._layout
+        if lay is None or self._fitting or self._size_override is not None:
+            return
+        if not (self._shown and self.canvas.isVisible()):
+            return                             # measured once the window is on screen (its viewport has its size)
+        self._fitting = True
+        try:
+            # The controls' size hints follow a new font only once their layouts measure again: every
+            # layout inside the canvas is invalidated here, so the window's layout is measured as it now
+            # is (only this canvas's layouts: the rest of the window is left to its own events).
+            vp = self.canvas.viewport()
+            for w in vp.findChildren(QtWidgets.QWidget):
+                sub = w.layout()
+                if sub is not None:
+                    sub.invalidate()
+            W, H = vp.width(), vp.height()
+            z0 = self.font_zoom
+            zc = z0
+            m = None
+            for _ in range(12):
+                if abs(zc - self.control_zoom) > 1e-6:
+                    self._set_control_zoom(zc)
+                    QtWidgets.QApplication.sendPostedEvents()
+                lay.invalidate()
+                lay.activate()
+                m = lay.minimumSize()
+                if lay.hasHeightForWidth():
+                    # A row that wraps: the height the layout needs at this width.
+                    m = QtCore.QSize(m.width(), max(m.height(), lay.totalHeightForWidth(max(W, m.width()))))
+                if fits_controls((m.width(), m.height()), (W, H), zc, self._fit_zoom):
+                    self._fit_zoom = zc
+                    return
+                if zc <= z0 * CONTROL_FIT_MIN + 1e-9:
+                    break
+                zc = max(zc * 0.96, z0 * CONTROL_FIT_MIN)
+            if m is not None:
+                fw = self.canvas.width() - W
+                fh = self.canvas.height() - H
+                self.canvas.setMinimumSize(max(self.canvas.minimumWidth(), m.width() + fw),
+                                           max(self.canvas.minimumHeight(), m.height() + fh))
+            self._fit_zoom = zc
+        finally:
+            self._fitting = False
+
+    @contextlib.contextmanager
+    def at_design_size(self):
+        """
+        The window's layout applied at its design size with every text at zoom 1, while the block
+        runs (the publication export lays a window out at its design size, whatever its size on
+        screen); the window's own size, zoom and layout come back afterwards.
+        """
+        if self._layout is None:
+            yield
+            return
+        W0, H0 = self._design_px
+        z_old, zc_old = self.font_zoom, self.control_zoom
+        old_geo = self._layout.geometry()
+        self._size_override = (float(W0), float(H0))
+        try:
+            self._apply_zoom(1.0)
+            self._set_control_zoom(1.0)
+            QtWidgets.QApplication.sendPostedEvents()
+            self._layout.invalidate()
+            self._layout.setGeometry(QtCore.QRect(0, 0, int(W0), int(H0)))
+            for ax in self._axes:
+                ax._place()
+            for t in self._texts:
+                t._place()
+            yield
+        finally:
+            self._size_override = None
+            self._apply_zoom(z_old)
+            self._set_control_zoom(zc_old)
+            QtWidgets.QApplication.sendPostedEvents()
+            self._layout.invalidate()
+            self._layout.setGeometry(old_geo)
+            for ax in self._axes:
+                ax._place()
+            for t in self._texts:
+                t._place()
 
     def _axes_at(self, px, py):
         for ax in reversed(self._axes):
@@ -4550,8 +5013,18 @@ class Figure:
 
     def _register_control(self, c):
         self._qt_controls.append(c)
-        W, H = self._canvas_size()
-        c._place(W, H)
+        place = getattr(c, '_place', None)
+        if place is not None:
+            W, H = self._canvas_size()
+            place(W, H)
+            return
+        # A control in the window's layout (controls.py): Qt places it; its text follows the figure.
+        f = getattr(c, '_set_zoom', None)
+        if f is not None:
+            f(self.control_zoom)
+        s = getattr(c, 'set_short', None)
+        if s is not None and self.portrait:
+            s(True)
 
     def _unregister_control(self, c):
         try:
@@ -4561,14 +5034,91 @@ class Figure:
 
     # --- axes ---
 
-    def add_axes(self, rect, sharex=None, sharey=None, **kw):
+    def add_axes(self, rect=None, sharex=None, sharey=None, cell=None, **kw):
+        """An axes in a layout cell (`cell`, a PanelCell: automatic layout) or at a figure-fraction rectangle `rect`."""
         if isinstance(rect, Axes):
             return rect
-        b = rect.bounds if hasattr(rect, 'bounds') else rect
-        ax = Axes(self, rect=b, sharex=sharex, sharey=sharey)
+        if cell is not None:
+            ax = Axes(self, rect=None, sharex=sharex, sharey=sharey, cell=cell)
+        else:
+            b = rect.bounds if hasattr(rect, 'bounds') else rect
+            ax = Axes(self, rect=b, sharex=sharex, sharey=sharey)
         if kw.get('facecolor') is not None:
             ax.patch.set_facecolor(kw['facecolor'])
         return ax
+
+    # --- automatic layout of matplotlib-style subplots (the one rule for every window) ---
+
+    def _auto_grid(self):
+        """
+        The figure's automatic grid, made at the first subplot: a Qt grid on the canvas (set_layout)
+        whose slots hold the subplots' cells, its column and row stretches the gridspec's width and
+        height ratios; None when the window has a layout of its own (its panels are its own cells).
+        """
+        auto = getattr(self, '_auto', None)
+        if auto is not None:
+            return auto['grid']
+        if self._layout is not None:
+            return None
+        root = QtWidgets.QVBoxLayout()
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+        root.addLayout(grid, 1)
+        self._auto = {'root': root, 'grid': grid}
+        self.set_layout(root)
+        return grid
+
+    def layout_root(self):
+        """The automatic grid's outer layout (made now if needed): a script adds its own controls under (or over) its subplots here, so they are laid out with them."""
+        self._auto_grid()
+        auto = getattr(self, '_auto', None)
+        return auto['root'] if auto is not None else self._layout
+
+    def _auto_axes(self, spec, sharex=None, sharey=None):
+        """An axes for a SubplotSpec in the automatic grid (its slot spanning the spec's rows and columns), or None (a nested spec, or a window with a layout of its own: the spec's rectangle)."""
+        gs = spec.get_gridspec()
+        if not isinstance(gs, GridSpec):
+            return None
+        grid = self._auto_grid()
+        if grid is None:
+            return None
+        rows = range(gs.nrows)[spec.rows]
+        cols = range(gs.ncols)[spec.cols]
+        for c in range(gs.ncols):
+            grid.setColumnStretch(c, max(int(round(1000 * gs.width_ratios[c] / max(sum(gs.width_ratios), 1e-12))), 1))
+        for r in range(gs.nrows):
+            grid.setRowStretch(r, max(int(round(1000 * gs.height_ratios[r] / max(sum(gs.height_ratios), 1e-12))), 1))
+        slot = QtWidgets.QWidget()
+        lay = QtWidgets.QHBoxLayout(slot)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        cell = PanelCell(self)
+        cell._slot = slot
+        lay.addWidget(cell, 1)
+        slot._cells = [cell]
+        grid.addWidget(slot, rows[0], cols[0], len(rows), len(cols))
+        slot.show()
+        return Axes(self, cell=cell, sharex=sharex, sharey=sharey)
+
+    def _auto_dispose(self, cell):
+        """A cell of the automatic grid left without axes: its slot goes when none of its cells holds one."""
+        slot = getattr(cell, '_slot', None)
+        if slot is None:
+            return
+        if cell is not slot._cells[0] and not cell._bound:
+            # A colour bar's cell beside a panel: it goes with its bar.
+            slot._cells.remove(cell)
+            slot.layout().removeWidget(cell)
+            cell.setParent(None)
+            cell.deleteLater()
+        if any(c._bound for c in slot._cells):
+            return
+        grid = (getattr(self, '_auto', None) or {}).get('grid')
+        if grid is not None:
+            grid.removeWidget(slot)
+        slot.setParent(None)
+        slot.deleteLater()
 
     def add_subplot(self, *args, sharex=None, sharey=None, **kw):
         if len(args) == 1 and isinstance(args[0], SubplotSpec):
@@ -4586,10 +5136,12 @@ class Figure:
                 spec = gs[(a - 1):b]
             else:
                 spec = gs[int(index) - 1]
-        return Axes(self, spec=spec, sharex=sharex, sharey=sharey)
+        ax = self._auto_axes(spec, sharex=sharex, sharey=sharey)
+        return ax if ax is not None else Axes(self, spec=spec, sharex=sharex, sharey=sharey)
 
     def subplots(self, nrows=1, ncols=1, sharex=False, sharey=False, squeeze=True, width_ratios=None,
                  height_ratios=None, gridspec_kw=None, **kw):
+        """matplotlib's subplots, each in a slot of the figure's automatic grid (automatic layout: the one rule for every window; the gridspec's ratios its stretches, the spacing Qt's)."""
         gk = dict(gridspec_kw or {})
         gs = GridSpec(nrows, ncols, width_ratios=width_ratios or gk.get('width_ratios'),
                       height_ratios=height_ratios or gk.get('height_ratios'),
@@ -4599,7 +5151,8 @@ class Figure:
             for c in range(ncols):
                 shx = axs[0, 0] if (sharex in (True, 'all') and (r or c)) else None
                 shy = axs[0, 0] if (sharey in (True, 'all') and (r or c)) else None
-                axs[r, c] = Axes(self, spec=gs[r, c], sharex=shx, sharey=shy)
+                ax = self._auto_axes(gs[r, c], sharex=shx, sharey=shy)
+                axs[r, c] = ax if ax is not None else Axes(self, spec=gs[r, c], sharex=shx, sharey=shy)
         if squeeze:
             if nrows == 1 and ncols == 1:
                 return axs[0, 0]
@@ -4632,9 +5185,10 @@ class Figure:
 
     # --- texts ---
 
-    def text(self, x, y, s, **kw):
+    def text(self, x, y, s, cell=None, **kw):
+        """A figure text at (x, y): fractions of `cell` (a PanelCell of the window's layout) when given, else of the figure."""
         kw.pop('transform', None)
-        t = Text(self, x, y, s, 'figure', **kw)
+        t = Text(self, x, y, s, 'figure', cell=cell, **kw)
         self._texts.append(t)
         return t
 
@@ -4657,6 +5211,17 @@ class Figure:
         self._suptitle_full = full
         t = short_title(full, self.portrait)
         self._set_info('suptitle', full if full.strip() != t else '')
+        auto = getattr(self, '_auto', None)
+        if self._title_cell is None and auto is not None:
+            # The automatic grid's title cell, made at the first title, above the grid.
+            cell = PanelCell(self, min_px=(40, 24), stretch=(True, False))
+            auto['root'].insertWidget(0, cell)
+            self._title_cell = cell
+        if self._title_cell is not None:
+            # The title in its own cell of the window's layout (automatic layout), centred in it.
+            self._suptitle = self.text(0.5, 0.5, t, cell=self._title_cell, fontsize=font_pt(fontsize, 12.0),
+                                       ha='center', va='center', fontweight=kw.get('fontweight'))
+            return self._suptitle
         self._suptitle = self.text(x, y, t, fontsize=font_pt(fontsize, 12.0), ha=ha, va=va,
                                    fontweight=kw.get('fontweight'))
         return self._suptitle
@@ -4666,8 +5231,8 @@ class Figure:
         The figure's shape for the short forms: True when its window is taller than it is wide.
         A figure in its own window sets it from its canvas (_relayout, with relayout=False); an
         embedded figure is told by the window that holds it (the browser).  On a change every
-        control with a short form switches (widgets.Control.set_short) and every file-name title
-        to its stamp and back, and the controls are placed again for their new text.
+        control with a short form switches (controls.Control.set_short) and every file-name title
+        to its stamp and back, and the window's layout sizes the controls to their new text.
         """
         flag = bool(flag)
         if flag == self.portrait:
@@ -4700,6 +5265,23 @@ class Figure:
         """
         mappable = getattr(mappable, 'mappable', mappable) if not isinstance(mappable, (AxesImage, QuadMesh)) else mappable
         parent_rect = None
+        if cax is None and ax is not None and getattr(getattr(ax, '_cell', None), '_slot', None) is not None:
+            # A subplot of the automatic grid: the bar in a narrow cell of its own beside the panel, in the
+            # panel's slot (automatic layout), as tall as the panel (align_row).
+            slot = ax._cell._slot
+            bar = PanelCell(self, inner_w=15)
+            bar._slot = slot
+            slot.layout().addWidget(bar)
+            slot._cells.append(bar)
+            cax = Axes(self, cell=bar)
+            row = getattr(ax, '_row', None)
+            if row is not None:
+                row.append(cax)
+                cax._row = row
+                cax._request_place()
+            else:
+                self.align_row(ax, cax)
+            return Colorbar(self, mappable, cax, label=label, parent_axes=ax, parent_rect=None)
         if cax is None:
             if ax is None:
                 ax = self._axes[0] if self._axes else self.add_subplot(111)

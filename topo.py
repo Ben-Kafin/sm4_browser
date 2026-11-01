@@ -333,30 +333,47 @@ class TopoWindow:
         self.anchor_on = bool(anchor_on and drift is not None)
         self.spec_dir = spec_dir if spec_dir in ('forward', 'reverse') else 'forward'
         self.stripe_window = None
-        self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
-        self.fig.subplots_adjust(bottom=0.17)
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        self.fig = plt.figure(figsize=self.DESIGN)
+        fig = self.fig
         self.cbar = None
-        self.chk_auto = widgets.make(self.fig, 'auto drift', 0.02, 0.015, value=self.auto_on)
+        self.chk_auto = controls.make(fig, 'auto drift', value=self.auto_on)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
-        self.chk_manual = widgets.make(self.fig, 'manual drift', 0.18, 0.015, value=self.manual_on)
+        self.chk_manual = controls.make(fig, 'manual drift', value=self.manual_on)
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.chk_anchor = widgets.make(self.fig, 'anchor to topo', 0.53, 0.015, value=self.anchor_on)
+        self.chk_anchor = controls.make(fig, 'anchor to topo', value=self.anchor_on)
         self.chk_anchor.on_change(lambda flag: self._on_drift_toggle('anchor', flag))
         # The grid's stripe matching: the 'stripe' toggle (one state per file, Drift.set_stripe_on) and
         # the 'stripe match' button, the row above the drift toggles.
-        self.chk_stripe = widgets.make(self.fig, 'stripe', 0.02, 0.075, value=False)
+        self.chk_stripe = controls.make(fig, 'stripe', value=False)
         self.chk_stripe.on_change(self._on_stripe_toggle)
-        self.btn_stripe = widgets.make(self.fig, 'stripe match', 0.13, 0.077)
+        self.btn_stripe = controls.make(fig, 'stripe match')
         self.btn_stripe.on_change(self._on_stripe_window)
         is_grid = spec is not None and spec.kind == 'grid' and bool(spec.topo_pages)
         self.btn_stripe.show(is_grid and drift is not None)
         self.chk_stripe.show(is_grid and drift is not None)
         self._sync_stripe_toggle()
         # The grid's own topo pass (the 'topo pass' radio of the scan area, for the grid's topo).
-        self.txt_dir = self.fig.text(0.80, 0.135, 'line/map topo', fontsize=8, ha='left', va='bottom', visible=is_grid)
-        self.rad_dir = widgets.make(self.fig, 'topo pass', 0.80, 0.015, value=self.spec_dir)
+        self.txt_dir = controls.Label(fig, 'topo pass title', text='line/map topo', fs=8)
+        self.txt_dir.set_visible(is_grid)
+        self.rad_dir = controls.make(fig, 'topo pass', value=self.spec_dir)
         self.rad_dir.on_change(self._on_spec_dir)
         self.rad_dir.show(is_grid)
+        # automatic layout: the one rule for every window (nothing placed by hand).  The image and its
+        # height colour bar (a narrow cell; the bar's axes made anew with every draw); below, the
+        # stripe row over the drift toggles, and the grid's topo pass at the right.
+        cell = fig.cell()
+        self._cbar_cell = fig.cell(inner_w=14)
+        self.ax = fig.add_axes(cell=cell)
+        strip = controls.FlowLayout(push_last=True)
+        strip.addWidget(controls.box(controls.row(self.chk_stripe, self.btn_stripe, 'stretch'),
+                                     controls.row(self.chk_auto, self.chk_manual, self.chk_anchor), orient='v'))
+        strip.addWidget(controls.widget_of(controls.column(self.txt_dir, self.rad_dir)))
+        root = QtWidgets.QVBoxLayout()
+        root.addLayout(controls.row(cell, self._cbar_cell, spacing=8), 1)
+        root.addLayout(strip)
+        fig.set_layout(root)
         # Every manual change of the drift (a span, a stripe set's state or points, in any window)
         # redraws this window and keeps its 'stripe' toggle current; the subscription ends with it.
         if drift is not None:
@@ -397,7 +414,9 @@ class TopoWindow:
             self.cbar = None
         img = self._image()
         im = plots.draw_topo_frame(ax, self.topo, img, self.scalefactor, cmap=TOPO_CMAP)
-        self.cbar = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03, label="height (nm)")
+        cax = self.fig.add_axes(cell=self._cbar_cell)          # the bar's axes in its cell (removed with the bar)
+        self.cbar = self.fig.colorbar(im, cax=cax, label="height (nm)")
+        self.fig.align_row(ax, cax)                          # the bar as tall as the image
         k = 1e9 / self.scalefactor
         l, r, b, t = [v * k for v in self.topo.frame_extent_m()]
         parts = [np.array([[l, b], [r, t]])]        # everything drawn, for the limits: the frame first
@@ -608,7 +627,7 @@ class ProfileWindow:
     title, pair) redraws it with new curves.  With a ProfilePlots registry
     the window carries 'add new' and 'add existing' (the browser's buttons):
     'add new' opens a profile plot holding the window's pair; 'add existing'
-    drops the list of the open profile plots (widgets.AveragePicker) and
+    drops the list of the open profile plots (controls.AveragePicker) and
     adds the pair to the chosen one.  The pair is {'label', 'forward': (x,
     z), 'reverse': (x, z) or None}, the curves as shown.  Closed by hand it
     is simply gone; is_open() says whether it still exists.
@@ -622,19 +641,28 @@ class ProfileWindow:
         self.ylabel = ylabel
         self.registry = registry
         self.pair = pair
-        self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
-        self.fig.subplots_adjust(bottom=0.2 if registry is not None else 0.15, left=0.09, right=0.98, top=0.9)
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(title)
         except Exception:
             pass
+        # automatic layout: the one rule for every window (nothing placed by hand): the panel, and with
+        # a registry 'add new' / 'add existing' at the bottom right.
+        cell = self.fig.cell()
+        self.ax = self.fig.add_axes(cell=cell)
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(cell, 1)
         self.btn_new = self.btn_existing = self.picker = None
         if registry is not None:
-            self.btn_new = widgets.make(self.fig, 'add new', 0.80, 0.02)
-            self.btn_existing = widgets.make(self.fig, 'add existing', 0.875, 0.02)
+            self.btn_new = controls.make(self.fig, 'add new')
+            self.btn_existing = controls.make(self.fig, 'add existing')
             self.btn_new.on_change(self._on_add_new)
             self.btn_existing.on_change(self._on_add_existing)
-            self.picker = widgets.AveragePicker(self.fig, registry)
+            self.picker = controls.AveragePicker(self.fig, registry)
+            root.addLayout(controls.row('stretch', self.btn_new, self.btn_existing))
+        self.fig.set_layout(root)
         self.update(curves, title, pair)
         plt.show()
 
@@ -723,12 +751,18 @@ class ProfilePlot:
         self.index = int(index)
         self.name = f"profile{self.index}"
         self.entries = []
-        self.fig, self.ax = plt.subplots(figsize=self.DESIGN)
-        self.fig.subplots_adjust(bottom=0.14, left=0.09, right=0.98, top=0.92)
+        from sm4_Browser.qtplot import QtWidgets
+        self.fig = plt.figure(figsize=self.DESIGN)
         try:
             self.fig.canvas.manager.set_window_title(self.name)
         except Exception:
             pass
+        # automatic layout: the one rule for every window (nothing placed by hand): one panel.
+        cell = self.fig.cell()
+        self.ax = self.fig.add_axes(cell=cell)
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(cell, 1)
+        self.fig.set_layout(root)
         self._widgets = widgets
         plt.show()
 

@@ -383,22 +383,34 @@ class FilePanel:
         self.ax_heat.set_xlabel("Energy (eV)")
         self.ax_topo.set_ylabel("Position (Å)")
 
-    def build(self, fig, left, width):
-        """The panel's axes and controls in the figure over [left, left + width] of its width."""
-        gap = 0.012
-        w_topo = 0.045
-        self.ax_topo = fig.add_axes([left, 0.30, w_topo, 0.58])
-        self.ax_heat = fig.add_axes([left + w_topo + gap, 0.30, width - w_topo - gap - 0.01, 0.58])
-        # Controls: line buttons (when the file has several lines) and the three toggles.
-        y = 0.12
+    def build(self, fig, column):
+        """
+        The panel's axes and controls in `column` (a Qt layout of the window: automatic layout, the one
+        rule for every window): the stripe and the heatmap side by side, under them the line buttons
+        (when the file has several lines) and the three toggles.
+        """
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        c_topo, c_heat = fig.cell(inner_w=28), fig.cell()
+        self.ax_topo = fig.add_axes(cell=c_topo)
+        self.ax_heat = fig.add_axes(cell=c_heat)
+        fig.align_row(self.ax_topo, self.ax_heat)
+        panels = QtWidgets.QHBoxLayout()
+        panels.addWidget(c_topo)
+        panels.addWidget(c_heat, 1)
+        column.addLayout(panels, 1)
+        row = []
         if self.n_lines > 1:
-            steps = widgets.StepButtons(fig, '< line', 'line >', left, y)
+            steps = controls.StepButtons(fig, '< line', 'line >')
             steps.on_change(self._step)
             self.widgets.append(steps)
-        chk = widgets.make(fig, 'pipeline', left + 0.12, 0.04, labels=['Feenstra', 'calibrate', 'normalize'],
-                           values=[self.feenstra, self.calibrate, self.normalize])
+            row.append(steps)
+        chk = controls.Checks(fig, 'pipeline', values=[self.feenstra, self.calibrate, self.normalize],
+                              labels=['Feenstra', 'calibrate', 'normalize'])
         chk.on_change(lambda label, states: self._toggle(label))
         self.widgets.append(chk)
+        row.append(chk)
+        column.addLayout(controls.row(*row, 'stretch'))
         self.fig = fig
 
     def _step(self, d):
@@ -438,14 +450,24 @@ class AlignmentWindow:
             self.fig.canvas.manager.set_window_title(title)
         except Exception:
             pass
+        # automatic layout: the one rule for every window (nothing placed by hand): the title in its cell
+        # on top, one column per file side by side.
+        from sm4_Browser.qtplot import QtWidgets
+        title_cell = self.fig.cell(min_px=(40, 24), stretch=(True, False))
+        self.fig.set_title_cell(title_cell)
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(title_cell)
+        cols = QtWidgets.QHBoxLayout()
+        cols.setSpacing(30)
+        root.addLayout(cols, 1)
+        self.fig.set_layout(root)
         self.fig.suptitle(title, fontsize=11)
         self.panels = []
-        n = max(len(files), 1)
-        margin, inner = 0.045, 0.03
-        width = (1.0 - 2 * margin - inner * (n - 1)) / n
         for k, sm4 in enumerate(files):
             p = FilePanel(sm4, mode, settings)
-            p.build(self.fig, margin + k * (width + inner), width)
+            column = QtWidgets.QVBoxLayout()
+            cols.addLayout(column, 1)
+            p.build(self.fig, column)
             p.draw()
             self.panels.append(p)
 

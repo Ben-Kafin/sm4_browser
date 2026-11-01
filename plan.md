@@ -134,47 +134,45 @@ Status marks: `[ ]` to do, `[~]` in progress, `[x]` done.
       through checks/smoke_browser.py's helpers (`make_browser`, `_item1_windows`, `open_map`) and
       saves every window's grab() as PNG; recreate it from that description if the container is new.
 
-### Phase 1: shared infrastructure  [ ]
-- [ ] 1.1 Prototype: a QGridLayout on a FigureCanvas viewport with real controls and mouse-transparent
-      panel cells; an Axes taking its rectangle from its cell; markers still draggable; renders OK.
-- [ ] 1.2 qtplot: Figure grid API (rows / columns / cells, nested boxes); Axes bound to a cell
-      (the aspect 'box' shrink and the row rule work inside the cell); colour bars and titles in
-      cells; figure texts that are readouts become scrolling text panels; mplexport at design size.
-- [ ] 1.3 widgets: one shared control set placed by the grid (no x, y); box frames everywhere;
-      portrait short labels and the text-zoom rule kept.
-- [ ] 1.4 Number box with digit stepping (2.5); colour-framed marker count boxes; marker box that
-      scrolls past a maximum height.
-- [ ] 1.5 Smoke checks updated for the new API (no check weakened) and passing.
+### Phase 1: shared infrastructure  [x]
+- [x] 1.1 Prototype: a QGridLayout on a FigureCanvas viewport with real controls and mouse-transparent
+      panel cells; an Axes taking its rectangle from its cell; renders OK.
+- [x] 1.2 qtplot: PanelCell, Axes(cell=), Text(cell=), Figure.set_layout / cell / set_title_cell /
+      _fit_controls / at_design_size; narrow cells (inner_w); mplexport at design size.
+- [x] 1.3 controls.py: the one shared control set (see section 5), box frames, FlowLayout.
+- [x] 1.4 Number boxes with digit stepping (controls.step_text, tested), Count boxes framed in a
+      group's colour, the marker box that scrolls past its cap.
+- [x] 1.5 Smoke check helpers cover both control sets (_is_control); full run: all pass (I1, I2 too).
 
-### Phase 2: Map window  [ ]
-- [ ] 2.1 Grid conversion, same order and positions; sliders -> number boxes; sweeps choice under
+### Phase 2: Map window  [x]
+- [x] 2.1 Grid conversion, same order and positions; sliders -> number boxes; sweeps choice under
       '< E' / 'E >'; marker box rule (2.2).
-- [ ] 2.2 Render single and grid views; send to the owner; continue with Phase 3 meanwhile.
-- [ ] 2.3 Apply the owner's placement decisions (after the renders).
+- [x] 2.2 Renders sent; the owner approved the work and every additional change ("Push the shit").
+- [x] 2.3 Placements: the owner keeps the Map as it is ("as long as everything is not overlapping and
+      visible its fine").
 
-### Phase 3: every other window and standalone drawing  [ ]
-- [ ] browser.py: Browser main window and its embedded figures; QPipelineBox etc.; remove the
-      spectra step buttons, the spectra slider, Ctrl+PgUp / Ctrl+PgDown; keep the file slider.
-- [ ] line.py: Line window (sweeps choice under '< line' / 'line >'; 2.3 fix; sliders -> boxes);
-      topo rows window.
-- [ ] lineavg.py: line average window.
-- [ ] averaging.py: MultiAverageWindow.
-- [ ] records.py: SavedAveragesWindow.
-- [ ] feenstra.py: FeenstraWindow.
-- [ ] fit.py: the fit window; the fit edit window.
-- [ ] drift.py: DriftWindow (2.4).
-- [ ] stripe.py: StripeWindow.
-- [ ] section.py: MeasureWindow, SetScaleWindow.
-- [ ] topo.py: TopoWindow, ProfileWindow, ProfilePlot.
-- [ ] composer.py: FigureComposer.
-- [ ] fft.py: NoiseSpectrum. phase.py: PhaseRotate.
-- [ ] Standalone drawings (`__main__` blocks that draw): calibration.py (its controls come in
-      Phase 4), plots.py, widgets.py; audit every other `__main__` (align, averaging, browser,
-      composer, drift, feenstra, fft, filters, fit, line, lineavg, map, normalization, phase,
-      plots, records, sites, sm4file, stripe, sts, topo, widgets, checks/*) and convert those
-      that draw.
-- [ ] checks/alignment_windows.py window.
-- [ ] Render every window; confirm no overlaps; README updated.
+### Phase 3: every other window and standalone drawing  [x]
+- [x] browser.py: main window and embedded figures on controls.*; spectra steps, spectra slider and
+      Ctrl+PgUp / Ctrl+PgDown removed; the file slider kept.
+- [x] line.py (sweeps choice under '< line' / 'line >'; sliders -> boxes; topo rows pop-up),
+      lineavg.py, averaging.py, records.py, feenstra.py, fit.py (fit and edit windows), drift.py
+      (2.4), stripe.py, section.py, topo.py, composer.py; fft.py and phase.py draw through
+      plt.subplots, which now fills the automatic grid (no edit needed).
+- [x] Standalone drawings: calibration.py, plots.py, widgets.py demos converted; every other
+      `__main__` audited (none of them draws its own layout); checks/alignment_windows.py.
+- [x] Old widgets.py control classes deleted (Control and kinds, composites, make, size_of); kept:
+      SPECS, LABELS, SHORT_LABELS, short_form, fonts, filters_text, ViewNavigator, DragPath,
+      PairMarkers, MARKER_PAIRS_MAX.  Specs of the removed spectra controls deleted.
+- [x] Every window rendered (/tmp/render/render.py, review/renders/): no overlaps except panel
+      titles wider than their panel (pre-existing; asked in review/approval.md).
+- [x] README pass (new section "Layout and controls"; drift window; text size; modules).
+- [x] Full smoke suite: 47 PASS, 0 FAIL; smoke_sweeps per_pixel and pages: all PASS.
+- [x] Fixed on the way (listed for approval in review/approval.md): G1 (a cleared panel sharing an
+      axis kept auto-range: qtplot Axes.clear keeps the shared range); I3 (browser fit slack never
+      applied; re-fit until the size holds; frames' style sheets blocked the window font: fonts set
+      on every widget); Feenstra H / SG boxes stretched (fixed-width text boxes get a Fixed policy);
+      an empty Feenstra-settings frame in the browser.
+- [x] Approved and pushed (Phases 1-3 in one commit).  Next: Phase 4, the calibration locks.
 
 ### Phase 4: calibration locks  [ ]
 - [ ] 4.1 calibration.py: GateSettings fields, parsing, text, record keys; pins; one- and two-pin
@@ -190,14 +188,52 @@ Status marks: `[ ]` to do, `[~]` in progress, `[x]` done.
 - [ ] Full smoke checks pass; every window rendered and checked; README and comments current;
       plan.md ticked complete.
 
-## 4. Reference
+## 5. The layout API built in Phase 1 (use it for every window)
 
+- qtplot (automatic layout: the one rule for every window):
+  - `cell = fig.cell(min_px=(40, 40), stretch=(True, True), inner_w=None)`: a PanelCell (QWidget,
+    mouse-transparent) to put in a Qt layout. `inner_w` (px at zoom 1) for a narrow panel (colour bar,
+    ramp): the cell is as wide as the bar plus its tick axes and title, the bar centred.
+  - `ax = fig.add_axes(cell=cell)`: the axes takes the cell's rectangle less its tick axes / title
+    (Axes._decor_px). Aspect 'box' and Figure.align_row work inside the cells as before.
+  - `fig.text(x, y, s, cell=cell)`: x, y are fractions of the cell. `fig.set_title_cell(cell)`:
+    suptitle centred in that cell.
+  - `fig.set_layout(root_layout)`: installs the layout on canvas.viewport(). After that the window's
+    controls follow `fig.control_zoom` (font zoom reduced to fit, CONTROL_FIT_MIN = 0.75); the canvas
+    minimum is raised only when even that does not fit (Qt's rule; windows never scroll).
+  - `with fig.at_design_size():` lays the window out at its design size (mplexport uses it).
+  - `plots.draw_topo_cbar(fig, cell=narrow_cell)`.
+- controls.py (the one control set; the old widgets.make / widgets.* control classes are deleted):
+  - `controls.make(fig, name, **kw)` (no x, y); kinds Check, Checks(indents=...), Radio(title=),
+    Button, Text (digit stepping), Count (whole numbers with limits; replaces the 'Markers', 'avgs',
+    'E-markers' sliders; set_color = frame colour), Slider (only the browser's 'file'), TextPanel
+    (scrolling read-only text; set_text / get_text / set_visible like a figure text).
+  - Every control / composite has `.qt` (its Qt widget) for the layout; `fig=None` for the browser
+    (its window font rules them, browser._WindowZoom).
+  - Layout helpers: `controls.box(*items, title=None, orient='h'|'v')` (the box frame),
+    `controls.row(...)`, `controls.column(...)` (Qt box layouts; 'stretch' adds a stretch),
+    `controls.widget_of(layout)`, `controls.FlowLayout(push_last=False)` (a control row that wraps in
+    a narrow window; use it for every window's control strip, the portrait check I2 needs it).
+  - Composites: StepButtons(fig, l, r, chevrons=False), FilterControls(fig, ..., title=None),
+    PipelineBox(fig, ..., hs='beside'|'rows'), FeenstraSettings(fig, settings),
+    StackControls(fig, stack, substack, average=None|bool, needs_average, tag) (window places
+    chk_stack / chk_substack / chk_average), MarkerGroupControls(fig, max_groups, n_groups,
+    markers_max) (window places `.box` and `.s_avgs`; `set_height_cap(fn)`), TopoProcessorBox,
+    ResampleControls(fig, method), RunControls(fig, names), GammaBox(fig, gamma) (.qt),
+    NameBox(fig, name), AveragePicker(fig, averages).open(anchor_control_or_widget, entry, on_pick).
+- Conversion recipe per window (Map is the worked example, map.py __init__): build the controls with
+  controls.*; make cells; arrange cells and controls in Qt layouts mirroring the old relative order;
+  `fig.set_layout(root)`; add axes with cell=; replace every place / set_position / attach /
+  below_corner / size_of / stack_top use by the layout; readout figure texts -> TextPanel; update
+  docstrings and README; render the window (scratch script) and check no overlap; run the smoke checks.
+- Scratch tools (outside the repo, recreate if missing): /tmp/render/rep.py (exact unique string
+  replacement: blocks '@@@ OLD' ... '@@@ NEW' ... '
 - Current calibration (main): bdf8e16, per-sweep a, b, c, nothing locked, the gate (gate_sweeps).
 - 0 V reference history: 869dced:calibration.py (oldest form, b*V), 7511371:calibration.py
   `far_offsets` (exact pin, b*(V - V_far)) <- use this form.
 - Setpoint anchor history: 6761a76:calibration.py through 7511371 (`anchor_index`, `_anchor`,
   `_ref_column`).
-- Controls today: widgets.py `make(fig, name, x, y)` places a control at a figure fraction on the
-  canvas viewport (Control._add / _layout setGeometry); qtplot Axes place a ViewBox at a
-  figure-fraction rect (Axes._px_rect / _place); the browser already uses Qt layouts for its native
-  controls (browser.py Q* classes).
+- Controls before this update (HEAD): widgets.py `make(fig, name, x, y)` placed a control at a figure
+  fraction on the canvas viewport (Control._add / _layout setGeometry); qtplot Axes placed a ViewBox
+  at a figure-fraction rect (Axes._px_rect / _place); the browser used Qt layouts for its own native
+  controls (browser.py Q* classes).  All of these are replaced by section 5's API.

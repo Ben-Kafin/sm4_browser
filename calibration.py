@@ -542,7 +542,7 @@ if __name__ == '__main__':
     # least-squares cost S(a, b) around its minimum, c at its optimum for each (a, b), the trend's
     # pair marked.  Parameters of every column printed once; the shown sweep's on every step.
     from sm4_Browser import qtplot as plt
-    from sm4_Browser import sm4file, widgets
+    from sm4_Browser import sm4file
     path = r'experiment_dir/file.sm4'
     column = 0        # the starting sweep: an index among the acquired columns (0 = the first)
     hampel = None     # the current filters as the windows set them (None = off), e.g. {'window': 4, 'n_sigma': 3}
@@ -616,8 +616,9 @@ if __name__ == '__main__':
 
     DESIGN = (17, 9.5)        # the demo window's design size (inches)
     fig = plt.figure(figsize=DESIGN)
-    # Fixed margins (a strip at the bottom for the sweep buttons), so every rebuild lands identically.
-    fig.subplots_adjust(left=0.05, right=0.985, bottom=0.12, top=0.92, wspace=0.28, hspace=0.32)
+    # automatic layout: the one rule for every window (nothing placed by hand): the six panels in the
+    # figure's automatic grid (fig.subplots, rebuilt for every sweep), the sweep buttons and the sweep
+    # text in a row under them (fig.layout_root).
     state = {'k': int(column), 'axes': []}
 
     def draw(k):
@@ -732,9 +733,10 @@ if __name__ == '__main__':
         draw(new)
 
     # The sweep buttons bottom centre, the sweep text beside them.
-    bw, bh = widgets.size_of(fig, '< sweep')
-    steps = widgets.StepButtons(fig, '< sweep', 'sweep >', 0.5 - bw - 0.002, 0.015)
+    from sm4_Browser import controls
+    steps = controls.StepButtons(fig, '< sweep', 'sweep >')
     steps.on_change(on_step)
-    sweep_text = fig.text(0.5 + bw + 0.012, 0.015 + bh / 2, '', va='center', fontsize=9)
+    sweep_text = controls.Label(fig, 'sweep text', fs=9)
+    fig.layout_root().addLayout(controls.row('stretch', steps, sweep_text, 'stretch'))
     draw(state['k'])
     plt.show()

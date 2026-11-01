@@ -98,16 +98,34 @@ class StripeWindow:
             self.fig.canvas.manager.set_window_title(f"stripe matching: {grid.name}")
         except Exception:
             pass
-        self.ax = self.fig.add_axes([0.06, 0.19, 0.91, 0.76])
-        self.rad_slow = widgets.make(self.fig, 'slow axis', 0.03, 0.015, value=self.setting)
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        fig = self.fig
+        self.rad_slow = controls.make(fig, 'slow axis', value=self.setting)
         self.rad_slow.on_change(self._on_slow)
-        self.rad_fast = widgets.make(self.fig, 'fast axis', 0.14, 0.015, value=drift.fast_state(grid, self.setting))
+        self.rad_fast = controls.make(fig, 'fast axis', value=drift.fast_state(grid, self.setting))
         self.rad_fast.on_change(self._on_fast)
-        self.rad_pass = widgets.make(self.fig, 'stripe pass', 0.25, 0.015, value=self.top)
+        self.rad_pass = controls.make(fig, 'stripe pass', value=self.top)
         self.rad_pass.on_change(self._on_pass)
-        self.btn_clear = widgets.make(self.fig, 'clear points', 0.36, 0.03)
+        self.btn_clear = controls.make(fig, 'clear points')
         self.btn_clear.on_change(self._on_clear)
-        self.txt = self.fig.text(0.47, 0.015, '', fontsize=7, family='monospace', ha='left', va='bottom')
+        self.txt = controls.TextPanel(fig, 'readout', fs=7, mono=True, lines=6, fixed=True)
+        # automatic layout: the one rule for every window (nothing placed by hand).  The panel above; the
+        # three radios, 'clear points' and the readout (a text panel that scrolls) in a row below.
+        cell = fig.cell()
+        self.ax = fig.add_axes(cell=cell)
+        strip = controls.FlowLayout()
+        strip.addWidget(self.rad_slow)
+        strip.addWidget(self.rad_fast)
+        strip.addWidget(self.rad_pass)
+        strip.addWidget(self.btn_clear)
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(cell, 1)
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.addLayout(strip, 1)
+        bottom.addWidget(self.txt.qt, 2)
+        root.addLayout(bottom)
+        fig.set_layout(root)
         self._handles = []                  # [(artist, key, line index, position (2,) metres, direction (2,))]
         self._drag = None                   # (key, direction u (2,), start position (2,) m, start coordinate s0 (m along the fast axis), cos = u . fast)
         self._res = None                    # the placement drawn last (result(), Drift.result under the window's setting)

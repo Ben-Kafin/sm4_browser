@@ -166,8 +166,9 @@ the scale in force at its own file's time, and takes the marker pairs for
 exactly that span; its one velocity box, 'v (nm/h, cal)', is what gets
 applied: it is typed and shown in calibrated nm/h (the window's file's
 scale), stored nominal (recorded metres), and every readout shows the
-calibrated value with the nominal beside it.  Its '< before' / 'before >' and
-'< after' / 'after >' buttons step either topo through the segment in time
+calibrated value with the nominal beside it.  The chevron buttons under each
+topo ('< before' / 'before >' under the earlier, '< after' / 'after >' under
+the later) step that topo through the segment in time
 order, and the box then applies to the span between the topos shown, which
 covers every file between them.  The Browser applies the manual
 velocities wherever they cover a file; the Browser, Topo, Line, and Map
@@ -3313,7 +3314,8 @@ class DriftWindow:
     sources on, else the pair's tracked velocity; seed_partner, the module
     docstring, "Seeded markers"), with the
     pair's arrow on both panels.
-    'Markers' is the pair count (0 to 8; a click raises it), 'clear
+    'Markers' is the pair count box (0 to 8; a click on a topo raises it;
+    its digits step with Up / Down, controls.Count), 'clear
     markers' empties the draft.  The markers are a draft: the readout
     lists the pairs (seeded and unmoved, adjusted by how much, or placed by
     hand).  One velocity box, 'v (nm/h, cal)' ("Vx, Vy" in calibrated nm/h
@@ -3335,16 +3337,20 @@ class DriftWindow:
     `on_change`, when a
     caller outside the package gives one, runs as well (_changed).  A
     stored span between the two topos is restored at opening, its markers
-    and its velocity in the box.  '< before' / 'before >' and '< after' /
-    'after >' step the earlier and the later topo through the file's
+    and its velocity in the box.  The chevrons centred under each topo
+    ('< before' / 'before >' under the earlier, '< after' / 'after >' under
+    the later) step the earlier and the later topo through the file's
     segment in time order (the earlier always before the later): the pair
     is redrawn, the draft emptied, the box cleared, the new pair's stored
     span restored (its markers and its velocity in the box), and 'apply
     velocity' then stores the span between the topos shown, which covers
     every file between them, whatever its kind (Drift._manual_model); the
     stepped topos are drawn at their own scales, the box and the readouts
-    stay calibrated by the window's file's scale.  Raises ValueError when
-    the file has no pair to show.
+    stay calibrated by the window's file's scale.  The window is arranged by
+    one Qt layout (automatic layout: the one rule for every window; nothing
+    placed by hand): the two topos, the chevrons under each, the marker and
+    velocity controls in a row, the help line and the readout as text panels
+    that scroll.  Raises ValueError when the file has no pair to show.
     """
 
     DESIGN = (14, 7.6)     # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
@@ -3371,39 +3377,67 @@ class DriftWindow:
             self.fig.canvas.manager.set_window_title(f"manual drift: {f.name}")
         except Exception:
             pass
-        self.ax_a = self.fig.add_axes([0.05, 0.30, 0.42, 0.64])
-        self.ax_b = self.fig.add_axes([0.55, 0.30, 0.42, 0.64], sharex=self.ax_a, sharey=self.ax_a)
-        self.fig.align_row(self.ax_a, self.ax_b)   # one row: the same height whatever shape the view takes
+        fig = self.fig
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        # The controls (controls.py: the one set of every window).  'Markers' is the pair count box
+        # (0 to MARKER_PAIRS_MAX); the step buttons are chevrons, each pair under its own topo.
+        self.sld_markers = controls.Count(fig, 'Markers', value=0, vmax=widgets.MARKER_PAIRS_MAX)
+        self.sld_markers.on_change(lambda val: self.markers.set_pairs(int(round(float(val)))))
+        self.btn_clear = controls.make(fig, 'clear markers')
+        self.btn_clear.on_change(self._on_clear)
+        self.btn_set_v = controls.make(fig, 'set from markers')
+        self.btn_set_v.on_change(self._on_set_from_markers)
+        self.box_v = controls.make(fig, 'drift v', value='')
+        self.box_v.on_change(self._on_typed)
+        self.btn_apply = controls.make(fig, 'apply velocity')
+        self.btn_apply.on_change(self._on_apply)
+        # The step buttons: the earlier topo and the later topo each one step back or forward in time.
+        self.steps_before = controls.StepButtons(fig, '< before', 'before >', chevrons=True)
+        self.steps_before.on_change(lambda d: self._step('before', d))
+        self.steps_after = controls.StepButtons(fig, '< after', 'after >', chevrons=True)
+        self.steps_after.on_change(lambda d: self._step('after', d))
+        self.btn_before_prev, self.btn_before_next = self.steps_before.left, self.steps_before.right
+        self.btn_after_prev, self.btn_after_next = self.steps_after.left, self.steps_after.right
+        self.help_txt = controls.TextPanel(fig, 'help', fs=8, lines=4, fixed=True)
+        self.txt = controls.TextPanel(fig, 'readout', fs=7, mono=True, lines=8, fixed=True)
+        # automatic layout: the one rule for every window (nothing placed by hand).  The two topos
+        # side by side, each pair of chevrons centred under its own topo; the marker and velocity
+        # controls in a row below; the help line, then the readout (text panels that scroll).
+        cell_a, cell_b = fig.cell(), fig.cell()
+        self.ax_a = fig.add_axes(cell=cell_a)
+        self.ax_b = fig.add_axes(cell=cell_b, sharex=self.ax_a, sharey=self.ax_a)
+        fig.align_row(self.ax_a, self.ax_b)   # one row: the same height whatever shape the view takes
+        for ax in (self.ax_a, self.ax_b):
+            ax.set_anchor('S')                 # each topo at the foot of its cell, its chevrons directly under it
+        panels = QtWidgets.QGridLayout()
+        panels.setHorizontalSpacing(12)
+        panels.setVerticalSpacing(2)
+        panels.addWidget(cell_a, 0, 0)
+        panels.addWidget(cell_b, 0, 1)
+        panels.addWidget(controls.UnderPanel(self.ax_a, self.steps_before), 1, 0)
+        panels.addWidget(controls.UnderPanel(self.ax_b, self.steps_after), 1, 1)
+        panels.setColumnStretch(0, 1)
+        panels.setColumnStretch(1, 1)
+        panels.setRowStretch(0, 1)
+        strip = controls.FlowLayout()
+        strip.addWidget(controls.box(self.sld_markers, self.btn_clear, self.btn_set_v, self.box_v, self.btn_apply))
+        root = QtWidgets.QVBoxLayout()
+        root.setSpacing(4)
+        root.addLayout(panels, 1)
+        root.addLayout(strip)
+        root.addWidget(self.help_txt.qt)
+        root.addWidget(self.txt.qt)
+        fig.set_layout(root)
         # The topos of the file's segment in time order: what the step buttons walk through.
         seg = drift.segment_key_of(f.path)
         self.members = list(drift.segment_members(seg)) if seg is not None else []
         self._draw_pair()
-        self.markers = widgets.PairMarkers(self.fig, [(self.ax_a, a.path, a.name), (self.ax_b, b.path, b.name)],
+        self.markers = widgets.PairMarkers(fig, [(self.ax_a, a.path, a.name), (self.ax_b, b.path, b.name)],
                                            self._resolve_on, n_pairs=0, seed=self._seed,
                                            on_count=lambda n: self.sld_markers.set(n),
                                            to_display=lambda xy_m, p: np.asarray(xy_m, dtype=np.float64) * self.k_of(p))
         self.markers.on_change(self._on_markers)
-        self.sld_markers = widgets.make(self.fig, 'Markers', 0.08, 0.235, value=0, vmax=widgets.MARKER_PAIRS_MAX)
-        self.sld_markers.on_change(lambda val: self.markers.set_pairs(int(round(float(val)))))
-        self.btn_clear = widgets.make(self.fig, 'clear markers', 0.20, 0.225)
-        self.btn_clear.on_change(self._on_clear)
-        self.btn_set_v = widgets.make(self.fig, 'set from markers', 0.29, 0.225)
-        self.btn_set_v.on_change(self._on_set_from_markers)
-        self.box_v = widgets.make(self.fig, 'drift v', 0.49, 0.228, value='')
-        self.box_v.on_change(self._on_typed)
-        self.btn_apply = widgets.make(self.fig, 'apply velocity', 0.59, 0.225)
-        self.btn_apply.on_change(self._on_apply)
-        # The step buttons: the earlier topo and the later topo each one step back or forward in time.
-        self.btn_before_prev = widgets.make(self.fig, '< before', 0.70, 0.225)
-        self.btn_before_prev.on_change(lambda: self._step('before', -1))
-        self.btn_before_next = widgets.make(self.fig, 'before >', 0.748, 0.225)
-        self.btn_before_next.on_change(lambda: self._step('before', +1))
-        self.btn_after_prev = widgets.make(self.fig, '< after', 0.83, 0.225)
-        self.btn_after_prev.on_change(lambda: self._step('after', -1))
-        self.btn_after_next = widgets.make(self.fig, 'after >', 0.878, 0.225)
-        self.btn_after_next.on_change(lambda: self._step('after', +1))
-        self.txt = self.fig.text(0.05, 0.02, '', fontsize=7, family='monospace', ha='left', va='bottom')
-        self.help_txt = self.fig.text(0.05, 0.17, '', fontsize=8, ha='left', va='bottom')
         self._write_help()
         # The box's provenance: where its text came from ('confirmed', 'markers', or 'typed'), the
         # markers it was fitted from, and the text as written, so an edited box applies as typed.
@@ -3475,8 +3509,8 @@ class DriftWindow:
                                f"with the k-th on the right).\n{seeding}; 'set from markers' puts the markers' velocity "
                                f"in the 'v (nm/h, cal)' box (calibrated by this file's scale factor {self.scale:g}; the "
                                "nominal value is shown beside it), or type one; 'apply velocity' stores the box for the files between "
-                               f"these two topos ({self.a.name} -> {self.b.name}); '< before' / 'before >' and "
-                               "'< after' / 'after >' step the topos through the segment.")
+                               f"these two topos ({self.a.name} -> {self.b.name}); the chevrons under each topo "
+                               "step that topo through the segment.")
 
     def _restore_span(self):
         """A stored span between the pair shown put into the window: its markers in the draft, its velocity in the box, the readout."""

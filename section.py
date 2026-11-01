@@ -90,7 +90,14 @@ class MeasureWindow:
             self.fig.canvas.manager.set_window_title("measure: the section path")
         except Exception:
             pass
-        self.txt = self.fig.text(0.03, 0.96, '', fontsize=8, family='monospace', ha='left', va='top')
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        # automatic layout: the one rule for every window (nothing placed by hand): the window is one
+        # text panel, which scrolls when the text needs more room.
+        self.txt = controls.TextPanel(self.fig, 'readout', fs=8, mono=True)
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(self.txt.qt, 1)
+        self.fig.set_layout(root)
         self.update(points, scale, name)
         plt.show()
 
@@ -138,10 +145,19 @@ class SetScaleWindow:
             self.fig.canvas.manager.set_window_title("set scale: the section path")
         except Exception:
             pass
-        self.txt = self.fig.text(0.05, 0.93, '', fontsize=9, ha='left', va='top')
-        self.box_scale = widgets.make(self.fig, 'scale factor', 0.42, 0.26, value=f"{self.scale:g}")
-        self.box_cal = widgets.make(self.fig, 'cal length', 0.42, 0.08, value=f"{self.nominal / self.scale:.4f}")
-        self.btn_apply = widgets.make(self.fig, 'apply', 0.72, 0.08)
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
+        self.txt = controls.TextPanel(self.fig, 'readout', fs=9)
+        self.box_scale = controls.make(self.fig, 'scale factor', value=f"{self.scale:g}")
+        self.box_cal = controls.make(self.fig, 'cal length', value=f"{self.nominal / self.scale:.4f}")
+        self.btn_apply = controls.make(self.fig, 'apply')
+        # automatic layout: the one rule for every window (nothing placed by hand): the text (a panel
+        # that scrolls) above, the two boxes one under the other with 'apply' beside the lower one.
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(self.txt.qt, 1)
+        root.addLayout(controls.row('stretch', self.box_scale, 'stretch'))
+        root.addLayout(controls.row('stretch', self.box_cal, self.btn_apply, 'stretch'))
+        self.fig.set_layout(root)
         self.box_scale.on_change(self._on_scale)
         self.box_cal.on_change(self._on_cal)
         self.btn_apply.on_change(self._on_apply)

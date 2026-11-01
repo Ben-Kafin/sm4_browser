@@ -25,7 +25,10 @@ if __package__ in (None, ''):
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import widgets, plots, filters
+from sm4_Browser import widgets, plots, filters, controls
+from sm4_Browser.qtplot import QtWidgets, QtCore
+
+Qt = QtCore.Qt
 
 
 # ---------------------------------------------------------------------- #
@@ -225,7 +228,7 @@ class FeenstraWindow:
 
     Its '0Vsub' box (under the current panel), 'broadened' box and width box
     (under the I/V panel) are the main window's Feenstra settings
-    (widgets.FeenstraSettings): a change goes to the main window
+    (controls.FeenstraSettings): a change goes to the main window
     (set_feenstra_settings), which recomputes its own Feenstra curves with
     it and refreshes this window; the boxes always show the main window's
     state (feenstra_settings).  '0Vsub' subtracts each sweep's current at
@@ -233,7 +236,7 @@ class FeenstraWindow:
     only, nothing moves on the bias axis; a sweep whose axis does not reach
     0 V is left as it is); 'broadened' off divides by the plain I/V.
 
-    Its 'calibrate' / 'normalize' box (widgets.PipelineBox, top right, as in
+    Its 'calibrate' / 'normalize' box (controls.PipelineBox, top right, as in
     every window) holds this window's own two flags, independent of the main
     window's, both off at open: 'normalize' turns the per-location unit-area normalization of
     all four panels on or off together (the dI/dV and the ratio through the
@@ -279,14 +282,7 @@ class FeenstraWindow:
 
     KEYS = ('didv', 'iv', 'ivv', 'ratio')
     SIMPLE = {'didv': 'dI/dV', 'iv': 'I(V)', 'ivv': 'I/V', 'ratio': '(dI/dV)/(I/V)'}   # the panel titles
-    COL_X = (0.035, 0.275, 0.515, 0.755)
-    STRIPE_W, GAP, IMG_W, CBAR_W = 0.012, 0.008, 0.16, 0.008
-    TOP_Y, TOP_H = 0.56, 0.33             # the panel titles stay under the pipeline box (top right)
-    BOT_Y, BOT_H = 0.14, 0.33             # the curve panels' x labels sit above the toggles; their titles under the heatmaps' x labels
-    ROW_Y, ROW_H = 0.16, 0.74              # 'sweeps': one row
     STACK_OFFSET_FRAC = 0.25
-    TOG_Y = 0.004
-    TOPO_CBAR = [0.985, 0.56, 0.007, 0.33]
 
     DESIGN = (18, 8)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
@@ -303,20 +299,32 @@ class FeenstraWindow:
         self.cols = []
         self._topo_cbar = None
         # This window's own pipeline flags (top right, as in every window; both off at open).
-        self.pipeline = widgets.PipelineBox(self.fig, calibrate=False, normalize=False)
+        self.pipeline = controls.PipelineBox(self.fig, calibrate=False, normalize=False)
         self.pipeline.on_change(lambda state: self.refresh())
-        # The main window's Feenstra settings: '0Vsub' under the current panel, 'broadened' and the
-        # width box under the I/V panel.
-        self.settings = widgets.FeenstraSettings(self.fig, self.COL_X[1] + 0.02, self.TOG_Y, self._settings())
+        # The main window's Feenstra settings: '0Vsub', 'broadened' and the width box, under the
+        # current panel's column.
+        self.settings = controls.FeenstraSettings(self.fig, self._settings())
         self.settings.on_change(self._apply)
-        self.stacks = widgets.StackControls(self.fig, (0.80, self.TOG_Y), (0.86, self.TOG_Y),
-                                            needs_average=False, tag='Feenstra window')
+        self.stacks = controls.StackControls(self.fig, needs_average=False, tag='Feenstra window')
         self.stacks.on_change(self.refresh)
         # One gamma box per heatmap column (shown for the 'line' and 'map' kinds).
-        self.gammas = {key: widgets.GammaBox(self.fig) for key in self.KEYS}
+        self.gammas = {key: controls.GammaBox(self.fig) for key in self.KEYS}
         for g in self.gammas.values():
             g.on_change(lambda value: self.refresh())
             g.show(False)
+        # automatic layout: the one rule for every window (nothing placed by hand).  The pipeline box at
+        # the top right; under it the panels' grid, rebuilt for each view kind (_build_axes), its last
+        # row holding the settings under the current column and 'stack' / 'substack' under the last.
+        self._grid = QtWidgets.QGridLayout()
+        self._grid.setHorizontalSpacing(6)
+        self._grid.setVerticalSpacing(2)
+        self._stack_row = controls.widget_of(controls.row(self.stacks.chk_stack, self.stacks.chk_substack, spacing=8))
+        root = QtWidgets.QVBoxLayout()
+        title_cell = self.fig.cell(min_px=(40, 24), stretch=(True, False))   # the window's title, centred in it
+        self.fig.set_title_cell(title_cell)
+        root.addLayout(controls.row(title_cell, self.pipeline))
+        root.addLayout(self._grid, 1)
+        self.fig.set_layout(root)
         pfig = getattr(parent, '_int_fig', None) or getattr(parent, 'fig', None)
         if pfig is not None:
             pfig.canvas.mpl_connect('close_event', lambda event: self.close())
@@ -376,12 +384,15 @@ class FeenstraWindow:
     def _build_axes(self, kind):
         """
         The axes of the four columns for a view kind, replacing the previous
-        ones: 'sweeps' one panel per column (ROW_Y, ROW_H; the gamma boxes
-        hidden); 'line' and 'map' a top panel (the heatmap or map) with its
-        colour bar and a curve panel under it, and for 'line' a topo stripe
-        left of the top panel sharing its y axis, plus one topo colour bar
-        (TOPO_CBAR); the gamma boxes attached under the top panels.  Sets
-        self.cols (one dict of axes per column) and self.kind.
+        ones, each in a cell of the window's layout grid (automatic layout:
+        the one rule for every window), the old cells removed: 'sweeps' one
+        panel per column (the gamma boxes hidden); 'line' and 'map' a top
+        panel (the heatmap or map) with its colour bar and a curve panel under
+        it, and for 'line' a topo stripe left of the top panel sharing its y
+        axis, plus one topo colour bar at the right; the gamma boxes under the
+        top panels; the settings under the current column, 'stack' /
+        'substack' under the last.  Sets self.cols (one dict of axes per
+        column) and self.kind.
         """
         for ax in self.axes:
             try:
@@ -395,34 +406,66 @@ class FeenstraWindow:
                 pass
             self._topo_cbar = None
         self.axes = []
+        fig = self.fig
+        grid = self._grid
+        # The grid emptied: the old cells go (their axes are gone above), the controls are put back below.
+        while grid.count():
+            it = grid.takeAt(0)
+            w = it.widget()
+            if isinstance(w, plt.PanelCell):
+                w.setParent(None)
+                w.deleteLater()
+        for c in range(grid.columnCount()):
+            grid.setColumnStretch(c, 0)
+        for r in range(grid.rowCount()):
+            grid.setRowStretch(r, 0)
         cols = []
-        for x, key in zip(self.COL_X, self.KEYS):
+        for c, key in enumerate(self.KEYS):
+            base = 3 * c                      # the column's grid columns: stripe, top panel, colour bar
             if kind == 'sweeps':
-                ax = self.fig.add_axes([x + self.STRIPE_W + self.GAP, self.ROW_Y, self.IMG_W + self.CBAR_W + 0.02, self.ROW_H])
+                cell = fig.cell()
+                grid.addWidget(cell, 0, base, 3, 3)
+                ax = fig.add_axes(cell=cell)
                 cols.append({'panel': ax})
                 self.axes.append(ax)
                 self.gammas[key].show(False)
+                grid.setColumnStretch(base + 1, 1)
                 continue
             d = {}
             if kind == 'line':
-                d['stripe'] = self.fig.add_axes([x, self.TOP_Y, self.STRIPE_W, self.TOP_H])
+                cs = fig.cell(inner_w=12)
+                grid.addWidget(cs, 0, base)
+                d['stripe'] = fig.add_axes(cell=cs)
                 self.axes.append(d['stripe'])
-            d['top'] = self.fig.add_axes([x + self.STRIPE_W + self.GAP, self.TOP_Y, self.IMG_W, self.TOP_H],
-                                         sharey=d.get('stripe'))
-            d['cbar'] = self.fig.add_axes([x + self.STRIPE_W + self.GAP + self.IMG_W + 0.006, self.TOP_Y, self.CBAR_W, self.TOP_H])
-            d['curves'] = self.fig.add_axes([x + self.STRIPE_W + self.GAP, self.BOT_Y, self.IMG_W + self.CBAR_W + 0.006, self.BOT_H])
+            ct, cc, cu = fig.cell(), fig.cell(inner_w=8), fig.cell()
+            grid.addWidget(ct, 0, base + 1)
+            grid.addWidget(cc, 0, base + 2)
+            grid.addWidget(cu, 2, base, 1, 3)
+            d['top'] = fig.add_axes(cell=ct, sharey=d.get('stripe'))
+            d['cbar'] = fig.add_axes(cell=cc)
+            d['curves'] = fig.add_axes(cell=cu)
             self.axes.extend([d['top'], d['cbar'], d['curves']])
             cols.append(d)
-            self.gammas[key].attach(d['top'], gap_in=0.2)      # under the tick labels of the narrow heatmaps
+            grid.addWidget(self.gammas[key].qt, 1, base + 1, Qt.AlignmentFlag.AlignRight)   # under its heatmap
             self.gammas[key].show(True)
+            grid.setColumnStretch(base + 1, 1)
         if kind == 'line':
-            self._topo_cbar = plots.draw_topo_cbar(self.fig, self.TOPO_CBAR)
+            tc = fig.cell(inner_w=7)
+            grid.addWidget(tc, 0, 12)
+            self._topo_cbar = plots.draw_topo_cbar(fig, cell=tc)
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(2, 1)
+        grid.addWidget(self.settings.qt, 3, 3, 1, 3, Qt.AlignmentFlag.AlignLeft)      # under the current column
+        grid.addWidget(self._stack_row, 3, 9, 1, 3, Qt.AlignmentFlag.AlignRight)      # under the last column
         # The top row across the columns (the maps or heatmaps, their colour bars, the stripes and
         # the topo ramp): one height, a map's aspect setting it (qtplot Figure.align_row).
         top_row = [a for d in cols for a in (d.get('stripe'), d.get('top'), d.get('cbar'), d.get('panel')) if a is not None]
         if self._topo_cbar is not None:
             top_row.append(self._topo_cbar)
         self.fig.align_row(*top_row)
+        curves_row = [d['curves'] for d in cols if 'curves' in d]
+        if curves_row:
+            self.fig.align_row(*curves_row)              # the curve panels: one row too
         self.cols = cols
         self.kind = kind
 

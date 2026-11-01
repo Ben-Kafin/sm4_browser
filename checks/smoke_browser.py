@@ -680,7 +680,13 @@ def _e_markers(b, exp):
     # the readout in the information panel (energies and ΔE, no E numbers); the slider under the 'Markers' stack
     info = w._int_fig.info_text()
     assert "E-markers: " in info and "ΔE: " in info and "E1" not in info, info
-    assert w._int_sld_e._rect[1] < w._int_groups_ctl.y0, (w._int_sld_e._rect, w._int_groups_ctl.y0)
+    # (the window's layout: the E-markers box's top at or below the marker box's bottom)
+    from sm4_Browser.qtplot import QtCore
+    vp = w._int_fig.canvas.viewport()
+    e_top = w._int_sld_e.qt.mapTo(vp, QtCore.QPoint(0, 0)).y()
+    mbox = w._int_groups_ctl.box
+    m_bottom = mbox.mapTo(vp, QtCore.QPoint(0, 0)).y() + mbox.height()
+    assert e_top >= m_bottom, (e_top, m_bottom)
     # the slice: one curve per E-marker, against position, the value at the marker's energy; its legend
     # names each by its energy, in a column right of the curves (the x range widened for it)
     lines = [a for a in w._int_ax_slice._children if hasattr(a, '_y') and len(getattr(a, '_y', [])) == len(w._int_pos)]
@@ -798,21 +804,25 @@ def _line_ranges(b, exp):
     assert np.allclose(w._int_ax_didv.get_ylim(), (q0, q1)), w._int_ax_didv.get_ylim()
     assert np.allclose(w._int_ax_topo.get_ylim(), (q0, q1)), w._int_ax_topo.get_ylim()
     assert np.allclose(curves_before, w._int_curves, equal_nan=True)
-    # the boxes ride with their cursors: the energy ones above the heatmap, the position ones right of it
-    bx, by, bw, bh = w._int_ax_didv.get_position().bounds
-    r_e = w._int_cursor_boxes[('e', 0)]._rect
-    r_x = w._int_cursor_boxes[('x', 1)]._rect
-    assert r_e[1] >= by + bh - 1e-9 and abs(r_e[0] + 0.5 * r_e[2] - bx) < 1e-6, (r_e, bx, by, bh)
-    assert r_x[0] >= bx + bw - 1e-9 and abs(r_x[1] + 0.5 * r_x[3] - (by + bh)) < 1e-6, (r_x, bx, by, bh)
-    # the 'γ' box hangs from the top of the x label's band, right-aligned with the heatmap: under the
-    # tick marks and their values (the panel's placements re-place it, qtplot.Axes.on_placed)
+    # the boxes ride with their cursors: the energy ones above the heatmap, the position ones right of
+    # it, each centred on its cursor (canvas pixels from the top left; the window's layout bands)
+    from sm4_Browser.qtplot import QtCore
     plt._app().processEvents()
-    row = w._int_ax_didv.xlabel_row()
-    g = w._int_gamma_box.box._rect
-    assert row is not None, "the heatmap has no x label"
-    assert abs((g[1] + g[3]) - (row[0] + 0.5 * row[1])) < 1e-9, (g, row)
-    assert abs(g[0] + g[2] - (bx + bw)) < 1e-9, (g, bx, bw)
-    assert g[1] + g[3] < by - 1e-9, (g, by)
+    vp = w._int_fig.canvas.viewport()
+
+    def rect_px(qw):
+        p = qw.mapTo(vp, QtCore.QPoint(0, 0))
+        return p.x(), p.y(), qw.width(), qw.height()
+    bx, by, bw, bh = w._int_ax_didv._px_rect()
+    r_e = rect_px(w._int_cursor_boxes[('e', 0)].qt)
+    r_x = rect_px(w._int_cursor_boxes[('x', 1)].qt)
+    assert r_e[1] + r_e[3] <= by + 1 and abs(r_e[0] + 0.5 * r_e[2] - bx) <= 1.0, (r_e, bx, by, bh)
+    assert r_x[0] >= bx + bw - 1 and abs(r_x[1] + 0.5 * r_x[3] - by) <= 1.0, (r_x, bx, by, bh)
+    # the 'γ' box under the heatmap, below its x axis and label, right-aligned with the heatmap
+    g = rect_px(w._int_gamma_box.qt)
+    cx, cy, cw, ch = w._int_ax_didv._cell.rect_px()
+    assert g[1] >= cy + ch - 1, (g, (cx, cy, cw, ch))
+    assert abs(g[0] + g[2] - (bx + bw)) <= 1.0, (g, bx, bw)
     # the record carries both; 'uncrop' restores the full ranges and the cursors; the record restores them
     rec = w.marker_record()
     assert rec['energy_range'] == [lo, hi] and rec['pos_range'] == [q0, q1], (rec['energy_range'], rec['pos_range'])
@@ -1201,11 +1211,18 @@ def _item1_windows(b):
     return wins
 
 
+def _is_control(c):
+    """One control of the one control set (controls.Control, in the window's layout)."""
+    from sm4_Browser import controls
+    return isinstance(c, controls.Control)
+
+
 def _text_widgets(c):
-    """The Qt widgets with a text of one widgets.Control: (widget, extra width its indicator needs)."""
+    """The Qt widgets with a text of one control: (widget, extra width its indicator needs)."""
     from sm4_Browser.qtplot import QtWidgets
     out = []
-    for qw in c._qws:
+    qws = [c.qt] if getattr(c, 'qt', None) is not None else []     # its one widget holds them all
+    for qw in qws:
         for w in [qw] + qw.findChildren(QtWidgets.QWidget):
             if not w.isVisible() or not hasattr(w, 'text') or not str(w.text()).strip():
                 continue
@@ -1232,7 +1249,7 @@ def _settle_dock(ms=120):
 
 def _assert_text_rule(kind, fig, factor):
     """The fonts of a figure window follow the one rule at this size factor, and no text is cut."""
-    from sm4_Browser.qtplot import QtGui, qfont, window_zoom, ZOOM_MIN, ZOOM_MAX, DPI
+    from sm4_Browser.qtplot import QtGui, QtWidgets, qfont, window_zoom, ZOOM_MIN, ZOOM_MAX, DPI
     from sm4_Browser import widgets
     W, H = fig._canvas_size()
     W0, H0 = fig._design_px
@@ -1254,13 +1271,18 @@ def _assert_text_rule(kind, fig, factor):
             assert got == want_px, (kind, factor, ax._title_full[:50], ax._title._size, got, want_px, fig.font_zoom, z)
     n_ctrl = 0
     for c in fig._qt_controls:
-        if not isinstance(c, widgets.Control) or not c._visible:
+        if not _is_control(c) or not c._visible:
             continue
         base = widgets._font(c.spec['fs'], z).pixelSize()
         for w, extra in _text_widgets(c):
             n_ctrl += 1
             px = w.font().pixelSize()
             assert 0.75 * base - 1.0 <= px <= base + 1.0, (kind, factor, c.name, w.text(), px, base)
+            if isinstance(w, QtWidgets.QLabel) and w.wordWrap():
+                # A label that wraps: its text on as many lines as its width gives, all of them inside it.
+                need_h = w.heightForWidth(w.width())
+                assert need_h <= w.height() + 1, (kind, factor, c.name, w.text(), need_h, w.height())
+                continue
             need = QtGui.QFontMetricsF(w.font()).horizontalAdvance(w.text()) + extra
             assert need <= w.width() + 1.0, (kind, factor, c.name, w.text(), need, w.width())
     return n_axes, n_ctrl
@@ -1271,7 +1293,7 @@ def _label_map(fig):
     from sm4_Browser import widgets
     out = {}
     for c in fig._qt_controls:
-        if isinstance(c, widgets.Control):
+        if _is_control(c):
             for w, _ in _text_widgets(c):
                 out[id(w)] = (w, w.text())
     return out
@@ -1340,11 +1362,11 @@ def _portrait(b, exp):
 @check("I3 the browser window: the one rule, its native controls' labels short in portrait, the embedded figures follow")
 def _browser_text(b, exp):
     from sm4_Browser.qtplot import QtGui, QtWidgets, window_zoom, screen_scale, ZOOM_MIN, ZOOM_MAX
-    from sm4_Browser.browser import QControl
+    from sm4_Browser.controls import Control as QControl          # the browser's controls: the shared set
     from sm4_Browser import widgets
     k = screen_scale()
     W0, H0 = b.DESIGN
-    mine = [c for c in list(QControl._all) if b.win.isAncestorOf(c.qt)]
+    mine = [c for c in list(QControl._all) if c.qt is not None and b.win.isAncestorOf(c.qt)]
     assert len(mine) > 20, len(mine)
 
     def texts():
@@ -1368,6 +1390,10 @@ def _browser_text(b, exp):
         assert lay.minimumSize().width() <= b.win.width() and lay.minimumSize().height() <= b.win.height(), \
             (factor, lay.minimumSize(), b.win.size())
         for w in texts():
+            if isinstance(w, QtWidgets.QLabel) and w.wordWrap():
+                # A label that wraps: its text on as many lines as its width gives, all of them inside it.
+                assert w.heightForWidth(w.width()) <= w.height() + 1, (factor, w.text(), w.heightForWidth(w.width()), w.height())
+                continue
             text = w.title() if isinstance(w, QtWidgets.QGroupBox) else w.text()
             need = QtGui.QFontMetricsF(w.font()).horizontalAdvance(text)
             if isinstance(w, (QtWidgets.QCheckBox, QtWidgets.QRadioButton)):
@@ -1801,7 +1827,7 @@ def _line_flags_off(b, exp):
 def _console_strings(b, exp):
     import io, contextlib
     from sm4_Browser.drift import marker_pair_text
-    assert b.filters._title == 'filters' and b.filters.qt.title() == 'filters'
+    assert b.filters._title == 'filters' and b.filters._title_w.text() == 'filters'
     # the site flag line names the settings file
     grid = goto_kind(b, 'grid')
     was = b.sites.flag(grid.path)
@@ -2311,9 +2337,9 @@ def _calibration_free(b, exp):
     _, f12g = calibration.calibrate(V, lia12, I12, gate={'sgolay': (11, 2)})
     assert f12g[0].gate.settings.sgolay == (11, 2) and f12g[0].gate.ran
     # the pipeline box: the gate row and its boxes, state and set_state, a refused edit put back
-    from sm4_Browser import widgets
+    from sm4_Browser import controls
     figp = plt.figure(figsize=(6, 4))
-    pb = widgets.PipelineBox(figp, calibrate=True, normalize=False)
+    pb = controls.PipelineBox(figp, calibrate=True, normalize=False)
     st = pb.state()
     assert st['calibrate'] and not st['normalize'] and st['gate'] == calibration.GATE_DEFAULT and pb.gate.on
     seen = []
@@ -2376,8 +2402,9 @@ def _didv_filters(b, exp):
     hp = {'window': 4, 'n_sigma': 3}
     sp = {'window_length': 6, 'polyorder': 3}
     # the figure box: four independent toggles, one set of boxes
+    from sm4_Browser import controls
     fig = plt.figure(figsize=(4, 3))
-    fc = widgets.FilterControls(fig, [0.1, 0.1, 0.5, 0.3], hampel=hp, sgolay=sp)
+    fc = controls.FilterControls(fig, hampel=hp, sgolay=sp)
     assert fc.params() == (None, None) and fc.params_didv() == (None, None)
     fc.set_params(hp, None, None, sp)
     assert fc.params() == (hp, None) and fc.params_didv() == (None, sp)

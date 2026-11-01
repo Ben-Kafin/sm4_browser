@@ -84,9 +84,18 @@ def _axis_hidden_ticks(axis):
 def to_matplotlib(fig):
     """
     The qtplot figure as a matplotlib Figure (no GUI backend: Figure + savefig), at the window's
-    design size, white, holding every visible axes at its on-screen figure fraction (_axes), the
-    colour bars (_colorbar), and the figure texts of the plot area.
+    design size, white, holding every visible axes at its figure fraction (_axes), the colour bars
+    (_colorbar), and the figure texts of the plot area.  A window arranged by its Qt layout
+    (automatic layout: the one rule for every window) is laid out at its design size for the
+    rebuild (Figure.at_design_size), so the file does not depend on the window's size on screen;
+    every spatial panel keeps its x:y ratio and every row its one height there as on screen.
     """
+    with fig.at_design_size():
+        return _to_matplotlib(fig)
+
+
+def _to_matplotlib(fig):
+    """to_matplotlib's rebuild, at the figure's current layout."""
     from matplotlib.figure import Figure
     W0, H0 = fig._design_px
     mfig = Figure(figsize=(W0 / q.DPI, H0 / q.DPI), dpi=q.DPI)
@@ -108,7 +117,7 @@ def to_matplotlib(fig):
     # height) sits in the control strip, a window's readout line beside its controls, and is left out.
     bottom = min((_pos(ax)[1] for ax in axes), default=0.0)
     for t in fig._texts:
-        if t.get_visible() and t.get_text() and t._y >= bottom - 0.02:
+        if t.get_visible() and t.get_text() and t.figure_xy()[1] >= bottom - 0.02:
             _text(t, transform=mfig.transFigure, target=mfig)
     return mfig
 
@@ -323,7 +332,8 @@ def _text(t, transform=None, target=None):
         base = transform if transform is not None else target.transData
         kw['transform'] = offset_copy(base, fig=target.figure if hasattr(target, 'figure') else target,
                                       x=_px_to_pt(t._offset_px[0]), y=_px_to_pt(t._offset_px[1]), units='points')
-    return target.text(t._x, t._y, t.get_text(), **kw)
+    x, y = t.figure_xy() if getattr(t, '_cell', None) is not None else (t._x, t._y)
+    return target.text(x, y, t.get_text(), **kw)
 
 
 def _colorbar(mfig, cax):

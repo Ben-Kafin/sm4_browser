@@ -23,7 +23,10 @@ if __package__ in (None, ''):
 import os
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import fit, widgets, plots, calibration
+from sm4_Browser import fit, widgets, plots, calibration, controls
+from sm4_Browser.qtplot import QtWidgets, QtCore
+
+Qt = QtCore.Qt
 from sm4_Browser.sts import STS, curve_units
 from sm4_Browser.averaging import Averages, Selection
 from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero, iv_corrected,
@@ -50,8 +53,12 @@ class Map:
     is NaN and drawn transparent).  Filter controls at the bottom.  The
     'topo pass' radio picks the pass of the embedded topo ('average' counts
     as forward: a grid's passes are never averaged); the 'sweeps' radio of a
-    file with several sweeps per pixel picks the sweep view the maps are
-    made of (Sm4File.with_sweeps).
+    file with several sweeps per pixel, at the bottom right under '< E' /
+    'E >', picks the sweep view the maps are made of (Sm4File.with_sweeps).
+    The window is arranged by one Qt layout (automatic layout: the one rule
+    for every window; nothing placed by hand): the pipeline box on top, the
+    panels in the middle (the single view's and the grid view's on two
+    pages that swap), the controls in columns at the bottom.
 
     Colour scale: with 'cmap norm' off (the default) every energy slice is
     coloured on one scale, the minimum and maximum over the whole cube, in
@@ -62,13 +69,15 @@ class Map:
 
     Markers (the single view): the Line window's marker method in 2D.  A
     marker is a grid pixel (line, fast); it is drawn as a small square at the
-    pixel's centre on the map and on the embedded topo.  The 'avgs' slider
-    (0 to MAX_GROUPS) is the number of groups; every group has its own
-    'Markers' slider (0 to 10 markers; a group at 0 keeps its centre) with
-    'add new' and 'add existing' beside it, the sliders stacked bottom to
-    top in the order of the groups' centres (highest y at the top), each
-    filled with its group's colour; the panels move up when the stack would
-    otherwise run into them.  Group membership is by index.  A group's m
+    pixel's centre on the map and on the embedded topo.  The 'avgs' box
+    (0 to MAX_GROUPS) is the number of groups; every group has its own row
+    in the marker box: its 'Markers' box (0 to 10 markers; a group at 0
+    keeps its centre), framed in the group's colour, with 'add new' and
+    'add existing' beside it, the rows top to bottom in the order of the
+    groups' centres (highest y at the top).  The marker box grows with the
+    groups, the panels giving way, until it is as tall as the panel row;
+    past that it keeps that height and scrolls (controls.py's number
+    boxes: digits step with Up / Down).  Group membership is by index.  A group's m
     markers are the m pixels nearest its centre (ties by angle); new groups
     start at the free slot of an even layout along the grid's diagonal with
     the last group's size; fewer groups drops the last groups.  The window
@@ -85,11 +94,11 @@ class Map:
     window's filters, flags, Feenstra, and channel), or with Average on one
     average per group (the plain mean, Averages.mean_rows, a marker on a
     never-acquired pixel left out), with 'stack' and 'substack' as in the
-    Line window.  'add new' and 'add existing' beside each 'Markers' slider
+    Line window.  'add new' and 'add existing' beside each 'Markers' box
     put that group into the averages as the browser's buttons add a single
     point: a Selection of its markers' columns (each marker one sweep) goes
     to a new average, or to the open average picked from the pop-up list
-    (widgets.AveragePicker).  'Send to fit' sends the marker spectra
+    (controls.AveragePicker).  'Send to fit' sends the marker spectra
     (Average off) or the group averages (Average on) to the single-point
     fit, as the Line window does (calibrated and normalized, the
     fit's pipeline).  'map → new avg' / 'map → existing avg' put the whole
@@ -103,20 +112,7 @@ class Map:
 
     MAX_GROUPS = 10
     STACK_OFFSET_FRAC = 0.25
-    # Panels of the single view (figure fractions); the bottom rises with the slider stack.
-    PANEL_BOTTOM_MIN, PANEL_H_MAX = 0.17, 0.75
-    PANEL_TOP = PANEL_BOTTOM_MIN + PANEL_H_MAX
-    TOPO_X, TOPO_W = 0.04, 0.28
-    MAP_X, MAP_W = 0.36, 0.28
-    CBAR_X, CBAR_W = 0.645, 0.012
-    CURVE_X, CURVE_W = 0.72, 0.26
-    TOPO_CBAR = [0.326, 0.17, 0.008, 0.75]    # the topo ramp on the topo's cell: the row rule centres it with the topo
-    # The 'Markers' slider stack.
-    SLIDER_X = 0.45
-    SLIDER_Y0, SLIDER_PITCH = 0.02, 0.025
-    PANEL_CLEARANCE = 0.06
-    AVGS_XY = (0.665, 0.02)
-    M_COLORS = widgets.MarkerGroupControls.M_COLORS
+    M_COLORS = controls.MarkerGroupControls.M_COLORS
     # The Feenstra companion shows heatmaps (its own 'γ' boxes and pipeline box).
     feenstra_heatmaps = True
 
@@ -218,124 +214,179 @@ class Map:
         self._sync_centres()
         self._active_obj = None
         self._marker_artists = []
-        self._panel_bottom = self.PANEL_BOTTOM_MIN
 
         self.fig = plt.figure(figsize=self.DESIGN)
-        # The controls (widgets.py).
-        self.filters = widgets.FilterControls(self.fig, [0.04, 0.005, 0.19, 0.125],
-                                              hampel=hampel_defaults, sgolay=sgolay_defaults,
-                                              hampel_on=False, sgolay_on=False)
+        fig = self.fig
+        # The controls (controls.py: the one set of every window).
+        self.filters = controls.FilterControls(fig, hampel=hampel_defaults, sgolay=sgolay_defaults,
+                                               hampel_on=False, sgolay_on=False)
         self.filters.on_change(self.recompute)
-        self.rad_dir = widgets.make(self.fig, 'topo pass', 0.26, 0.015, value='forward')
+        self.rad_dir = controls.make(fig, 'topo pass', value='forward')
         self.rad_dir.on_change(self._on_direction)
-        self.rad_channel = widgets.make(self.fig, 'channel', 0.34, 0.015, value=STS.CHANNEL_NAMES[self.channel])
+        self.rad_channel = controls.make(fig, 'channel', value=STS.CHANNEL_NAMES[self.channel])
         self.rad_channel.on_change(self._on_channel)
         # Several sweeps per pixel (sweeps.py): the 'sweeps' radio chooses the view the maps are made of.
         self.rad_sweeps = None
         if getattr(grid, 'sweep_info', None) is not None:
-            self.rad_sweeps = widgets.make(self.fig, 'sweeps', 0.01, 0.80, labels=list(grid.sweep_modes()),
-                                           value=grid.sweep_mode)
+            self.rad_sweeps = controls.make(fig, 'sweeps', labels=list(grid.sweep_modes()), value=grid.sweep_mode)
             self.rad_sweeps.on_change(self._on_sweeps)
-        self.chk_feenstra = widgets.make(self.fig, 'Feenstra', 0.34, 0.08, value=self.divide_iv)
+        self.chk_feenstra = controls.make(fig, 'Feenstra', value=self.divide_iv)
         self.chk_feenstra.on_change(self._on_feenstra_toggle)
-        self.pipeline = widgets.PipelineBox(self.fig, calibrate=self.calibrate, normalize=self.normalize, gate=self.gate)
+        self.pipeline = controls.PipelineBox(fig, calibrate=self.calibrate, normalize=self.normalize, gate=self.gate)
         self.pipeline.on_change(self._on_pipeline_change)
-        self.chk_cmap_norm = widgets.make(self.fig, 'cmap norm', 0.825, 0.065, value=self.cmap_norm)
+        self.chk_cmap_norm = controls.make(fig, 'cmap norm', value=self.cmap_norm)
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
-        self.chk_auto = widgets.make(self.fig, 'auto drift', 0.26, 0.112, value=self.auto_on)
+        self.chk_auto = controls.make(fig, 'auto drift', value=self.auto_on)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
-        self.chk_manual = widgets.make(self.fig, 'manual drift', 0.53, 0.112, value=self.manual_on)
+        self.chk_manual = controls.make(fig, 'manual drift', value=self.manual_on)
         self.chk_manual.on_change(lambda flag: self._on_drift_toggle('manual', flag))
-        self.btn_drift_win = widgets.make(self.fig, 'drift window', 0.612, 0.114)
+        self.btn_drift_win = controls.make(fig, 'drift window')
         self.btn_drift_win.on_change(self._on_drift_window)
         # The grid's stripe matching: the 'stripe' toggle (one state per file, Drift.set_stripe_on) and
-        # the 'stripe match' button, the row under the drift toggles, left of 'Average'.
-        self.chk_stripe = widgets.make(self.fig, 'stripe', 0.54, 0.072, value=False)
+        # the 'stripe match' button, the row under the drift toggles.
+        self.chk_stripe = controls.make(fig, 'stripe', value=False)
         self.chk_stripe.on_change(self._on_stripe_toggle)
-        self.btn_stripe_win = widgets.make(self.fig, 'stripe match', 0.588, 0.074)
+        self.btn_stripe_win = controls.make(fig, 'stripe match')
         self.btn_stripe_win.on_change(self._on_stripe_window)
         self._sync_stripe_toggle()
-        self.btn_view = widgets.make(self.fig, 'Grid view', 0.92, 0.065)
+        self.btn_view = controls.make(fig, 'Grid view')
         self.btn_view.on_change(self.toggle_view)
-        self.steps = widgets.StepButtons(self.fig, '< E', 'E >', 0.895, 0.01)
+        self.steps = controls.StepButtons(fig, '< E', 'E >')
         self.steps.on_change(self.step)
-        self.groups_ctl = widgets.MarkerGroupControls(self.fig, self.SLIDER_X, self.SLIDER_Y0, self.SLIDER_PITCH,
-                                                      self.AVGS_XY, max_groups=self.MAX_GROUPS,
-                                                      n_groups=len(self.group_sizes))
+        self.groups_ctl = controls.MarkerGroupControls(fig, max_groups=self.MAX_GROUPS, n_groups=len(self.group_sizes))
         self.groups_ctl.on_avgs(self._on_avgs_change)
         self.groups_ctl.on_markers(self._on_group_slider)
         self.groups_ctl.on_add_new(self._on_add_new)
         self.groups_ctl.on_add_existing(self._on_add_existing)
-        self.stacks = widgets.StackControls(self.fig, (0.76, 0.01), (0.82, 0.01), (0.665, 0.065),
-                                            needs_average=True)
+        self.stacks = controls.StackControls(fig, average=False, needs_average=True)
         self.stacks.on_change(self._redraw_markers)
-        self.btn_send = widgets.make(self.fig, 'Send to fit', 0.73, 0.065)
+        self.btn_send = controls.make(fig, 'Send to fit')
         self.btn_send.on_change(self._send_to_fit)
         # The whole map into an averaging window: 'map → new avg' starts one, 'map → existing avg' lists
         # the open ones (map_selection: every acquired pixel's spectrum as one sweep of one entry).
-        self.btn_map_new = widgets.make(self.fig, 'map → new avg', 0.45, 0.012)
+        self.btn_map_new = controls.make(fig, 'map → new avg')
         self.btn_map_new.on_change(self._on_map_new)
-        self.btn_map_exist = widgets.make(self.fig, 'map → existing avg', 0.45, 0.046)
+        self.btn_map_exist = controls.make(fig, 'map → existing avg')
         self.btn_map_exist.on_change(self._on_map_existing)
         # The figure composer (composer.FigureComposer): 'add to plot' under the topo, the map and the curve
         # panel sends that panel as shown; 'new plot' empties the figure.
-        self.btn_plot_topo = widgets.make(self.fig, 'add to plot', self.TOPO_X, 0.135)
+        self.btn_plot_topo = controls.make(fig, 'add to plot')
         self.btn_plot_topo.on_change(lambda: self._on_add_to_plot('topo'))
-        self.btn_plot_map = widgets.make(self.fig, 'add to plot', self.MAP_X, 0.135)
+        self.btn_plot_map = controls.make(fig, 'add to plot')
         self.btn_plot_map.on_change(lambda: self._on_add_to_plot('map'))
-        self.btn_plot_curve = widgets.make(self.fig, 'add to plot', self.CURVE_X, 0.135)
+        self.btn_plot_curve = controls.make(fig, 'add to plot')
         self.btn_plot_curve.on_change(lambda: self._on_add_to_plot('spectra'))
-        self.btn_new_plot = widgets.make(self.fig, 'new plot', 0.43, 0.114)
+        self.btn_new_plot = controls.make(fig, 'new plot')
         self.btn_new_plot.on_change(self._on_new_plot)
-        self.gamma_single = widgets.GammaBox(self.fig, gamma=self.gammas[self.e_index])
+        self.gamma_single = controls.GammaBox(fig, gamma=self.gammas[self.e_index])
         self.gamma_single.on_change(self._on_gamma_single)
 
+        # automatic layout: the one rule for every window (nothing placed by hand).  One Qt layout on the
+        # canvas holds the controls and the panels' cells (qtplot.PanelCell); Qt sizes and places them.
+        # Top: the pipeline box at the right.  Middle: the panels: the single view's cells (topo, its
+        # ramp, map, its colour bar, curves) or, in their place, the grid view's page (the topo and one
+        # map per energy, each map's γ box under it), with 'add to plot' under the topo, the map and the
+        # curve panel in both views and the single view's γ box under its map.  Bottom: the controls
+        # in columns, left to right in the order they always had; the sweeps choice under the '< E' /
+        # 'E >' buttons at the bottom right.
+        self._cell_topo = fig.cell()
+        self._cell_topo_cbar = fig.cell(inner_w=9)
+        self._cell_map = fig.cell()
+        self._cell_cbar = fig.cell(inner_w=14)
+        self._cell_curve = fig.cell()
+        self._single_cells = (self._cell_topo, self._cell_topo_cbar, self._cell_map, self._cell_cbar, self._cell_curve)
+        self._grid_page = QtWidgets.QWidget()
+        self._grid_layout = QtWidgets.QGridLayout(self._grid_page)
+        self._grid_layout.setContentsMargins(0, 0, 0, 0)
+        self._grid_layout.setHorizontalSpacing(4)
+        self._grid_layout.setVerticalSpacing(1)
+        self._grid_page.setVisible(False)
+        sg = QtWidgets.QGridLayout()
+        sg.setContentsMargins(0, 0, 0, 0)
+        sg.setHorizontalSpacing(8)
+        sg.setVerticalSpacing(2)
+        for c, cell in enumerate(self._single_cells):
+            sg.addWidget(cell, 0, c)
+        sg.addWidget(self._grid_page, 0, 0, 1, 5)            # the grid view takes the single view's place
+        left = Qt.AlignmentFlag.AlignLeft
+        sg.addWidget(self.btn_plot_topo.qt, 1, 0, left)
+        sg.addLayout(controls.row(self.btn_plot_map, 'stretch', self.gamma_single), 1, 2)
+        sg.addWidget(self.btn_plot_curve.qt, 1, 4, left)
+        for c, s in ((0, 28), (2, 28), (4, 26)):
+            sg.setColumnStretch(c, s)
+        sg.setRowStretch(0, 1)
+        # The columns of controls in one row that wraps onto more rows in a narrow window
+        # (controls.FlowLayout), the view and energy group at the right end.
+        strip = controls.FlowLayout(push_last=True)
+        strip.addWidget(self.filters)
+        strip.addWidget(controls.box(self.chk_auto, self.rad_dir, orient='v'))
+        strip.addWidget(controls.box(self.chk_feenstra, self.rad_channel, orient='v'))
+        strip.addWidget(controls.box(self.btn_new_plot, self.btn_map_exist, self.btn_map_new, orient='v'))
+        strip.addWidget(controls.box(controls.row(self.chk_manual, self.btn_drift_win),
+                                     controls.row(self.chk_stripe, self.btn_stripe_win),
+                                     self.groups_ctl.box, orient='v'))
+        strip.addWidget(controls.box(self.stacks.chk_average, self.groups_ctl.s_avgs, orient='v'))
+        strip.addWidget(controls.box(self.btn_send, self.stacks.chk_stack, orient='v'))
+        strip.addWidget(controls.box(self.chk_cmap_norm, self.stacks.chk_substack, orient='v'))
+        strip.addWidget(controls.box(self.btn_view, self.steps, self.rad_sweeps, orient='v'))
+        root = QtWidgets.QVBoxLayout()
+        root.setSpacing(4)
+        root.addLayout(controls.row('stretch', self.pipeline))
+        root.addLayout(sg, 1)
+        root.addLayout(strip)
+        fig.set_layout(root)
+        # The marker box grows with the groups, the panels giving way, until it is as tall as the panel
+        # row; past that it keeps that height and scrolls.
+        self.groups_ctl.set_height_cap(lambda: 0.5 * (self.groups_ctl.box.height() + self._cell_topo.height()))
+
         # Single view axes.
-        self.ax_topo = self.fig.add_axes([self.TOPO_X, self.PANEL_BOTTOM_MIN, self.TOPO_W, self.PANEL_H_MAX])
-        self.ax_map = self.fig.add_axes([self.MAP_X, self.PANEL_BOTTOM_MIN, self.MAP_W, self.PANEL_H_MAX])
-        self.cax_map = self.fig.add_axes([self.CBAR_X, self.PANEL_BOTTOM_MIN, self.CBAR_W, self.PANEL_H_MAX])
-        self.ax_curve = self.fig.add_axes([self.CURVE_X, self.PANEL_BOTTOM_MIN, self.CURVE_W, self.PANEL_H_MAX])
+        self.ax_topo = fig.add_axes(cell=self._cell_topo)
+        self.ax_map = fig.add_axes(cell=self._cell_map)
+        self.cax_map = fig.add_axes(cell=self._cell_cbar)
+        self.ax_curve = fig.add_axes(cell=self._cell_curve)
         self.ax_curve.keep_clear_of(self.cax_map)        # the curves never run into the colour bar's labels
-        self.ax_topo_cbar = plots.draw_topo_cbar(self.fig, self.TOPO_CBAR)
+        self.ax_topo_cbar = plots.draw_topo_cbar(fig, cell=self._cell_topo_cbar)
         # One row: the topo and the map keep their aspect (the frame, or the drift's wider box) and set
         # the height; the two colour bars and the curve panel take it (qtplot Figure.align_row).
-        self.fig.align_row(self.ax_topo, self.ax_topo_cbar, self.ax_map, self.cax_map, self.ax_curve)
-        self.gamma_single.attach(self.ax_map, gap_in=0.2)
-        # Grid view axes (built once, hidden until toggled), one γ box under each map.
+        fig.align_row(self.ax_topo, self.ax_topo_cbar, self.ax_map, self.cax_map, self.ax_curve)
+        # Grid view axes (built once, on their page until toggled), one γ box under each map.
         n_cells = self.n_e + 1                      # the topo first, then one map per energy
         ncols = int(np.ceil(np.sqrt(n_cells)))
         nrows = int(np.ceil(n_cells / ncols))
-        # The grid stays under the pipeline box (top right); each cell keeps room under its map
-        # for the 'γ' box, the energy written inside the map.
-        gl, gb, gw, gh = 0.03, 0.14, 0.95, 0.78
-        cw, ch = gw / ncols, gh / nrows
-        # The topo in the first cell (drawn by _draw_topo as the single view's topo is).
-        self.grid_topo_ax = self.fig.add_axes([gl + 0.08 * cw, gb + gh - ch + 0.38 * ch, 0.66 * cw, 0.60 * ch])
+        gl = self._grid_layout
+        cell = fig.cell(min_px=(20, 20))
+        gl.addWidget(cell, 0, 0)
+        self.grid_topo_ax = fig.add_axes(cell=cell)
         self.grid_topo_ax.set_xticks([])
         self.grid_topo_ax.set_yticks([])
         self.grid_axes, self.grid_caxes, self.grid_gammas = [], [], []
         for e in range(self.n_e):
             rr, cc = divmod(e + 1, ncols)
-            x0 = gl + cc * cw
-            y0 = gb + gh - (rr + 1) * ch
-            ax = self.fig.add_axes([x0 + 0.08 * cw, y0 + 0.38 * ch, 0.66 * cw, 0.60 * ch])
-            cax = self.fig.add_axes([x0 + 0.76 * cw, y0 + 0.38 * ch, 0.04 * cw, 0.60 * ch])
+            cell = fig.cell(min_px=(20, 20))
+            ccell = fig.cell(min_px=(4, 20), inner_w=5)
+            gl.addWidget(cell, 2 * rr, 2 * cc)
+            gl.addWidget(ccell, 2 * rr, 2 * cc + 1)
+            ax = fig.add_axes(cell=cell)
+            cax = fig.add_axes(cell=ccell)
             ax.set_xticks([])
             ax.set_yticks([])
             self.grid_axes.append(ax)
             self.grid_caxes.append(cax)
-            g = widgets.GammaBox(self.fig, gamma=self.gammas[e])
-            g.attach(ax, gap_in=0.01)
+            g = controls.GammaBox(fig, gamma=self.gammas[e])
             g.on_change(lambda value, e=e: self._on_gamma_grid(e, value))
-            g.show(False)
+            gl.addWidget(g.qt, 2 * rr + 1, 2 * cc, Qt.AlignmentFlag.AlignRight)
             self.grid_gammas.append(g)
+        for cc in range(ncols):
+            gl.setColumnStretch(2 * cc, 1)
+        for rr in range(nrows):
+            gl.setRowStretch(2 * rr, 1)
         # Each row of cells is one row: the maps (and the topo) set the height, their colour bars take it.
         for rr in range(nrows):
             members = [self.grid_topo_ax] if rr == 0 else []
             for e in range(self.n_e):
                 if divmod(e + 1, ncols)[0] == rr:
                     members += [self.grid_axes[e], self.grid_caxes[e]]
-            self.fig.align_row(*members)
+            fig.align_row(*members)
         self.grid_ims = [None] * self.n_e
         self.grid_labels = [None] * self.n_e      # the grid view's energy label per cell, made once (_grid_label)
         self.maps = None
@@ -362,7 +413,7 @@ class Map:
 
     @property
     def avg_on(self):
-        """The 'Average' state (widgets.StackControls); stack_on and substack_on are the 'stack' and 'substack' states."""
+        """The 'Average' state (controls.StackControls); stack_on and substack_on are the 'stack' and 'substack' states."""
         return self.stacks.average
 
     @property
@@ -1128,15 +1179,16 @@ class Map:
         ax.set_ylim(min(b, t), max(b, t))
 
     def _apply_view(self):
-        """Show the axes and γ boxes of the current view (single or grid), hide the other's; the toggle button names the other view."""
+        """Show the cells, axes and γ boxes of the current view (single or grid), hide the other's; the toggle button names the other view."""
         single = self.view == 'single'
+        for cell in self._single_cells:
+            cell.setVisible(single)
+        self._grid_page.setVisible(not single)
+        self.gamma_single.show(single)
         for ax in (self.ax_topo, self.ax_map, self.cax_map, self.ax_curve, self.ax_topo_cbar):
             ax.set_visible(single)
-        self.gamma_single.show(single)
         for ax in [self.grid_topo_ax] + self.grid_axes + self.grid_caxes:
             ax.set_visible(not single)
-        for g in self.grid_gammas:
-            g.show(not single)
         self.btn_view.set_text('Grid view' if single else 'Single view')
         self.fig.canvas.draw_idle()
 
@@ -1198,12 +1250,12 @@ class Map:
         return [(int(lines.ravel()[i]), int(fasts.ravel()[i])) for i in order[:m]]
 
     def groups(self):
-        """Marker indices per group (membership by index, widgets.MarkerGroupControls.groups)."""
-        return widgets.MarkerGroupControls.groups(self.group_sizes)
+        """Marker indices per group (membership by index, controls.MarkerGroupControls.groups)."""
+        return controls.MarkerGroupControls.groups(self.group_sizes)
 
     def group_of(self, i):
         """The group index of marker i."""
-        return widgets.MarkerGroupControls.group_of(self.group_sizes, i)
+        return controls.MarkerGroupControls.group_of(self.group_sizes, i)
 
     DEFAULT_GROUP_SIZE = 2     # markers of a group added while there is no group to copy the size from
 
@@ -1273,7 +1325,7 @@ class Map:
         return (int(k // self.n_fast), int(k % self.n_fast))
 
     def group_order(self):
-        """Group indices by their centres' y on the frame, highest first (the stack and slider order)."""
+        """Group indices by their centres' y on the frame, highest first (the order of the marker box's rows)."""
         groups = self.groups()
         return sorted(range(len(groups)), key=lambda g: (-self.group_center_xy(groups[g], g)[1], g))
 
@@ -1400,10 +1452,10 @@ class Map:
         """End of a drag."""
         self._active_obj = None
 
-    # --- sliders and toggles ---
+    # --- marker boxes and toggles ---
 
     def _on_group_slider(self, g, m):
-        """A 'Markers' slider: that group gets the new number of pixels nearest its centre; the others stay."""
+        """A group's 'Markers' box: that group gets the new number of pixels nearest its centre; the others stay."""
         if m == int(self.group_sizes[g]):
             return
         groups = self.groups()
@@ -1422,7 +1474,7 @@ class Map:
         self._redraw_markers()
 
     def _on_avgs_change(self, n):
-        """'avgs': the number of groups.  Growing adds each new group with the last group's size (DEFAULT_GROUP_SIZE when there is none or it is empty) at the free slot of the diagonal layout farthest from the others (widgets.MarkerGroupControls.grow_groups); shrinking drops the last groups with their markers."""
+        """'avgs': the number of groups.  Growing adds each new group with the last group's size (DEFAULT_GROUP_SIZE when there is none or it is empty) at the free slot of the diagonal layout farthest from the others (controls.MarkerGroupControls.grow_groups); shrinking drops the last groups with their markers."""
         groups = self.groups()
         if n == len(groups):
             return
@@ -1437,25 +1489,15 @@ class Map:
             m = m if m > 0 else self.DEFAULT_GROUP_SIZE
             centers = [self.group_center(members, g) for g, members in enumerate(groups)]
             dist = lambda a, b: float(np.hypot(a[0] - b[0], a[1] - b[1]))
-            for best in widgets.MarkerGroupControls.grow_groups(n, centers, self.layout_centers(n), dist):
+            for best in controls.MarkerGroupControls.grow_groups(n, centers, self.layout_centers(n), dist):
                 self.marker_px.extend(self.place_group(best, m))
                 self.group_sizes.append(m)
                 self.group_ctr.append(tuple(best))
         self._redraw_markers()
 
     def _refresh_group_sliders(self):
-        """One 'Markers' slider and its buttons per group, ordered as the groups' centres (highest y at the top); the single view's panels raised above the stack (PANEL_CLEARANCE) when it would run into them, the γ box re-attached."""
+        """One row of the marker box per group ('Markers' box framed in the group's colour, 'add new', 'add existing'), ordered as the groups' centres (highest y at the top); the layout lets the panels give way as the box grows (the box's height cap, __init__)."""
         self.groups_ctl.refresh(self.group_order(), self.group_sizes)
-        top = self.groups_ctl.stack_top()
-        bottom = max(self.PANEL_BOTTOM_MIN, top + self.PANEL_CLEARANCE)
-        if abs(bottom - self._panel_bottom) > 1e-9:
-            self._panel_bottom = bottom
-            h = self.PANEL_TOP - bottom
-            for ax, x, w in ((self.ax_topo, self.TOPO_X, self.TOPO_W), (self.ax_map, self.MAP_X, self.MAP_W),
-                             (self.cax_map, self.CBAR_X, self.CBAR_W), (self.ax_curve, self.CURVE_X, self.CURVE_W)):
-                ax.set_position([x, bottom, w, h])
-            self.ax_topo_cbar.set_position([self.TOPO_CBAR[0], bottom, self.TOPO_CBAR[2], h])
-            self.gamma_single.attach(self.ax_map, gap_in=0.2)
 
     # --- add to averages ---
 
@@ -1500,13 +1542,13 @@ class Map:
         return selection
 
     def _picker(self):
-        """The pop-up list of the open averages (widgets.AveragePicker), made at the first use."""
+        """The pop-up list of the open averages (controls.AveragePicker), made at the first use."""
         if self._avg_picker is None:
-            self._avg_picker = widgets.AveragePicker(self.fig, self._averages())
+            self._avg_picker = controls.AveragePicker(self.fig, self._averages())
         return self._avg_picker
 
     def _on_add_new(self, g):
-        """'add new' of a slider row: that group starts a new average (each marker one sweep)."""
+        """'add new' of a marker-box row: that group starts a new average (each marker one sweep)."""
         self._picker().close()
         selection = self._group_selection_checked(g)
         if selection is None:
@@ -1520,7 +1562,7 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def _on_add_existing(self, g, anchor_ax):
-        """'add existing' of a slider row: the list of the open averages; a row picked adds the group to it."""
+        """'add existing' of a marker-box row: the list of the open averages; a row picked adds the group to it."""
         picker = self._picker()
         if picker.is_open():
             picker.close()

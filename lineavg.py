@@ -48,7 +48,8 @@ import os
 from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import topo, widgets, plots, records, align, calibration
+from sm4_Browser import topo, widgets, plots, records, align, calibration, controls
+from sm4_Browser.qtplot import QtWidgets, QtCore
 from sm4_Browser.sts import STS, curve_units_of
 from sm4_Browser.averaging import Averages, Selection, send_sets_to_fit
 from sm4_Browser.feenstra import FeenstraWindow, feenstra_titles, energy_has_zero, iv_corrected, iv_broadened
@@ -190,7 +191,7 @@ class LineAverages:
 class LineAverage(Line):
     """
     One indexed line average (lineavg<N>, or the name in its name box): the
-    Line window's marker toolset (groups, 'Markers' sliders with 'add new'
+    Line window's marker toolset (groups, 'Markers' boxes with 'add new'
     / 'add existing', Average, stack, substack, dragging, stripe, curve
     panel, 'γ', the window's own 'Feenstra' toggle and companion, the
     'calibrate' / 'normalize' box, the 'channel' radio, the filter box)
@@ -214,7 +215,6 @@ class LineAverage(Line):
     """
 
     RECORD_FORMAT = records.LINEAVG_RECORD_FORMAT
-    NAME_XY = (0.03, 0.95)
     MEMBERS_CHARS = 150       # the members line is cut at this many characters
 
     def __init__(self, index, directory, first, hampel_defaults, sgolay_defaults, fit_settings=None,
@@ -443,13 +443,9 @@ class LineAverage(Line):
         self._int_topo_lines = list(m['topo_lines'])
 
     def _int_refresh_topo_rows(self):
-        """The topo-row controls stay hidden; the panels follow the slider stack only."""
+        """The topo-row controls stay hidden; the panels give way to the marker box only."""
         self._int_place_panels()
         self._int_fig.canvas.draw_idle()
-
-    def _int_rows_stack_top(self):
-        """No topo row stack: the panels' bottom follows the slider stack alone."""
-        return 0.0
 
     def _int_acquired(self, j):
         """Whether row j of the displayed array (a common position after a run; a spectrum of the main member before) holds any finite value."""
@@ -1079,10 +1075,10 @@ class LineAverage(Line):
 
     def set_align_marker_count(self, n):
         """
-        The editor's 'Markers' slider: n markers in every member.  Growing
+        The editor's 'Markers' box: n markers in every member.  Growing
         adds markers at the free slots of the even layout of each member
         (10% to 90% of its line, the slot farthest from its markers;
-        widgets.MarkerGroupControls.grow_groups); shrinking removes from
+        controls.MarkerGroupControls.grow_groups); shrinking removes from
         the end.  The mode becomes 'markers' and run is needed; nothing
         runs until the editor's 'apply'.
         """
@@ -1096,7 +1092,7 @@ class LineAverage(Line):
             elif n > len(cur):
                 slots = list(np.linspace(lo + 0.1 * (hi - lo), hi - 0.1 * (hi - lo), n)) if n > 1 else [0.5 * (lo + hi)]
                 dist = lambda a, b: abs(float(a) - float(b))
-                cur.extend(widgets.MarkerGroupControls.grow_groups(n, cur, slots, dist))
+                cur.extend(controls.MarkerGroupControls.grow_groups(n, cur, slots, dist))
             m['align_markers'] = [float(v) for v in cur]
         self.mode = 'markers'
         self.run_needed = True
@@ -1104,7 +1100,14 @@ class LineAverage(Line):
     # --- the figure ---
 
     def _int_build_controls(self):
-        """The Line window's controls, the Line-only ones hidden (the 'line' box and arrows, the 'line → ...' buttons, 'save', '+' / '-', the topo row controls and their labels), plus this window's own: the name box, the members line, 'run', 'edit alignment', 'save', 'remove last', 'restore' (widgets.RunControls) and 'overlapping'; the window title is the name."""
+        """
+        The Line window's controls, the Line-only ones hidden (the 'line' box and arrows, the 'line →
+        ...' buttons, 'save', '+' / '-', the topo row controls and their labels: hidden, they leave the
+        layout), plus this window's own in the Line layout's slots (automatic layout: the one rule for
+        every window): the name box and the members line in the top row, 'edit alignment' and 'run' in
+        the button column, 'restore', 'remove last', 'save' and 'overlapping' in the right-hand column
+        (controls.RunControls); the window title is the name.
+        """
         Line._int_build_controls(self)
         fig = self._int_fig
         for w in (self._int_box_line, self._int_btn_line_new, self._int_btn_line_exist, self._int_btn_save,
@@ -1116,19 +1119,25 @@ class LineAverage(Line):
                 wdg.show(False)
         self._int_topo_rows_label.set_visible(False)
         self._int_topo_rows_note.set_visible(False)
-        self.box_name = widgets.NameBox(fig, *self.NAME_XY, name=self.name)
+        self._int_rows_box.setVisible(False)
+        self.box_name = controls.NameBox(fig, name=self.name)
         self.box_name.on_change(self._on_rename)
-        self.txt_members = fig.text(0.17, 0.965, self.members_text(), fontsize=8, ha='left', va='center')
-        self.buttons = widgets.RunControls(fig, [('run', 0.76, 0.065), ('edit alignment', 0.76, 0.12),
-                                                 ('save', 0.865, 0.01), ('remove last', 0.865, 0.065),
-                                                 ('restore', 0.865, 0.12)])
+        self.txt_members = controls.Label(fig, 'members', text=self.members_text(), fs=8)
+        self._int_top_left.addWidget(self.box_name.qt)
+        self._int_top_left.addWidget(self.txt_members.qt, 1)
+        self.buttons = controls.RunControls(fig, ['run', 'edit alignment', 'save', 'remove last', 'restore'])
         self.buttons.on('run', self.run)
         self.buttons.on('edit alignment', self._on_edit_alignment)
         self.buttons.on('save', self._int_on_save)
         self.buttons.on('remove last', self._on_remove_last)
         self.buttons.on('restore', self._on_restore)
-        self.chk_overlapping = widgets.make(fig, 'overlapping', 0.943, 0.01, value=self.overlapping)
+        self.chk_overlapping = controls.make(fig, 'overlapping', value=self.overlapping)
         self.chk_overlapping.on_change(self._on_overlapping)
+        self._int_col_buttons.insertWidget(0, self.buttons['run'].qt)
+        self._int_col_buttons.insertWidget(0, self.buttons['edit alignment'].qt)
+        for w in (self.buttons['restore'], self.buttons['remove last']):
+            self._int_col_line.addWidget(w.qt)
+        self._int_col_line.addLayout(controls.row(self.buttons['save'], self.chk_overlapping))
         try:
             fig.canvas.manager.set_window_title(self.name)
         except Exception:
@@ -1160,7 +1169,7 @@ class AlignmentEditor:
     channel" without one), over the member's own positions (Å), and M
     horizontal draggable marker lines on both heatmaps of the member
     (marker j in colour j in every member, clipped to the member's line
-    when dragged); one 'Markers' slider (0 to 10, on the first figure)
+    when dragged); one 'Markers' box (0 to 10, on the first figure)
     that sets the marker count of every member
     (LineAverage.set_align_marker_count), a 'reference' box (the member
     number, from 1, that is the main; a bad number is put back), 'apply'
@@ -1169,15 +1178,12 @@ class AlignmentEditor:
     'close' (every figure closed); one topo colour bar per figure.
     PER_FIGURE (6) members per figure; more open further figures, the
     controls on the first.  Built again when the member count changes.
+    Each figure is arranged by one Qt layout (automatic layout: the one
+    rule for every window; nothing placed by hand).
     """
 
     PER_FIGURE = 6
-    ROW_H, ROW_PITCH, ROW_Y0 = 0.105, 0.145, 0.07
-    STRIPE_X, STRIPE_W = 0.035, 0.012
-    DIDV_X, IMG_W, CBAR_W, GAP = 0.055, 0.34, 0.008, 0.006
-    IV_X = 0.49
-    TOPO_CBAR = [0.94, 0.35, 0.01, 0.35]
-    M_COLORS = widgets.MarkerGroupControls.M_COLORS
+    M_COLORS = controls.MarkerGroupControls.M_COLORS
 
     def __init__(self, parent):
         self.parent = parent
@@ -1224,47 +1230,70 @@ class AlignmentEditor:
             except Exception:
                 pass
             self.figs.append(fig)
-            plots.draw_topo_cbar(fig, self.TOPO_CBAR)
+            # automatic layout: the one rule for every window (nothing placed by hand).  One grid row
+            # of panels per member (stripe, dI/dV heatmap and its colour bar, current heatmap and its
+            # colour bar) with the heatmaps' γ boxes under them, the topo ramp at the right, the
+            # controls in a row at the bottom of the first figure.
+            grid = QtWidgets.QGridLayout()
+            grid.setHorizontalSpacing(6)
+            grid.setVerticalSpacing(1)
+            tcell = fig.cell(inner_w=10)
+            plots.draw_topo_cbar(fig, cell=tcell)
+            n_here = min(self.PER_FIGURE, n - fi * self.PER_FIGURE)
+            grid.addWidget(tcell, 0, 5, max(2 * n_here, 1), 1)
             for r in range(self.PER_FIGURE):
                 k = fi * self.PER_FIGURE + r
                 if k >= n:
                     break
-                y = self.ROW_Y0 + (self.PER_FIGURE - 1 - r) * self.ROW_PITCH
                 d = {'fig': fig}
-                d['stripe'] = fig.add_axes([self.STRIPE_X, y, self.STRIPE_W, self.ROW_H])
-                d['didv'] = fig.add_axes([self.DIDV_X, y, self.IMG_W, self.ROW_H], sharey=d['stripe'])
-                d['didv_cbar'] = fig.add_axes([self.DIDV_X + self.IMG_W + self.GAP, y, self.CBAR_W, self.ROW_H])
-                d['iv'] = fig.add_axes([self.IV_X, y, self.IMG_W, self.ROW_H], sharey=d['stripe'])
-                d['iv_cbar'] = fig.add_axes([self.IV_X + self.IMG_W + self.GAP, y, self.CBAR_W, self.ROW_H])
-                d['g_didv'] = widgets.GammaBox(fig)
-                d['g_didv'].attach(d['didv'], gap_in=0.02)
+                cells = [fig.cell(inner_w=12), fig.cell(), fig.cell(inner_w=8), fig.cell(), fig.cell(inner_w=8)]
+                for c, cell in enumerate(cells):
+                    grid.addWidget(cell, 2 * r, c)
+                d['stripe'] = fig.add_axes(cell=cells[0])
+                d['didv'] = fig.add_axes(cell=cells[1], sharey=d['stripe'])
+                d['didv_cbar'] = fig.add_axes(cell=cells[2])
+                d['iv'] = fig.add_axes(cell=cells[3], sharey=d['stripe'])
+                d['iv_cbar'] = fig.add_axes(cell=cells[4])
+                d['g_didv'] = controls.GammaBox(fig)
                 d['g_didv'].on_change(lambda value, k=k: self.draw_member(k))
-                d['g_iv'] = widgets.GammaBox(fig)
-                d['g_iv'].attach(d['iv'], gap_in=0.02)
+                d['g_iv'] = controls.GammaBox(fig)
                 d['g_iv'].on_change(lambda value, k=k: self.draw_member(k))
+                grid.addWidget(d['g_didv'].qt, 2 * r + 1, 1, QtCore.Qt.AlignmentFlag.AlignRight)
+                grid.addWidget(d['g_iv'].qt, 2 * r + 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
+                grid.setRowStretch(2 * r, 1)
+                fig.align_row(d['stripe'], d['didv'], d['didv_cbar'], d['iv'], d['iv_cbar'])   # one row per member
                 d['im_didv'] = None
                 d['im_iv'] = None
                 self.rows[k] = d
+            grid.setColumnStretch(1, 1)
+            grid.setColumnStretch(3, 1)
+            root = QtWidgets.QVBoxLayout()
+            root.addLayout(grid, 1)
             fig.canvas.mpl_connect('pick_event', self._on_pick)
             fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
             fig.canvas.mpl_connect('button_release_event', self._on_release)
             if fi == 0:
                 m0 = p.members[0].get('align_markers') or []
-                self.s_markers = widgets.make(fig, 'Markers', 0.10, 0.015, value=len(m0))
+                self.s_markers = controls.make(fig, 'Markers', value=len(m0))
                 self.s_markers.on_change(self._on_markers)
-                self.box_ref = widgets.make(fig, 'reference', 0.33, 0.012, value=str(p.reference + 1))
+                self.box_ref = controls.make(fig, 'reference', value=str(p.reference + 1))
                 self.box_ref.on_change(self._on_reference)
-                self.buttons = widgets.RunControls(fig, [('apply', 0.45, 0.01), ('auto', 0.52, 0.01), ('close', 0.59, 0.01)])
+                self.buttons = controls.RunControls(fig, ['apply', 'auto', 'close'])
                 self.buttons.on('apply', self._on_apply)
                 self.buttons.on('auto', self._on_auto)
                 self.buttons.on('close', self.close)
+                strip = controls.FlowLayout()
+                strip.addWidget(controls.box(self.s_markers, self.box_ref, self.buttons['apply'],
+                                             self.buttons['auto'], self.buttons['close']))
+                root.addLayout(strip)
+            fig.set_layout(root)
         self.refresh()
         for f in self.figs:
             f.canvas.draw_idle()
         plt.show(block=False)
 
     def refresh(self):
-        """Every member redrawn (the editor rebuilt when the member count changed); the 'reference' box and the 'Markers' slider follow the parent without firing."""
+        """Every member redrawn (the editor rebuilt when the member count changed); the 'reference' box and the 'Markers' box follow the parent without firing."""
         p = self.parent
         if len(self.rows) != len(p.members):
             self.build()
@@ -1376,7 +1405,7 @@ class AlignmentEditor:
         self._active = None
 
     def _on_markers(self, val):
-        """The 'Markers' slider: the count set in every member (the parent) and the lines redrawn; ignored while refresh sets the slider."""
+        """The 'Markers' box: the count set in every member (the parent) and the lines redrawn; ignored while refresh sets the box."""
         if self._quiet:
             return
         self.parent.set_align_marker_count(int(val))

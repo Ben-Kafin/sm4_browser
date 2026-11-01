@@ -8,17 +8,17 @@ The Line tool: a grid line's dI/dV or IETS against position.  Data
 extraction from the file (the channel's columns and the I(V) of one line,
 the topography rows of the stripe), and the Line window: the topo stripe,
 the heatmap with its 'γ' box, the energy slice with its E-markers (the
-'E-markers' slider under the 'Markers' stack, the readout in the
+'E-markers' box under the marker box, the readout in the
 information panel, the energy slice's legend; Left / Right / Tab),
-the marker curve panel, the marker groups (widgets.MarkerGroupControls),
+the marker curve panel, the marker groups (controls.MarkerGroupControls),
 the window's own 'Feenstra' toggle with its Feenstra companion
 (feenstra.FeenstraWindow), the 'calibrate' / 'normalize' box
-(widgets.PipelineBox, top right as in every window), the 'channel' radio,
+(controls.PipelineBox, top right as in every window), the 'channel' radio,
 the 'sweeps' radio of a file with several sweeps per pixel, the crop
 cursors on the heatmap with their riding boxes and the 'crop' / 'uncrop'
 buttons, the window's own 'auto drift' / 'manual drift' / 'stripe'
 toggles, 'drift window' and 'stripe match', the 'line' box with its
-'< line' / 'line >' arrows,
+'< line' / 'line >' arrows and the 'sweeps' radio under them,
 the topo-row controls (with a 'profile' button per row), 'save' (the
 marker record averages/<file stem>_line<k>_markers.json), 'line → new
 avg' / 'line → existing avg' (this line into a line average,
@@ -42,8 +42,10 @@ import os
 from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser.qtplot import gridspec
-from sm4_Browser import fit, topo, sm4file, widgets, plots, records, calibration
+from sm4_Browser.qtplot import QtWidgets, QtCore
+from sm4_Browser import fit, topo, sm4file, widgets, plots, records, calibration, controls
+
+Qt = QtCore.Qt
 from sm4_Browser.drift import DriftWindow
 from sm4_Browser.sts import STS, curve_units
 from sm4_Browser.averaging import Averages, Selection
@@ -223,30 +225,14 @@ class Line:
 
     # The Feenstra companion shows heatmaps (its own 'γ' boxes and pipeline box).
     feenstra_heatmaps = True
-    M_COLORS = widgets.MarkerGroupControls.M_COLORS
+    M_COLORS = controls.MarkerGroupControls.M_COLORS
     STACK_OFFSET_FRAC = 0.25   # stack: offset per curve inside a block, fraction of the largest curve range
     MAX_GROUPS = 10
-    # The 'Markers' slider stack (widgets.MarkerGroupControls): slider k from the bottom at
-    # SLIDER_Y0 + k * SLIDER_PITCH; the panels' bottom stays at PANEL_BOTTOM_MIN until the
-    # stack's top plus PANEL_CLEARANCE would reach it, then follows the stack.  The 'E-markers'
-    # slider sits one pitch under the stack's first slider (E_SLIDER_XY), so new 'Markers'
-    # sliders appear above it.
-    SLIDER_X, SLIDER_Y0, SLIDER_PITCH = 0.255, 0.045, 0.025
-    E_SLIDER_XY = (0.255, 0.02)
-    AVGS_XY = (0.60, 0.02)
-    PANEL_BOTTOM_MIN = 0.20
-    PANEL_CLEARANCE = 0.06
-    TOPO_CBAR = [0.94, 0.35, 0.01, 0.35]        # the page's topo colour bar (plots.draw_topo_cbar)
-    # Topo row controls: two columns of TOPO_ROWS_PER_COLUMN rows each (rows 1 to 4 at
-    # TOPO_ROW_X[0], 5 to 8 at TOPO_ROW_X[1]), a 'rows' box, an 'f' / 'r' button and a 'profile'
-    # button per row, filled from the bottom; more than TOPO_ROWS_IN_FIGURE rows live in the
-    # 'topo rows' window (ROWS_DESIGN, ROWS_ROW_IN, ROWS_PAD_IN below).
-    TOPO_ROW_X = (0.848, 0.924)
-    TOPO_ROW_GAP = 0.002
-    TOPO_ROW_Y0, TOPO_ROW_PITCH = 0.105, 0.035
+    # Topo row controls: two columns of TOPO_ROWS_PER_COLUMN rows each (rows 1 to 4 in the first,
+    # 5 to 8 in the second), a 'rows' box, an 'f' / 'r' button and a 'profile' button per row,
+    # filled from the bottom; more than TOPO_ROWS_IN_FIGURE rows live in the 'topo rows' window.
     TOPO_ROWS_PER_COLUMN = 4
     TOPO_ROWS_IN_FIGURE = 8
-    TOPO_ROW_CLEARANCE = 0.03       # the panels' bottom stays this far above the row stack
     TOPO_PASS_LETTER = {'forward': 'f', 'reverse': 'r'}
     # Several sweeps per pixel (set by __init__; a subclass that builds its own data keeps None).
     spectra_all = None
@@ -1031,32 +1017,26 @@ class Line:
 
     def _int_place_cursor_boxes(self):
         """
-        The cursor boxes placed and filled: the energy ones centred on
-        their cursors just above the heatmap's top edge, the position ones
-        centred on theirs just right of its right edge (the spacer column
-        before the colour bar), each showing its cursor's value.
+        The cursor boxes filled and moved onto their cursors: the energy ones in the band above the
+        heatmap, centred on their cursors' x; the position ones in the column right of it, centred on
+        their cursors' y (controls.RideBand: the bands are the layout's, so a box never reaches
+        another control), each showing its cursor's value.
         """
         boxes = getattr(self, '_int_cursor_boxes', None)
         if boxes is None or self._int_cursors is None or self._int_im is None:
             return
-        fig = self._int_fig
-        x0, y0, w, h = self._int_ax_didv.get_position().bounds
+        x0, y0, w, h = self._int_ax_didv._px_rect()             # the heatmap's box, canvas pixels from the top left
         xl0, xl1 = self._int_ax_didv.get_xlim()
         yl0, yl1 = self._int_ax_didv.get_ylim()
-        gap = 0.004
         for (axis, k), box in boxes.items():
             v = float(self._int_cursors[axis][k])
-            bw, bh = widgets.size_of(fig, box.name)
+            box.set(self._int_cursor_text(axis, v))
             if axis == 'e':
                 f = (v - xl0) / (xl1 - xl0) if xl1 != xl0 else 0.5
-                cx = x0 + w * float(np.clip(f, 0.0, 1.0))
-                cy = y0 + h + gap + 0.5 * bh
+                self._int_band_e.set_pos((axis, k), x0 + w * float(np.clip(f, 0.0, 1.0)))
             else:
                 f = (v - yl0) / (yl1 - yl0) if yl1 != yl0 else 0.5
-                cx = x0 + w + gap + 0.5 * bw
-                cy = y0 + h * float(np.clip(f, 0.0, 1.0))
-            box.set(self._int_cursor_text(axis, v))
-            box.place_center(cx, cy)
+                self._int_band_x.set_pos((axis, k), y0 + h * (1.0 - float(np.clip(f, 0.0, 1.0))))
 
     def _int_crop_ranges(self):
         """(energy range, position range) the cursors mean for a crop: a pair left at its axis's ends keeps that axis's crop as it is."""
@@ -1189,8 +1169,8 @@ class Line:
         The row controls follow self._int_topo_lines: up to TOPO_ROWS_IN_FIGURE
         rows shown in the figure (the others hidden); with more rows every
         in-figure control is hidden, a note names the 'topo rows' window, and
-        that window, when open, is brought up to date.  Raises the panels when
-        the row stack would run into them (_int_place_panels).
+        that window, when open, is brought up to date.  The layout lets the
+        panels give way as the row stack grows (_int_place_panels).
         """
         row_widgets = getattr(self, '_int_topo_row_widgets', None)
         if row_widgets is None:
@@ -1222,6 +1202,9 @@ class Line:
         closed until the next '+' / '-'.  Its size: ROWS_DESIGN wide, and
         the taller of ROWS_DESIGN's height and ROWS_ROW_IN per row plus
         ROWS_PAD_IN (inches; its text zoom follows qtplot.window_zoom).
+        Its title line and one row per topo row ('row k', the box, the
+        buttons) are arranged by its Qt layout (automatic layout: the one
+        rule for every window); the window grows with its rows.
         """
         self._int_close_rows_window()
         n = len(self._int_topo_lines)
@@ -1230,23 +1213,30 @@ class Line:
             fig.canvas.manager.set_window_title('topo rows')
         except Exception:
             pass
-        fig.text(0.05, 0.96, f"{os.path.basename(self.ifile)}: {n} topo rows (line index, f/r)",
-                 fontsize=8, ha='left', va='top')
-        pitch = min(0.9 / max(n, 1), 0.08)
+        title = controls.Label(fig, 'rows title', text=f"{os.path.basename(self.ifile)}: {n} topo rows (line index, f/r)",
+                               fs=8, wrap=True)
+        rows_col = QtWidgets.QVBoxLayout()
+        rows_col.setSpacing(2)
         row_widgets = []
-        w_box, _ = widgets.size_of(fig, 'rows')
-        w_f, _ = widgets.size_of(fig, 'f')
         for k in range(n):
-            y = 0.90 - (k + 1) * pitch
-            fig.text(0.40, y, f"row {k + 1} ", fontsize=8, ha='right', va='bottom')
-            box = widgets.make(fig, 'rows', 0.42, y, value=str(self._int_topo_lines[k][0]))
-            btn = widgets.make(fig, 'f', 0.42 + w_box + 0.03, y)
+            lab = controls.Label(fig, 'row label', text=f"row {k + 1}", fs=8)
+            box = controls.make(fig, 'rows', value=str(self._int_topo_lines[k][0]))
+            btn = controls.make(fig, 'f')
             btn.set_text(self.TOPO_PASS_LETTER[self._int_topo_lines[k][1]])
-            prof = widgets.make(fig, 'profile', 0.42 + w_box + 0.03 + w_f + 0.03, y)
+            prof = controls.make(fig, 'profile')
             box.on_change(lambda text, k=k: self._int_on_topo_row_edit(k, text))
             btn.on_change(lambda k=k: self._int_on_topo_row_toggle(k))
             prof.on_change(lambda k=k: self._int_on_topo_row_profile(k))
+            line = controls.FlowLayout(hspacing=4, vspacing=2)       # a row that wraps in a narrow window
+            for w in (lab, box, btn, prof):
+                line.addWidget(w)
+            rows_col.addLayout(line)
             row_widgets.append((box, btn, prof))
+        root = QtWidgets.QVBoxLayout()
+        root.addWidget(title.qt)
+        root.addLayout(rows_col)
+        root.addStretch(1)
+        fig.set_layout(root)
         self._int_rows_fig = fig
         self._int_rows_widgets = row_widgets
         fig.canvas.draw_idle()
@@ -1271,31 +1261,15 @@ class Line:
         self._int_rows_fig = None
         self._int_rows_widgets = []
 
-    def _int_rows_stack_top(self):
-        """The top of the in-figure topo row stack (figure fraction): the first column's height, at most TOPO_ROWS_PER_COLUMN rows; 0 when hidden (more than TOPO_ROWS_IN_FIGURE rows) or absent."""
-        n = len(getattr(self, '_int_topo_lines', []))
-        if not getattr(self, '_int_topo_row_widgets', None):
-            return 0.0
-        n_rows = 0 if n > self.TOPO_ROWS_IN_FIGURE else min(n, self.TOPO_ROWS_PER_COLUMN)   # hidden stack: no height
-        if n_rows == 0:
-            return 0.0
-        _, h = widgets.size_of(self._int_fig, 'rows')
-        return self.TOPO_ROW_Y0 + (n_rows - 1) * self.TOPO_ROW_PITCH + h
-
     def _int_place_panels(self):
         """
-        The panels' bottom: PANEL_BOTTOM_MIN, or higher when the 'Markers'
-        slider stack (plus PANEL_CLEARANCE) or the topo row stack (plus
-        TOPO_ROW_CLEARANCE) would otherwise run into the panels.
+        The panels give way to the marker box and the topo row stack as they grow: the window's
+        layout does it (automatic layout: the one rule for every window); asked here to measure again.
         """
-        slider_top = self._int_groups_ctl.stack_top()
-        rows_top = self._int_rows_stack_top()
-        bottom = max(self.PANEL_BOTTOM_MIN, slider_top + self.PANEL_CLEARANCE,
-                     rows_top + self.TOPO_ROW_CLEARANCE if rows_top > 0 else 0.0)
-        if abs(bottom - getattr(self, '_int_panel_bottom', self.PANEL_BOTTOM_MIN)) > 1e-9:
-            self._int_panel_bottom = bottom
-            self._int_fig.subplots_adjust(bottom=bottom)
-            self._int_follow_heatmap()
+        fig = self._int_fig
+        if fig._layout is not None:
+            fig._layout.invalidate()
+        self._int_groups_ctl.box.updateGeometry()
 
     def _int_n_chunks(self):
         """Number of lines (chunks) in the file for the current scan mode."""
@@ -1492,17 +1466,17 @@ class Line:
         return [float(np.clip(center + (k - (m - 1) / 2.0) * step, lo, hi)) for k in range(m)]
 
     def _int_groups(self):
-        """Marker indices per group (membership by index, widgets.MarkerGroupControls.groups)."""
-        return widgets.MarkerGroupControls.groups(self._int_group_sizes)
+        """Marker indices per group (membership by index, controls.MarkerGroupControls.groups)."""
+        return controls.MarkerGroupControls.groups(self._int_group_sizes)
 
     def _int_group_of(self, i):
-        return widgets.MarkerGroupControls.group_of(self._int_group_sizes, i)
+        return controls.MarkerGroupControls.group_of(self._int_group_sizes, i)
 
     def _int_group_order(self):
         """
         Group indices ordered as the groups' average locations sit on the
         stripe and the heatmap, highest first (the order of the stack panel
-        and of the 'Markers' slider stack, top slider first).
+        and of the marker box's rows, top row first).
         """
         groups = self._int_groups()
         return sorted(range(len(groups)), key=lambda g: (-self._int_group_center(groups[g], g), g))
@@ -1512,7 +1486,7 @@ class Line:
     def _int_group_center(self, members, g=None):
         """
         A group's centre: the mean of its markers; a group without markers (its
-        'Markers' slider at 0) keeps the centre it last had (_int_group_ctr).
+        'Markers' box at 0) keeps the centre it last had (_int_group_ctr).
         """
         if members:
             return float(np.mean([self._int_marker_pos[i] for i in members]))
@@ -1638,7 +1612,7 @@ class Line:
         if self._int_e_range is not None:
             self._int_ax_curve.set_xlim(*self._int_e_range)       # the energy crop (the panel was cleared above)
 
-        # The 'Markers' slider stack follows the groups' order on the stripe.
+        # The marker box's rows follow the groups' order on the stripe.
         self._int_refresh_group_sliders()
         self._int_redraw_e_markers(draw=False)
         self._int_fig.canvas.draw_idle()
@@ -1664,7 +1638,7 @@ class Line:
 
     def _int_on_e_count(self, n):
         """
-        The 'E-markers' slider (0 to 8; 0 clears them): growing adds each new E-marker at the
+        The 'E-markers' box (0 to 8; 0 clears them): growing adds each new E-marker at the
         free slot of an even layout over the energy range farthest from the others; shrinking drops the
         last ones.
         """
@@ -1678,7 +1652,7 @@ class Line:
             slots = [self._int_e_snap(v) for v in (np.linspace(lo + 0.1 * (hi - lo), hi - 0.1 * (hi - lo), n)
                                                    if n > 1 else [0.5 * (lo + hi)])]
             dist = lambda a, b: abs(float(a) - float(b))
-            cur.extend(widgets.MarkerGroupControls.grow_groups(n, cur, slots, dist))
+            cur.extend(controls.MarkerGroupControls.grow_groups(n, cur, slots, dist))
         self._int_e_markers = [float(v) for v in cur]
         self._int_e_selected = min(self._int_e_selected, max(len(cur) - 1, 0))
         self._int_sld_e.set(len(cur))
@@ -2025,9 +1999,9 @@ class Line:
 
     def _int_on_group_slider(self, g, m):
         """
-        A 'Markers' slider: the number of markers of the group it shows (the
-        stack is ordered as the groups' average locations sit on the stripe,
-        highest at the top).  That group keeps its centre (the mean of its
+        A group's 'Markers' box: the number of markers of that group (the
+        marker box's rows are ordered as the groups' average locations sit
+        on the stripe, highest at the top).  That group keeps its centre (the mean of its
         current markers) and gets the new number of markers one spectrum
         step apart around it; every other group's markers stay where they are.
         """
@@ -2050,7 +2024,7 @@ class Line:
 
     def _int_on_avgs_change(self, n):
         """
-        'avgs' slider: number of groups.  Growing keeps the existing groups and
+        'avgs' box: number of groups.  Growing keeps the existing groups and
         adds each new group at the free slot of the even layout (the slot
         farthest from every existing group centre) with the size of the last
         group; shrinking drops the last groups (their markers and sizes).
@@ -2071,7 +2045,7 @@ class Line:
             m = m if m > 0 else self.DEFAULT_GROUP_SIZE
             centers = [self._int_group_center(members, g) for g, members in enumerate(groups)]
             dist = lambda a, b: abs(float(a) - float(b))
-            for best in widgets.MarkerGroupControls.grow_groups(n, centers, self._int_layout_centers(n), dist):
+            for best in controls.MarkerGroupControls.grow_groups(n, centers, self._int_layout_centers(n), dist):
                 self._int_marker_pos.extend(self._int_place_group(best, m))
                 self._int_group_sizes.append(m)
                 self._int_group_ctr.append(float(best))
@@ -2079,10 +2053,11 @@ class Line:
 
     def _int_refresh_group_sliders(self):
         """
-        One 'Markers' slider per group with its 'add new' / 'add existing'
-        buttons, stacked bottom to top in the order of the groups' average
-        locations (widgets.MarkerGroupControls.refresh); the panels raised
-        when the stack would otherwise run into them (_int_place_panels).
+        One row of the marker box per group: its 'Markers' box (framed in the
+        group's colour) with 'add new' / 'add existing', top to bottom in the
+        order of the groups' average locations
+        (controls.MarkerGroupControls.refresh); the layout lets the panels
+        give way as the box grows (_int_place_panels).
         """
         self._int_groups_ctl.refresh(self._int_group_order(), self._int_group_sizes)
         self._int_place_panels()
@@ -2197,7 +2172,7 @@ class Line:
         return selection
 
     def _int_on_add_new(self, g):
-        """'add new' of a slider row: the group shown by that slider starts a new average (each marker one sweep)."""
+        """'add new' of a marker-box row: that row's group starts a new average (each marker one sweep)."""
         self._int_picker().close()
         selection = self._int_group_selection_checked(g)
         if selection is None:
@@ -2211,7 +2186,7 @@ class Line:
         self._int_fig.canvas.draw_idle()
 
     def _int_on_add_existing(self, g, anchor_ax):
-        """'add existing' of a slider row: the list of the open averages; a row picked adds the group to it."""
+        """'add existing' of a marker-box row: the list of the open averages; a row picked adds the group to it."""
         picker = self._int_picker()
         if picker.is_open():
             picker.close()
@@ -2239,9 +2214,9 @@ class Line:
         picker.open(anchor_ax, selection, add_to)
 
     def _int_picker(self):
-        """The pop-up list of the open averages (widgets.AveragePicker), made at the first use."""
+        """The pop-up list of the open averages (controls.AveragePicker), made at the first use."""
         if self._int_avg_picker is None:
-            self._int_avg_picker = widgets.AveragePicker(self._int_fig, self._int_averages())
+            self._int_avg_picker = controls.AveragePicker(self._int_fig, self._int_averages())
         return self._int_avg_picker
 
     # ------------------------------------------------------------------ #
@@ -2332,9 +2307,9 @@ class Line:
         picker.open(self._int_btn_line_exist.ax, entry, add_to)
 
     def _int_line_picker(self):
-        """The pop-up list of the open line averages (widgets.AveragePicker), made at the first use."""
+        """The pop-up list of the open line averages (controls.AveragePicker), made at the first use."""
         if self._int_line_avg_picker is None:
-            self._int_line_avg_picker = widgets.AveragePicker(self._int_fig, self._int_line_averages())
+            self._int_line_avg_picker = controls.AveragePicker(self._int_fig, self._int_line_averages())
         return self._int_line_avg_picker
 
     # ------------------------------------------------------------------ #
@@ -2497,7 +2472,7 @@ class Line:
     # ------------------------------------------------------------------ #
 
     def _int_on_topo_toggle(self, active):
-        """The topo processor box (widgets.TopoProcessorBox): the stripe redrawn with the new flags."""
+        """The topo processor box (controls.TopoProcessorBox): the stripe redrawn with the new flags."""
         self._int_topo_active = list(active)
         self._redraw_topo_stripe()
 
@@ -2673,168 +2648,230 @@ class Line:
     # ------------------------------------------------------------------ #
 
     def _int_build_axes(self):
-        """The panels: the topo stripe, the heatmap with its colour bar, the curve panel, the topo colour bar."""
+        """
+        The panels, each in its cell of the window's layout (automatic layout: the one rule for every
+        window): the topo stripe, the heatmap with its colour bar, the energy slice, the curve panel
+        and the topo colour bar; the band above the heatmap and the column right of it for the crop
+        cursors' boxes (_int_place_cursor_boxes).  _int_build_controls arranges them with the controls.
+        """
         fig = self._int_fig
-        fig.subplots_adjust(bottom=self.PANEL_BOTTOM_MIN)
-        gs_main = gridspec.GridSpec(2, 1, height_ratios=[1, 0.001], hspace=0.3)
-        gs_top = gridspec.GridSpecFromSubplotSpec(
-            1, 8, subplot_spec=gs_main[0],
-            width_ratios=[0.175, 3, 0.3, 0.15, 0.1, 0.9, 0.3, 1.5], wspace=0.05)
-        self._int_ax_topo = fig.add_subplot(gs_top[0])
-        self._int_ax_didv = fig.add_subplot(gs_top[1], sharey=self._int_ax_topo)
-        # The column right of the heatmap is left to the position cursors' boxes (_int_place_cursor_boxes).
-        ax_cursor_col = fig.add_subplot(gs_top[2])
-        ax_cursor_col.axis('off')
-        self._int_cax_didv = fig.add_subplot(gs_top[3])
-        ax_spacer = fig.add_subplot(gs_top[4])
-        ax_spacer.axis('off')
+        self._int_cell_stripe = fig.cell(inner_w=34)
+        self._int_cell_didv = fig.cell()
+        self._int_cell_cax = fig.cell(inner_w=15)
+        self._int_cell_slice = fig.cell()
+        self._int_cell_curve = fig.cell()
+        self._int_cell_tcbar = fig.cell(inner_w=10)
+        self._int_ax_topo = fig.add_axes(cell=self._int_cell_stripe)
+        self._int_ax_didv = fig.add_axes(cell=self._int_cell_didv, sharey=self._int_ax_topo)
+        self._int_cax_didv = fig.add_axes(cell=self._int_cell_cax)
         # The energy slice (E-markers): the quantity against position at each E-marker, on the heatmap's
         # position axis (shared y), as MATLAB's line script showed it beside its heatmaps.
-        self._int_ax_slice = fig.add_subplot(gs_top[5], sharey=self._int_ax_topo)
+        self._int_ax_slice = fig.add_axes(cell=self._int_cell_slice, sharey=self._int_ax_topo)
         self._int_ax_slice.tick_params(axis='y', left=False, labelleft=False)
-        ax_spacer2 = fig.add_subplot(gs_top[6])
-        ax_spacer2.axis('off')
-        self._int_ax_curve = fig.add_subplot(gs_top[7])
+        self._int_ax_curve = fig.add_axes(cell=self._int_cell_curve)
         # The heatmap's positions are the stripe's (shared y): no y ticks, values, or label of its own.
         self._int_ax_didv.tick_params(axis='y', left=False, labelleft=False)
         # The slice and the marker curve panel never run into the heatmap colour bar's ticks and labels.
         self._int_ax_slice.keep_clear_of(self._int_cax_didv)
         self._int_e_artists = []
-        self._int_ax_topo_cbar = plots.draw_topo_cbar(fig, self.TOPO_CBAR)
+        self._int_ax_topo_cbar = plots.draw_topo_cbar(fig, cell=self._int_cell_tcbar)
+        # One row: every panel and bar with the same top and bottom (qtplot Figure.align_row).
+        fig.align_row(self._int_ax_topo, self._int_ax_didv, self._int_cax_didv, self._int_ax_slice,
+                      self._int_ax_curve, self._int_ax_topo_cbar)
         self._int_im = None
+        # The crop cursors' boxes ride in these bands: the energy ones above the heatmap, the
+        # position ones right of it (controls.RideBand).
+        self._int_band_e = controls.RideBand('h')
+        self._int_band_x = controls.RideBand('v')
 
     def _int_build_controls(self):
-        """Every control of the window (widgets.py), at the window's positions."""
+        """
+        Every control of the window (controls.py: the one set of every window), arranged with the
+        panels in one Qt layout (automatic layout: the one rule for every window; nothing placed by
+        hand).  Top: the window's own row (self._int_top_left, empty here; the line average puts its
+        name and members there), 'crop' / 'uncrop' and the pipeline box at the right.  Middle: the
+        panels (topo stripe, heatmap, its colour bar, energy slice, curves, topo colour bar), the
+        crop cursors' bands, the 'γ' box under the heatmap's right end.  Bottom: the controls in
+        columns, left to right in the order they always had, in one row that wraps in a narrow
+        window; the sweeps choice under '< line' / 'line >' at the bottom right.  The columns the
+        line average fills are kept as self._int_col_buttons and self._int_col_line.
+        """
         fig = self._int_fig
-        # 'Markers' sliders: one per group with 'add new' / 'add existing', the stack right of
-        # the filter box (row 0 at the bottom), shown as 'avgs' says.
-        self._int_groups_ctl = widgets.MarkerGroupControls(fig, self.SLIDER_X, self.SLIDER_Y0, self.SLIDER_PITCH,
-                                                           self.AVGS_XY, max_groups=self.MAX_GROUPS,
-                                                           n_groups=len(self._int_group_sizes))
+        # The marker groups: the 'avgs' box and the marker box ('Markers' box per group, framed in its
+        # colour, with 'add new' / 'add existing'), rows top to bottom as the groups' locations.
+        self._int_groups_ctl = controls.MarkerGroupControls(fig, max_groups=self.MAX_GROUPS,
+                                                            n_groups=len(self._int_group_sizes))
         self._int_groups_ctl.on_avgs(self._int_on_avgs_change)
         self._int_groups_ctl.on_markers(self._int_on_group_slider)
         self._int_groups_ctl.on_add_new(self._int_on_add_new)
         self._int_groups_ctl.on_add_existing(self._int_on_add_existing)
         # The window's own 'Feenstra' toggle, below the filter box, and the channel radio beside it.
-        self._int_chk_feenstra = widgets.make(fig, 'Feenstra', 0.03, 0.01, value=self._int_divide_iv)
+        self._int_chk_feenstra = controls.make(fig, 'Feenstra', value=self._int_divide_iv)
         self._int_chk_feenstra.on_change(self._int_on_feenstra_toggle)
         # The window's own 'auto drift' and 'manual drift' toggles (set from the caller's states at
-        # opening, independent after) and the 'drift window' button, one row left of the button column.
-        fw = fig.get_size_inches()[0]
-        x_auto = 0.53
-        x_manual = x_auto + widgets.SPECS['auto drift']['w'] / fw + 0.003
-        x_stripe = x_manual + widgets.SPECS['manual drift']['w'] / fw + 0.003
-        x_stripe_win = x_auto + widgets.SPECS['drift window']['w'] / fw + 0.003
-        self._int_chk_auto = widgets.make(fig, 'auto drift', x_auto, 0.125, value=self._int_auto_on)
+        # opening, independent after) and the 'drift window' button.
+        self._int_chk_auto = controls.make(fig, 'auto drift', value=self._int_auto_on)
         self._int_chk_auto.on_change(lambda flag: self._int_on_drift_toggle('auto', flag))
-        self._int_chk_manual = widgets.make(fig, 'manual drift', x_manual, 0.125, value=self._int_manual_on)
+        self._int_chk_manual = controls.make(fig, 'manual drift', value=self._int_manual_on)
         self._int_chk_manual.on_change(lambda flag: self._int_on_drift_toggle('manual', flag))
         # The grid's stripe matching: the 'stripe' toggle beside the drift toggles (one state per file,
         # Drift.set_stripe_on) and, on the row above with 'drift window', the 'stripe match' button.
-        self._int_chk_stripe = widgets.make(fig, 'stripe', x_stripe, 0.125, value=False)
+        self._int_chk_stripe = controls.make(fig, 'stripe', value=False)
         self._int_chk_stripe.on_change(self._int_on_stripe_toggle)
-        self._int_btn_drift_win = widgets.make(fig, 'drift window', x_auto, 0.167)
+        self._int_btn_drift_win = controls.make(fig, 'drift window')
         self._int_btn_drift_win.on_change(self._int_on_drift_window)
-        self._int_btn_stripe_win = widgets.make(fig, 'stripe match', x_stripe_win, 0.167)
+        self._int_btn_stripe_win = controls.make(fig, 'stripe match')
         self._int_btn_stripe_win.on_change(self._int_on_stripe_window)
         self._int_sync_stripe_toggle()
-        self._int_rad_channel = widgets.make(fig, 'channel', 0.12, 0.005, value=STS.CHANNEL_NAMES[self.channel])
+        self._int_rad_channel = controls.make(fig, 'channel', value=STS.CHANNEL_NAMES[self.channel])
         # The E-markers (energy markers, vertical lines at an energy; the position markers are unchanged):
-        # their count slider under the 'Markers' stack (0 clears them); the readout goes to the
-        # information panel (_int_redraw_e_markers).
-        self._int_sld_e = widgets.make(fig, 'E-markers', *self.E_SLIDER_XY, value=len(self._int_e_markers))
+        # their count box under the marker box (0 clears them); the readout goes to the information
+        # panel (_int_redraw_e_markers).
+        self._int_sld_e = controls.make(fig, 'E-markers', value=len(self._int_e_markers))
         self._int_sld_e.on_change(lambda val: self._int_on_e_count(int(round(float(val)))))
-        # The crop cursors' boxes (one per cursor, riding with it: _int_place_cursor_boxes, placed with
-        # the first heatmap) and the 'crop' / 'uncrop' buttons in the row above the panels
-        # (_int_on_crop, _int_on_uncrop).
+        # The crop cursors' boxes (one per cursor, riding with it in its band: _int_place_cursor_boxes)
+        # and the 'crop' / 'uncrop' buttons in the row above the panels (_int_on_crop, _int_on_uncrop).
         self._int_cursor_boxes = {}
         for axis in ('e', 'x'):
             for k, part in enumerate(('lo', 'hi')):
-                box = widgets.make(fig, f"{'E' if axis == 'e' else 'x'} {part}", 0.0, 0.0, value='')
+                box = controls.make(fig, f"{'E' if axis == 'e' else 'x'} {part}", value='')
                 box.on_change(lambda text, axis=axis, k=k: self._int_on_cursor_box(axis, k, text))
                 self._int_cursor_boxes[(axis, k)] = box
-        self._int_btn_crop = widgets.make(fig, 'crop', 0.72, 0.918)
+                (self._int_band_e if axis == 'e' else self._int_band_x).add((axis, k), box)
+        self._int_btn_crop = controls.make(fig, 'crop')
         self._int_btn_crop.on_change(self._int_on_crop)
-        self._int_btn_uncrop = widgets.make(fig, 'uncrop', 0.775, 0.918)
+        self._int_btn_uncrop = controls.make(fig, 'uncrop')
         self._int_btn_uncrop.on_change(self._int_on_uncrop)
         self._int_rad_sweeps = None
         if self.spectra_all is not None:
             from sm4_Browser import sweeps as sweeps_mod
-            self._int_rad_sweeps = widgets.make(fig, 'sweeps', 0.005, 0.80,
-                                                labels=list(sweeps_mod.sweep_modes(self.spectra_all.sweep_info)),
-                                                value=self.sweep_mode)
+            self._int_rad_sweeps = controls.make(fig, 'sweeps',
+                                                 labels=list(sweeps_mod.sweep_modes(self.spectra_all.sweep_info)),
+                                                 value=self.sweep_mode)
             self._int_rad_sweeps.on_change(self._int_on_sweeps)
         self._int_rad_channel.on_change(self._int_on_channel)
         # The topo processor box: 'Slope Sub' and 'Δz sub', one active at most.
-        self._int_topo_box = widgets.TopoProcessorBox(fig, 0.44, 0.01, topo.processor_labels(), self._int_topo_active)
+        self._int_topo_box = controls.TopoProcessorBox(fig, topo.processor_labels(), self._int_topo_active)
         self._int_topo_box.on_change(self._int_on_topo_toggle)
         # Average, stack, substack.
-        self._int_stacks = widgets.StackControls(fig, (0.69, 0.01), (0.69, 0.065), (0.53, 0.065), needs_average=True)
+        self._int_stacks = controls.StackControls(fig, average=False, needs_average=True)
         self._int_stacks.on_change(self._redraw_curves)
         # 'Send to fit', 'line → new avg', 'line → existing avg', 'save' in one column.
-        self._int_btn_send = widgets.make(fig, 'Send to fit', 0.76, 0.01)
+        self._int_btn_send = controls.make(fig, 'Send to fit')
         self._int_btn_send.on_change(self._int_on_send)
-        self._int_btn_line_new = widgets.make(fig, 'line → new avg', 0.76, 0.065)
+        self._int_btn_line_new = controls.make(fig, 'line → new avg')
         self._int_btn_line_new.on_change(self._int_on_line_new)
-        self._int_btn_line_exist = widgets.make(fig, 'line → existing avg', 0.76, 0.10)
+        self._int_btn_line_exist = controls.make(fig, 'line → existing avg')
         self._int_btn_line_exist.on_change(self._int_on_line_existing)
-        self._int_btn_save = widgets.make(fig, 'save', 0.76, 0.135)
+        self._int_btn_save = controls.make(fig, 'save')
         self._int_btn_save.on_change(self._int_on_save)
         # Savitzky-Golay / Hampel controls (every filter off; boxes pre-filled from the call).
-        self._int_filters = widgets.FilterControls(fig, [0.03, 0.065, 0.19, 0.13],
-                                                   hampel=self._int_box_hampel, sgolay=self._int_box_sgolay,
-                                                   hampel_on=False, sgolay_on=False)
+        self._int_filters = controls.FilterControls(fig, hampel=self._int_box_hampel, sgolay=self._int_box_sgolay,
+                                                    hampel_on=False, sgolay_on=False)
         self._int_filters.on_change(self._int_on_filter_change)
         # The 'calibrate' / 'normalize' box (top right, as in every window).
-        self._int_pipeline_box = widgets.PipelineBox(fig, calibrate=self._int_apply_calibration,
-                                                     normalize=self._int_apply_normalize, gate=self._int_gate)
+        self._int_pipeline_box = controls.PipelineBox(fig, calibrate=self._int_apply_calibration,
+                                                      normalize=self._int_apply_normalize, gate=self._int_gate)
         self._int_pipeline_box.on_change(self._int_on_pipeline_change)
-        # The heatmap's 'γ' box, just below the heatmap's bottom-right corner.
-        self._int_gamma_box = widgets.GammaBox(fig, gamma=self._int_gamma0)
+        # The heatmap's 'γ' box, under the heatmap's right end.
+        self._int_gamma_box = controls.GammaBox(fig, gamma=self._int_gamma0)
         self._int_gamma_box.on_change(self._int_on_gamma)
-        self._int_gamma_box.attach_label_row(self._int_ax_didv)
         # Topo stripe source: one row of controls per averaged profile (a 'rows' box, an 'f' / 'r'
-        # button and a 'profile' button), TOPO_ROWS_IN_FIGURE of them in two columns filled from the
-        # bottom, hidden until used (_int_refresh_topo_rows); '+' / '-' add and remove rows.
+        # button and a 'profile' button), TOPO_ROWS_IN_FIGURE of them in two columns of
+        # TOPO_ROWS_PER_COLUMN filled from the bottom, hidden until used (_int_refresh_topo_rows);
+        # '+' / '-' add and remove rows.
         self._int_topo_row_widgets = []
-        w_box, _ = widgets.size_of(fig, 'rows')
-        w_f, _ = widgets.size_of(fig, 'f')
+        rows_grid = QtWidgets.QGridLayout()
+        rows_grid.setContentsMargins(0, 0, 0, 0)
+        rows_grid.setHorizontalSpacing(2)
+        rows_grid.setVerticalSpacing(2)
         for k in range(self.TOPO_ROWS_IN_FIGURE):
             col, r = divmod(k, self.TOPO_ROWS_PER_COLUMN)
-            x = self.TOPO_ROW_X[col]
-            y = self.TOPO_ROW_Y0 + r * self.TOPO_ROW_PITCH
-            box = widgets.make(fig, 'rows', x, y, value='')
-            btn = widgets.make(fig, 'f', x + w_box + self.TOPO_ROW_GAP, y)
-            prof = widgets.make(fig, 'profile', x + w_box + self.TOPO_ROW_GAP + w_f + self.TOPO_ROW_GAP, y)
+            box = controls.make(fig, 'rows', value='')
+            btn = controls.make(fig, 'f')
+            prof = controls.make(fig, 'profile')
             box.show(False)
             btn.show(False)
             prof.show(False)
             box.on_change(lambda text, k=k: self._int_on_topo_row_edit(k, text))
             btn.on_change(lambda k=k: self._int_on_topo_row_toggle(k))
             prof.on_change(lambda k=k: self._int_on_topo_row_profile(k))
+            gr = self.TOPO_ROWS_PER_COLUMN - 1 - r              # filled from the bottom
+            for c, w in enumerate((box, btn, prof)):
+                rows_grid.addWidget(w.qt, gr, 3 * col + c)
             self._int_topo_row_widgets.append((box, btn, prof))
-        self._int_topo_rows_label = fig.text(self.TOPO_ROW_X[0] - 0.004, self.TOPO_ROW_Y0, 'rows', fontsize=8,
-                                             ha='right', va='bottom')
-        self._int_topo_rows_note = fig.text(self.TOPO_ROW_X[0], self.TOPO_ROW_Y0 + 0.01, '',
-                                            fontsize=8, ha='left', va='bottom', visible=False)
-        self._int_btn_topo_add = widgets.make(fig, '+', 0.915, 0.055)
+        self._int_topo_rows_label = controls.Label(fig, 'rows', text='rows', fs=8)
+        self._int_topo_rows_note = controls.Label(fig, 'rows note', text='', fs=8)
+        self._int_topo_rows_note.set_visible(False)
+        self._int_btn_topo_add = controls.make(fig, '+')
         self._int_btn_topo_add.on_change(self._int_on_topo_add)
-        self._int_btn_topo_remove = widgets.make(fig, '-', 0.945, 0.055)
+        self._int_btn_topo_remove = controls.make(fig, '-')
         self._int_btn_topo_remove.on_change(self._int_on_topo_remove)
         # Line (chunk) selection, below the topo rows: the box re-slices the file's spectra,
-        # the arrows step through the lines (the box follows and stays editable).
-        self._int_box_line = widgets.make(fig, 'line', 0.865, 0.055, value=str(self.chunk_index))
+        # the arrows step through the lines (the box follows and stays editable); the sweeps
+        # choice under the arrows.
+        self._int_box_line = controls.make(fig, 'line', value=str(self.chunk_index))
         self._int_box_line.on_change(self._int_on_line_index)
-        self._int_line_steps = widgets.StepButtons(fig, '< line', 'line >', 0.865, 0.01)
+        self._int_line_steps = controls.StepButtons(fig, '< line', 'line >')
         self._int_line_steps.on_change(self._int_on_line_step)
 
+        # automatic layout: the one rule for every window (nothing placed by hand).
+        self._int_top_left = QtWidgets.QHBoxLayout()
+        self._int_top_left.setSpacing(6)
+        top = controls.row(self._int_top_left, 'stretch', self._int_btn_crop, self._int_btn_uncrop,
+                           self._int_pipeline_box, spacing=6)
+        panels = QtWidgets.QGridLayout()
+        panels.setHorizontalSpacing(6)
+        panels.setVerticalSpacing(2)
+        # The cursor bands: the energy one over the stripe and heatmap columns (a box centres on its
+        # cursor even at the heatmap's left end), the position one down the whole column right of the
+        # heatmap (a box centres on its cursor at either end); they never share a cell.
+        panels.addWidget(self._int_band_e, 0, 0, 1, 2)
+        panels.addWidget(self._int_band_x, 0, 2, 3, 1)
+        for c, cell in ((0, self._int_cell_stripe), (1, self._int_cell_didv), (3, self._int_cell_cax),
+                        (4, self._int_cell_slice), (5, self._int_cell_curve), (6, self._int_cell_tcbar)):
+            panels.addWidget(cell, 1, c)
+        panels.addWidget(self._int_gamma_box.qt, 2, 1, Qt.AlignmentFlag.AlignRight)
+        for c, s in ((1, 30), (4, 9), (5, 15)):
+            panels.setColumnStretch(c, s)
+        panels.setRowStretch(1, 1)
+        self._int_col_buttons = controls.column(self._int_btn_save, self._int_btn_line_exist, self._int_btn_line_new,
+                                                self._int_btn_send)
+        rows_box = controls.box(controls.row(self._int_topo_rows_label, rows_grid),
+                                self._int_topo_rows_note, orient='v')
+        self._int_rows_box = rows_box
+        self._int_col_line = controls.column(rows_box,
+                                             controls.row(self._int_box_line, self._int_btn_topo_add,
+                                                          self._int_btn_topo_remove),
+                                             self._int_line_steps, self._int_rad_sweeps)
+        strip = controls.FlowLayout(push_last=True)
+        self._int_strip = strip
+        strip.addWidget(controls.box(self._int_filters, controls.row(self._int_chk_feenstra, self._int_rad_channel),
+                                     orient='v'))
+        strip.addWidget(controls.box(self._int_groups_ctl.box, self._int_sld_e, orient='v'))
+        strip.addWidget(self._int_topo_box)
+        strip.addWidget(controls.box(controls.row(self._int_btn_drift_win, self._int_btn_stripe_win),
+                                     controls.row(self._int_chk_auto, self._int_chk_manual, self._int_chk_stripe),
+                                     self._int_stacks.chk_average, orient='v'))
+        strip.addWidget(controls.box(self._int_groups_ctl.s_avgs, self._int_stacks.chk_substack,
+                                     self._int_stacks.chk_stack, orient='v'))
+        strip.addWidget(controls.box(self._int_col_buttons, orient='v'))
+        strip.addWidget(controls.box(self._int_col_line, orient='v'))
+        root = QtWidgets.QVBoxLayout()
+        root.setSpacing(4)
+        root.addLayout(top)
+        root.addLayout(panels, 1)
+        root.addLayout(strip)
+        fig.set_layout(root)
+        # The marker box grows with the groups, the panels giving way, until it is as tall as the panel
+        # row; past that it keeps that height and scrolls (the same rule in every window with it).
+        self._int_groups_ctl.set_height_cap(
+            lambda: 0.5 * (self._int_groups_ctl.box.height() + self._int_cell_didv.height()))
+
     def _int_follow_heatmap(self):
-        """The heatmap's panel placed anew (a resize, a panel move, a text zoom, its axis re-measured; qtplot.Axes.on_placed): the 'γ' box back on the x-label row, the cursor boxes on their cursors."""
+        """The heatmap's panel placed anew (a resize, a panel move, a text zoom, its axis re-measured; qtplot.Axes.on_placed): the cursor boxes back on their cursors (the 'γ' box sits in the layout under the heatmap)."""
         if not plt.fignum_exists(self._int_fig):
             return
-        gb = getattr(self, '_int_gamma_box', None)
-        if gb is not None:
-            gb.attach_label_row(self._int_ax_didv)
         self._int_place_cursor_boxes()
 
     def _int_connect(self):
@@ -2921,11 +2958,11 @@ class Line:
         button opening its line's raw forward and reverse passes in a
         profile window (_int_on_topo_row_profile).
 
-        Static panels: topo stripe + dI/dV heatmap (its 'γ' box just below
-        its bottom-right corner: the colour map's exponent, plots.heat_norm)
+        Static panels: topo stripe + dI/dV heatmap (its 'γ' box under its
+        right end: the colour map's exponent, plots.heat_norm)
         + the energy slice.  Interactive: draggable position markers whose
         1D spectra are shown in a fourth panel.  The E-markers (the
-        'E-markers' slider, 0 to E_MAX, under the 'Markers' stack; the
+        'E-markers' box, 0 to E_MAX, under the marker box; the
         readout in the information panel; the energy slice's legend naming
         each by its energy) are vertical lines at recorded energies on the
         heatmap and the curve panel, draggable along the energy axis, the
@@ -2937,14 +2974,17 @@ class Line:
         what lies outside each pair; 'crop' keeps what lies between them:
         the shown energy range (also the normalization range and the colour
         scale's) and the shown position range; 'uncrop' restores both.
-        The 'avgs' slider (0 to MAX_GROUPS) is the number of average
-        groups; every group has its own 'Markers' slider (0 to 10 markers;
-        a group at 0 keeps its centre),
-        the sliders stacked bottom to top in the order of the groups' average
+        The 'avgs' box (0 to MAX_GROUPS) is the number of average
+        groups; every group has its own row in the marker box, its 'Markers'
+        box (0 to 10 markers; a group at 0 keeps its centre) framed in its
+        group's colour, the rows top to bottom in the order of the groups' average
         locations on the stripe (highest group at the top, as in the stack
-        panel), each filled with its group's colour; the stack grows and
-        shrinks with 'avgs', and the panels move up when the stack would
-        otherwise run into them.  Group membership is by index (the first
+        panel); the box grows and shrinks with 'avgs', the panels giving way,
+        until it is as tall as the panel row, then it scrolls (number boxes:
+        digits step with Up / Down, controls.Count).  The window is arranged
+        by one Qt layout (automatic layout: the one rule for every window;
+        nothing placed by hand); the crop cursors' boxes ride in bands of it
+        above and right of the heatmap.  Group membership is by index (the first
         group's markers, then the next group's, ...), so a dragged marker
         stays in its group wherever it is moved.  When a group's count
         changes, its markers are placed one spectrum step apart around the
@@ -2971,10 +3011,10 @@ class Line:
         and one full range between blocks.  The topo processor box holds
         'Slope Sub' and 'Δz sub' (one active at most, Δz sub on at open; a
         click on the active one turns it off).  'add new' and 'add existing'
-        beside every 'Markers' slider add that group to the averages as the
+        beside every 'Markers' box add that group to the averages as the
         browser's buttons add a single point: a Selection of the group's
         marker columns (each marker one sweep) goes to a new average, or to
-        the open average picked from the pop-up list (widgets.AveragePicker).
+        the open average picked from the pop-up list (controls.AveragePicker).
         'line → new avg' / 'line → existing avg' send the whole line (its
         raw columns, positions, stripe rows, and markers) to a new line
         average or to the open one picked from the list (lineavg).  'save'
@@ -2988,7 +3028,7 @@ class Line:
         'calibrate' / 'normalize' box and 'γ' boxes.  The 'calibrate' /
         'normalize' box (top right) switches the two pipeline steps of this
         window.  The Savitzky-Golay and Hampel filters are in-window controls
-        (widgets.FilterControls): every filter starts off, each switchable on
+        (controls.FilterControls): every filter starts off, each switchable on
         its own, their boxes at hampel_filter_params / sgolay_filter_params
         (or the control defaults when None); each row has a toggle for the
         current and one for the channel's columns (Hampel, SG in that
@@ -3121,9 +3161,9 @@ class Line:
         # --- In-window filter settings: the boxes at the call arguments (or the control ---
         # --- defaults); every filter starts off; the filters act on the current (feenstra). ---
         self._int_box_hampel = (dict(hampel_filter_params) if hampel_filter_params is not None
-                                else dict(widgets.FilterControls.HAMPEL_DEFAULT))
+                                else dict(controls.FilterControls.HAMPEL_DEFAULT))
         self._int_box_sgolay = (dict(sgolay_filter_params) if sgolay_filter_params is not None
-                                else dict(widgets.FilterControls.SGOLAY_DEFAULT))
+                                else dict(controls.FilterControls.SGOLAY_DEFAULT))
         self._int_hampel_params = None
         self._int_sgolay_params = None
         self._int_hampel_didv = None          # the dI/dV toggles' settings (None = off), as the two above
@@ -3160,13 +3200,12 @@ class Line:
             self._int_marker_pos = self._int_place_group(self._int_layout_centers(1)[0], 2)
         self._int_group_ctr = []
         self._int_sync_centres()
-        # E-markers: one at the middle of the energy range to start with (the 'E-markers' slider: 0 to 8).
+        # E-markers: one at the middle of the energy range to start with (the 'E-markers' box: 0 to 8).
         e_axis = np.sort(np.asarray(self.energy, dtype=np.float64))
         self._int_e_markers = [float(e_axis[len(e_axis) // 2])] if len(e_axis) else []
         self._int_e_selected = 0
         self._int_active_obj = None
         self._int_marker_artists = []
-        self._int_panel_bottom = self.PANEL_BOTTOM_MIN
 
         # --- The figure, its panels and controls ---
         self._int_fig = plt.figure(figsize=self.DESIGN)

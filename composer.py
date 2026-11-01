@@ -36,6 +36,7 @@ if __package__ in (None, ''):
 
 import numpy as np
 from sm4_Browser import qtplot as plt
+from sm4_Browser.qtplot import QtWidgets
 from sm4_Browser import plots
 
 
@@ -62,8 +63,6 @@ class FigureComposer:
     CELL_IN = 1.9             # every cell a square of this size (inches); the panel a square inside it
     DESIGN = (COLUMNS * CELL_IN, CELL_IN)   # the design size of one row of cells (inches); the window opens
                                             # at as many rows as the panels need (qtplot.window_zoom)
-    PANEL = 0.74              # the panel's side, fraction of the cell (room above for the title, below for tick labels)
-    BOTTOM = 0.11             # the panel's bottom, fraction of the cell
     SYMBOLS = ['+', 'x', '*', '.', '^', 'v', '>', '<', 'o', 's', 'd', 'p', 'h']   # MATLAB's specMarker list
     HEADROOM = 0.85           # a spectrum's curve fills this fraction of its panel's height; the arrows sit above
     SCALE_BAR_NM = 1.0        # the maps' scale bar (the frame's units are nm)
@@ -142,9 +141,10 @@ class FigureComposer:
         ordered items, COLUMNS wide: rows = ceil(n / COLUMNS), at least 1;
         a changed row count closes the figure and makes it again at
         DESIGN[0] x rows * DESIGN[1] inches; with no item nothing is made
-        (an open figure is cleared).  Every item gets a square panel in its
-        cell (PANEL of the cell's side, centred across, BOTTOM up from the
-        cell's bottom), the spectra their symbols in collected order
+        (an open figure is cleared).  Every item gets a panel in its cell of
+        the window's grid (automatic layout: the one rule for every window;
+        a spectrum's panel square, an image's at its data's aspect), the
+        spectra their symbols in collected order
         (_draw_spectrum_panel), the maps and the topo the symbols of every
         collected spectrum (_draw_image_panel).  `panels` is refilled.
         """
@@ -158,6 +158,14 @@ class FigureComposer:
             if n == 0:
                 return
             self.fig = plt.figure(figsize=(self.DESIGN[0], rows * self.DESIGN[1]))
+            # automatic layout: the one rule for every window (nothing placed by hand): one grid of cells,
+            # COLUMNS wide, a panel in each (rebuild fills it).
+            self._grid = QtWidgets.QGridLayout()
+            self._grid.setHorizontalSpacing(10)
+            self._grid.setVerticalSpacing(6)
+            root = QtWidgets.QVBoxLayout()
+            root.addLayout(self._grid, 1)
+            self.fig.set_layout(root)
             self.fig.canvas.mpl_connect('key_press_event', self._on_key)
             try:
                 self.fig.canvas.manager.set_window_title(self.title)
@@ -165,20 +173,31 @@ class FigureComposer:
                 pass
         self._rows = rows
         self.fig.clf()
+        while self._grid.count():                    # the old cells go with their panels
+            it = self._grid.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
         self.panels = []
         if n == 0:
             self.fig.canvas.draw_idle()
             return
         spectra = [it for it in items if it['kind'] == 'spectrum']
         biases = [it['bias'] for it in items if it['kind'] == 'map']
-        side, bottom = self.PANEL, self.BOTTOM
         k_spec = 0
+        for c in range(self.COLUMNS):
+            self._grid.setColumnStretch(c, 1)
+        for r in range(rows):
+            self._grid.setRowStretch(r, 1)
         for i, it in enumerate(items):
             r, c = divmod(i, self.COLUMNS)
-            # The panel: a square of PANEL of the cell, centred across, BOTTOM up from the cell's bottom.
-            ax = self.fig.add_axes([(c + 0.5 * (1.0 - side)) / self.COLUMNS, (rows - 1 - r + bottom) / rows,
-                                    side / self.COLUMNS, side / rows])
+            # The panel: square, in its cell of the grid (its title above, its tick labels below).
+            cell = self.fig.cell()
+            self._grid.addWidget(cell, r, c)
+            ax = self.fig.add_axes(cell=cell)
             if it['kind'] == 'spectrum':
+                ax.set_box_aspect(1.0)                # a spectrum's panel square (an image keeps its data's aspect)
                 info = self._draw_spectrum_panel(ax, it, biases, self.SYMBOLS[k_spec % len(self.SYMBOLS)])
                 k_spec += 1
             else:

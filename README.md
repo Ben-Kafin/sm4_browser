@@ -17,7 +17,7 @@ with a docstring that describes it exactly, and every function says what it does
 
 Contents: [Install and run](#install-and-run) · [The data](#the-data) · [The browser window](#the-browser-window) ·
 [Concepts](#concepts) · [The windows](#the-windows) · [Files the package writes and reads](#files-the-package-writes-and-reads) ·
-[Saving figures](#saving-figures) · [Text size and labels](#text-size-and-labels) · [The modules](#the-modules) ·
+[Saving figures](#saving-figures) · [Layout and controls](#layout-and-controls) · [Text size and labels](#text-size-and-labels) · [The modules](#the-modules) ·
 [The checks](#the-checks) · [References](#references) · [Limits](#limits)
 
 ## Install and run
@@ -125,9 +125,10 @@ dashed. Under them: the Feenstra settings (`0Vsub`, `broadened`, `width (V)`), t
 (`SG` with `window` and `polyorder`, `Hampel` with `window` and `nσ`; each row has two toggles
 under `dI/dV` and `I(V)`, the filter on the spectra themselves and the filter on the recorded
 current, every toggle independent and the row's settings shared), and the `calibrate` /
-`normalize` box (both off at open). Then `< spectra` / `spectra >` and the `spectra` slider, which run over the spectra files
-only (`Ctrl+PgUp` / `Ctrl+PgDown` too), and `prev region` / `next region`, which go to the previous
-or next stop at another experiment region. The information panel lists the file's place, name,
+`normalize` box (both off at open). Then the spectra line, naming the spectra file last shown, and
+`prev region` / `next region`, which go to the previous or next stop at another experiment region
+(the step filter, `step through` and `min (min)`, decides what `< Prev` / `Next >` and the file
+slider stop at). The information panel lists the file's place, name,
 stamp, kind, site flag and region, the loaded count, and its measurement information (setpoint,
 lock-in and modulation settings, filters, sample time, range and step, points acquired, position,
 notes), then one line per panel with the details cut from the panel titles. Its text can be
@@ -301,17 +302,19 @@ shape the view gives it.
 A grid line's dI/dV or IETS against position (`line.py`): the topography stripe of the line
 (forward row at open; the row controls add rows, `+` / `−`, the line-index box and the `f` / `r`
 pass button, more rows in the `topo rows` pop-up), the heatmap with its `γ` box, the marker curve
-panel, the energy slice, the marker groups (`avgs` slider, one `Markers` slider per group with `add
-new` / `add existing` beside it), the E-markers (`E-markers` slider under the `Markers` stack, 0
-clears them; their energies and ΔE in the information panel; the energy slice's legend names each
+panel, the energy slice, the marker groups (the `avgs` box, and the marker box: one row per group,
+its `Markers` box framed in the group's colour with `add new` / `add existing` beside it; the box
+grows with the groups until it is as tall as the panel row, then scrolls), the E-markers (the
+`E-markers` box under the marker box, 0 clears them; their energies and ΔE in the information panel; the energy slice's legend names each
 curve by its energy beside the curves; drag them on the heatmap or the curve panel, Left/Right step
 the selected one by one energy, Tab selects the next), the crop cursors (two per axis on the heatmap, starting at its ends;
-drag one, or type into the box riding with it, and the shade covers what lies outside each pair),
+drag one, or type into the box riding with it in its band above or right of the heatmap, and the shade covers what lies outside each pair),
 `crop` (what lies between the cursors is kept, moved or not: the shown ranges of every panel, and
 for the energy pair the normalization range and the colour scale) and `uncrop` (the full ranges
-back), the `line` box with `< line` / `line >`, the window's
+back), the `line` box with `< line` / `line >` and, under them at the bottom right, `sweeps` for a
+file with several sweeps per pixel, the window's
 own `Feenstra` toggle with its companion, the `calibrate` / `normalize` box, the filters,
-`sweeps` for a file with several sweeps per pixel, `profile` per topography row (the raw heights
+`profile` per topography row (the raw heights
 of the forward and reverse passes), `save` (the marker record), `line → new avg` / `line → existing
 avg`, `Send to fit`, `drift window`, its own drift toggles, and the `stripe` toggle (the file's one
 shared state, as the browser's) with `stripe match`. Each heatmap row sits on its own topography
@@ -325,9 +328,10 @@ they are level. The Feenstra companion draws them the same way.
 
 The per-energy maps of a grid (`map.py`): `Grid view` toggles between the tiled grid of every
 energy (the embedded topography in the first cell) and one energy beside the embedded topography
-with `< E` / `E >` and the curve panel. `cmap norm` chooses one colour scale for the whole cube or one
+with `< E` / `E >` and the curve panel (`sweeps`, for a file with several sweeps per pixel, under
+`< E` / `E >` at the bottom right). `cmap norm` chooses one colour scale for the whole cube or one
 per map; one `γ` box per energy slice. The markers are the Line window's method in 2D (pixels; the
-`avgs` and `Markers` sliders, `Average`, `stack`, `substack`, `add new` / `add existing` per group,
+`avgs` box and the marker box of `Markers` boxes, `Average`, `stack`, `substack`, `add new` / `add existing` per group,
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
 spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
 position plus the drift within its sweep up to the shown energy, the embedded topography is drawn as
@@ -412,14 +416,17 @@ both panels on one view edge to edge around the two frames and the file's spectr
 marker and, with a velocity governing the pair, its partner on the other topography where that
 velocity puts the same feature (hollow until moved); the k-th marker on the left pairs with the k-th
 on the right, each pair in its own colour with its displacement arrow on both panels; `Markers` is
-the pair count (up to 8), `clear markers` empties the draft. `< before` / `before >` and `< after` /
-`after >` step either topography through the segment. One box, `v (nm/h, cal)`, in calibrated nm/h,
+the pair count (a number box, up to 8), `clear markers` empties the draft. The two chevrons `‹` / `›`
+centred under each topography step that topography through the segment (the pair under the left
+one the earlier topography, the pair under the right one the later); the marker and velocity
+controls sit in one row under them. One box, `v (nm/h, cal)`, in calibrated nm/h,
 is what gets applied: `set from markers` fills it from the draft (every pair seeded by an auto
 velocity and unmoved: that velocity, confirmed; otherwise the least-squares fit over the pairs with
 their own times),
 typing fills it, and `apply velocity` stores it as the span between the two topographies shown
 (confirmed, adjusted or typed; an empty box removes the span). The readout lists every pair's dx,
-dy, dL, dt, v_x, v_y, v_L and angle, calibrated with the nominal beside, and the applied velocity;
+dy, dL, dt, v_x, v_y, v_L and angle, calibrated with the nominal beside, and the applied velocity,
+in a text panel that scrolls when it holds more lines than it shows;
 the box and the readouts are calibrated by the current file's scale, fixed when the window opens,
 while the stepped topographies are drawn at their own. Every window redraws at once.
 
@@ -522,22 +529,50 @@ not offered. From code: `fig.savefig('a.pdf')`, `fig.savefig('a.png', how='scree
 `fig.savefig('a.csv')`, or `mplexport.to_matplotlib(fig)` for a matplotlib figure to adjust before
 saving.
 
+## Layout and controls
+
+Every window, and every drawing a module's demonstration opens, is laid out automatically: its
+panels and controls sit in one Qt layout, and nothing is placed by hand, so nothing overlaps
+whatever the window's size (`qtplot.Figure.set_layout`; the browser's own window uses Qt layouts
+throughout). A panel is a cell of the layout: its axes takes the cell less its tick axes and title.
+The panels of one row keep one height, and a spatial panel (a topography, a map, a scan area)
+always keeps its x:y ratio; the other panels of its row follow it. The matplotlib-style calls of a
+module (`subplots`, `add_subplot`) put their panels in an automatic grid of cells the same way.
+Windows never scroll; a panel that holds only text (a readout) scrolls when it holds more lines than
+it shows, and so does the marker box of the Line and Map windows once it is as tall as the panel
+row. The publication export lays a window out at its design size, whatever its size on screen
+(see [Saving figures](#saving-figures)).
+
+The controls are one set for every window (`controls.py`), so a shared feature (the `calibrate` /
+`normalize` box, the filters box, the step buttons, a number box, the marker box) looks and works
+the same everywhere. Groups of controls sit in light box frames. The browser's file slider is the
+only slider; every count that was a slider (`Markers`, `avgs`, `E-markers`) is a number box, and a
+group's `Markers` box keeps its group's colour as its frame.
+
+**Number boxes.** In any box holding numbers, select one or more digits and press Up or Down: the
+selected digits go up or down by one in the place of the last selected digit, carrying into the
+digits to the left as arithmetic does, and the same places stay selected. With nothing selected,
+the digit just left of the cursor steps. A box holding two numbers (`3,3`, `Vx, Vy`) steps each on
+its own; a count stops at its limits. Each press applies the new value at once, as Enter does.
+Enter applies a typed value; leaving a box applies it only after an edit.
+
 ## Text size and labels
 
 Every window has a design size (its `DESIGN` constant; the browser 1700 × 950 pixels). Every text of
 a window, the plots' ticks, labels and legends, the controls, the information panel, the toolbar
 icons, is scaled by the window's size relative to its design size, the smaller of the width and
 height ratios, from 0.5x to 4x (`qtplot.window_zoom`), so it stays readable on a 4K monitor or in a
-maximized window and shrinks with a small one. No text is ever cut: a control whose box is too small
-for its words first takes a smaller font (to 75 %) and then grows to fit; the browser's own controls
-take a smaller font when they would not fit the window, and the window stops shrinking when even
-that does not fit. When a window is taller than it is wide, every control with a short form shows it
+maximized window and shrinks with a small one. No text is ever cut: when a window's controls would
+not fit it at that size, all of its control text shrinks together, to at most 75 % of it
+(`qtplot.CONTROL_FIT_MIN`, the same test in every window, `qtplot.fits_controls`), and when even
+that does not fit, the window's smallest size is raised to what the controls need, so the window
+stops shrinking there (see [Layout and controls](#layout-and-controls)). When a window is taller than it is wide, every control with a short form shows it
 (`calibrate` → `cal`, `normalize` → `norm`, `manual drift` → `manual`, ... the table
 `widgets.SHORT_LABELS`) and a panel title that is a file name shows the file's date-and-time stamp
 alone; the full labels and names return when the window is wider than tall again. On a high-DPI
 screen that Qt does not already scale (PyQt5 inside Spyder) the windows open proportionally larger.
 `qtplot.FONT_SCALE` (1.25) sets the base text size of the plots and `widgets.WIDGET_FONT_SCALE`
-(1.1) the base size of the controls.
+(1.1) the base size of the figure windows' controls; the browser's controls take its window's font.
 
 ## The modules
 
@@ -551,8 +586,8 @@ demonstration from their `if __name__ == '__main__':` block.
 The experiment and the browser window. `_BrowserCore` holds the logic: the file list, the loaded
 set and its least-recently-used eviction, the scan layer, the drift, the sites, the scale timeline,
 the two stores, the averaging registry, the section path and every analysis window opened for a
-file. `Browser` is the Qt window: the layout, the native controls (the `Q...` wrappers of
-`widgets.py`'s specifications), the keyboard shortcuts, the one text-size rule (`_WindowZoom`) and
+file. `Browser` is the Qt window: the layout, the controls (`controls.py`, made without a figure so
+the window's font rules them), the keyboard shortcuts, the one text-size rule (`_WindowZoom`) and
 the handlers of every button. `main` is the command line. The module docstring is the reference for
 every rule of the browser: the view, the stepping, the point colours, the drift sources, the
 section path, the coordinates and the caches.
@@ -560,9 +595,13 @@ section path, the coordinates and the caches.
 ### `qtplot.py`
 
 The drawing and window layer: the subset of matplotlib's interface the package uses, rebuilt on
-pyqtgraph, so every window is written as if for matplotlib (`Figure`, `Axes` placed at figure
-fractions, `Line2D`, `AxesImage`, `QuadMesh`, `Text`, `Annotation`, `Colorbar`, `GridSpec`, the
-mouse, key, pick and close events, `NavigationToolbar`, `FigureManager`), plus the row rule
+pyqtgraph, so every window is written as if for matplotlib (`Figure`, `Axes`, `Line2D`,
+`AxesImage`, `QuadMesh`, `Text`, `Annotation`, `Colorbar`, `GridSpec`, the mouse, key, pick and
+close events, `NavigationToolbar`, `FigureManager`), plus the automatic layout (`Figure.set_layout`
+installs a window's Qt layout on its canvas; `Figure.cell` makes a panel's cell, `PanelCell`, and an
+axes made with `cell=` takes that cell less its tick axes and title; `subplots` and `add_subplot`
+fill an automatic grid of cells, `Figure.layout_root`; the text fit, `fits_controls`; the export at
+the design size, `Figure.at_design_size`), the row rule
 (`Figure.align_row`: the panels of one row take one height, the one a locked aspect among them
 asks for, spatial panels keeping their aspect and colour bars, ramps and curve panels stretching
 or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row)
@@ -577,14 +616,23 @@ text-size rule (`window_zoom`, `ZOOM_MIN`, `ZOOM_MAX`, `FONT_SCALE`), the title 
 (`short_title`, `is_file_name`, `file_stamp`), the saving dialog and the CSV export, the crash log
 and the `watchdog`, and the check of the Qt binding at import.
 
+### `controls.py`
+
+The one control set of every window, the browser's included: one class per kind (`Check`,
+`Checks`, `Radio`, `Button`, `Text`, `Count`, `Slider`, `TextPanel`, `Label`; `make(fig, name)`
+builds one by name from `widgets.SPECS`), each one Qt widget for the window's layout; the composite
+controllers the windows share (`FilterControls`, `PipelineBox`, `FeenstraSettings`,
+`StackControls`, `MarkerGroupControls`, `TopoProcessorBox`, `ResampleControls`, `RunControls`,
+`GammaBox`, `NameBox`, `StepButtons`, `AveragePicker`); the layout helpers (`box`, the box frame;
+`row`, `column`, `FlowLayout`, a row that wraps in a narrow window; `UnderPanel`, controls centred
+under a panel; `RideBand`, boxes that ride with a cursor); and the number boxes' digit stepping
+(`step_text`).
+
 ### `widgets.py`
 
-Every control, built by name from one specification table (`SPECS`: kind, size in inches, label,
-font; `make(fig, name, x, y, ...)` places one in a figure) with the full labels (`LABELS`) and the
-short forms (`SHORT_LABELS`, `short_form`); the composite controllers the windows share
-(`FilterControls`, `PipelineBox`, `FeenstraSettings`, `StackControls`, `MarkerGroupControls`,
-`TopoProcessorBox`, `ResampleControls`, `RunControls`, `GammaBox`, `RangeBox`, `NameBox`,
-`StepButtons`, `AveragePicker`); the scan area's `ViewNavigator` (zoom, pan, the saved view, the
+The control tables (`SPECS`: kind, labels, font, a text box's width; the full labels `LABELS`; the
+short forms `SHORT_LABELS`, `short_form`), the controls' fonts, `filters_text`, and the canvas
+interactions the windows share: the scan area's `ViewNavigator` (zoom, pan, the saved view, the
 freeze while editing), the section path's `DragPath` and the drift window's `PairMarkers`.
 
 ### `plots.py`
@@ -740,8 +788,9 @@ fit window and the edit window.
 
 ### `mplexport.py`
 
-A qtplot figure rebuilt as a matplotlib figure (`to_matplotlib`) for the publication file types;
-`export` writes one and `available` says whether matplotlib can be imported.
+A qtplot figure rebuilt as a matplotlib figure (`to_matplotlib`, with the window laid out at its
+design size while it is read) for the publication file types; `export` writes one and `available`
+says whether matplotlib can be imported.
 
 ### `phase.py` and `fft.py`
 
@@ -778,8 +827,8 @@ labels (I), the stores and the flags (J), the scale timeline (K), the section pa
 of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
 occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
 heatmap shear, the qtplot rules, the records helpers) and the layout (N: every spatial panel edge to
-edge around everything drawn; every row of panels at one height; the calibration anchored at the
-setpoint; the dI/dV filter toggles). The other
+edge around everything drawn; every row of panels at one height; the calibration per sweep with
+nothing locked; the dI/dV filter toggles). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
 pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on

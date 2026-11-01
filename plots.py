@@ -81,7 +81,7 @@ def drift_color(source):
 
 
 # The Line window's energy markers (E-markers, vertical lines at an energy): their own colours, apart from
-# the position markers' group colours (widgets.MarkerGroupControls.M_COLORS) and readable on the jet heatmap.
+# the position markers' group colours (controls.MarkerGroupControls.M_COLORS) and readable on the jet heatmap.
 E_MARKER_COLORS = ['#000000', '#ff00ff', '#ff7f0e', '#ffffff', '#8b4513', '#ffd700', '#808000', '#4b0082']
 
 
@@ -937,15 +937,16 @@ def draw_profile_pairs(ax, pairs, xlabel, ylabel, title=None):
     ax.grid(True, lw=0.4, alpha=0.4)
 
 
-def draw_topo_cbar(fig, rect, label='topo'):
+def draw_topo_cbar(fig, rect=None, label='topo', cell=None):
     """
-    The topo colour bar of a page: a thin vertical axes at `rect` (figure
-    fraction) showing the TOPO_CMAP ramp, low at the bottom, no ticks and no
-    numbers, the word `label` above it.  One per window that uses the topo
-    colour map (the browser's scan area, the Line, Map, Feenstra and
-    line-average windows).  Returns the axes.
+    The topo colour bar of a page: a thin vertical axes in `cell` (a narrow
+    qtplot.PanelCell of the window's layout: automatic layout, the one rule
+    for every window) or at `rect` (figure fraction), showing the TOPO_CMAP
+    ramp, low at the bottom, no ticks and no numbers, the word `label` above
+    it.  One per window that uses the topo colour map (the browser's scan
+    area, the Line, Map, Feenstra and line-average windows).  Returns the axes.
     """
-    ax = fig.add_axes(rect)
+    ax = fig.add_axes(cell=cell) if cell is not None else fig.add_axes(rect)
     ax.set_navigate(False)
     ramp = np.linspace(0.0, 1.0, 256)[:, None]
     ax.imshow(ramp, aspect='auto', origin='lower', cmap=TOPO_CMAP, extent=[0, 1, 0, 1])
@@ -1053,13 +1054,27 @@ def draw_grid_stripes(ax, grid, fwd, rev, pos_f, pos_r=None, width=None, top='fo
 
 if __name__ == '__main__':
     # The topo colour bar and a gamma series of one heatmap, as a check of the drawing helpers.
+    # automatic layout (the one rule for every window): the three heatmaps and their bars, then the
+    # topo ramp, in cells of one row of the figure's layout.
+    from sm4_Browser.qtplot import QtWidgets
     DESIGN = (8, 4)           # the demo window's design size (inches)
     fig = plt.figure(figsize=DESIGN)
     img = np.outer(np.linspace(0, 1, 50), np.linspace(0, 1, 80))
+    row = QtWidgets.QHBoxLayout()
+    axes = []
     for k, g in enumerate((0.5, 1.0, 2.0)):
-        ax = fig.add_axes([0.05 + 0.3 * k, 0.2, 0.24, 0.6])
+        cell, bar = fig.cell(), fig.cell(inner_w=8)
+        row.addWidget(cell, 1)
+        row.addWidget(bar)
+        ax = fig.add_axes(cell=cell)
         im = draw_heatmap(ax, img, None, 'jet', gamma=g)
         ax.set_title(f"γ = {g}")
-        draw_colorbar(fig, im, fig.add_axes([0.05 + 0.3 * k + 0.25, 0.2, 0.01, 0.6]))
-    draw_topo_cbar(fig, [0.96, 0.2, 0.012, 0.6])
+        cax = fig.add_axes(cell=bar)
+        draw_colorbar(fig, im, cax)
+        axes += [ax, cax]
+    ramp = fig.cell(inner_w=10)
+    row.addWidget(ramp)
+    axes.append(draw_topo_cbar(fig, cell=ramp))
+    fig.align_row(*axes)
+    fig.set_layout(row)
     plt.show()

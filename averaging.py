@@ -18,7 +18,8 @@ from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
 from scipy.integrate import cumulative_trapezoid
-from sm4_Browser import sm4file, fit, widgets, records, calibration
+from sm4_Browser import sm4file, fit, widgets, records, calibration, controls
+from sm4_Browser.qtplot import QtWidgets
 from sm4_Browser.sts import STS, curve_units_of
 from sm4_Browser.feenstra import (feenstra_width, feenstra_titles, energy_has_zero, iv_corrected, iv_broadened,
                                   FeenstraWindow)
@@ -655,17 +656,12 @@ class MultiAverageWindow:
     ENERGY_TOL = ENERGY_TOL
     STACK_OFFSET_FRAC = 0.25
     PICK_PX = 6            # right-click must land within this many pixels of a sweep
-    # Usable width 0.06 to 0.98 with a 0.07 gap, the two panels always filling it
-    # together: un-stacked, left third (overlay) and right two thirds (average);
-    # stacked, the widths follow from the aspect rule (see draw).  The panels' top
-    # is 0.90, leaving room for the name box above the left panel.
-    PANEL_Y, PANEL_H = 0.24, 0.66
-    NAME_XY = (0.09, 0.945)                        # the name box (its label 'name ' sits to its left)
-    LEFT_X, GAP, RIGHT_EDGE = 0.06, 0.07, 0.98
-    PANELS_WIDTH = RIGHT_EDGE - LEFT_X - GAP       # 0.85, shared by the two panels
+    # The two panels share the panel row (their cells' stretches in the window's layout, shares of
+    # PANELS_WIDTH): un-stacked, left third (overlay) and right two thirds (average); stacked, the
+    # widths follow from the aspect rule (see draw).
+    PANELS_WIDTH = 1.0
     LEFT_WIDTH = PANELS_WIDTH / 3                  # un-stacked left panel (one third)
-    RIGHT_WIDTH = PANELS_WIDTH - LEFT_WIDTH        # un-stacked average panel (two thirds)
-    RIGHT_X = LEFT_X + LEFT_WIDTH + GAP
+    LEFT_MIN = 0.05 / 0.85                         # the stacked overlay's least share (0.05 of the 0.85 the panels shared)
     # The Feenstra companion has sweep panels and no heatmaps.
     feenstra_heatmaps = False
 
@@ -719,30 +715,52 @@ class MultiAverageWindow:
             self.fig.canvas.manager.set_window_title(self.tag)
         except Exception:
             pass
-        self.ax = self.fig.add_axes([self.LEFT_X, self.PANEL_Y, self.LEFT_WIDTH, self.PANEL_H])
-        self.ax_avg = self.fig.add_axes([self.RIGHT_X, self.PANEL_Y, self.RIGHT_WIDTH, self.PANEL_H])
-        # The controls (widgets.py): the name box at the top left, the filter box, the channel
-        # radio, stack / substack, bin / interp, the window's own 'Feenstra' toggle, the
-        # 'calibrate' / 'normalize' box (top right, as in every window), and the button row.
-        self.box_name = widgets.NameBox(self.fig, *self.NAME_XY, name=self.name)
+        fig = self.fig
+        # The controls (controls.py: the one set of every window): the name box at the top left, the
+        # filter box, the channel radio, stack / substack, bin / interp, the window's own 'Feenstra'
+        # toggle, the 'calibrate' / 'normalize' box (top right, as in every window), the buttons.
+        self.box_name = controls.NameBox(fig, name=self.name)
         self.box_name.on_change(self._on_rename)
-        self.filters = widgets.FilterControls(self.fig, [0.06, 0.03, 0.22, 0.15],
-                                              hampel=hampel_defaults, sgolay=sgolay_defaults,
-                                              hampel_on=False, sgolay_on=False)
+        self.filters = controls.FilterControls(fig, hampel=hampel_defaults, sgolay=sgolay_defaults,
+                                               hampel_on=False, sgolay_on=False)
         self.filters.on_change(self._on_filter_change)
-        self.radio_channel = widgets.make(self.fig, 'channel', 0.50, 0.12, value=STS.CHANNEL_NAMES[self.channel])
+        self.radio_channel = controls.make(fig, 'channel', value=STS.CHANNEL_NAMES[self.channel])
         self.radio_channel.on_change(self._on_channel)
-        self.stacks = widgets.StackControls(self.fig, (0.285, 0.06), (0.348, 0.06), needs_average=False, tag=self.tag)
+        self.stacks = controls.StackControls(fig, needs_average=False, tag=self.tag)
         self.stacks.on_change(self.draw)
-        self.resamples = widgets.ResampleControls(self.fig, (0.285, 0.12), (0.343, 0.12))
+        self.resamples = controls.ResampleControls(fig)
         self.resamples.on_change(self._on_resample_toggle)
-        self.chk_feenstra = widgets.make(self.fig, 'Feenstra', 0.41, 0.12, value=self.divide_iv)
+        self.chk_feenstra = controls.make(fig, 'Feenstra', value=self.divide_iv)
         self.chk_feenstra.on_change(self._on_feenstra_toggle)
-        self.pipeline = widgets.PipelineBox(self.fig, calibrate=self.calibrate, normalize=self.normalize, gate=self.gate)
+        self.pipeline = controls.PipelineBox(fig, calibrate=self.calibrate, normalize=self.normalize, gate=self.gate)
         self.pipeline.on_change(self._on_pipeline_change)
-        self.buttons = widgets.RunControls(self.fig, [('run', 0.425, 0.05), ('clear', 0.52, 0.05),
-                                                      ('restore', 0.615, 0.05), ('Send to fit', 0.71, 0.05),
-                                                      ('save', 0.84, 0.05)])
+        self.buttons = controls.RunControls(fig, ['run', 'clear', 'restore', 'Send to fit', 'save'])
+        # automatic layout: the one rule for every window (nothing placed by hand).  Top: the name box,
+        # the pipeline box at the right.  Middle: the overlay and the average side by side (their
+        # shares set by draw).  Bottom, in a row that wraps in a narrow window: the filter box,
+        # bin / interp over stack / substack, 'Feenstra' and the channel over the buttons.
+        cell_l, cell_r = fig.cell(), fig.cell()
+        self.ax = fig.add_axes(cell=cell_l)
+        self.ax_avg = fig.add_axes(cell=cell_r)
+        fig.align_row(self.ax, self.ax_avg)
+        self._panels = QtWidgets.QGridLayout()
+        self._panels.setHorizontalSpacing(24)
+        self._panels.addWidget(cell_l, 0, 0)
+        self._panels.addWidget(cell_r, 0, 1)
+        self._set_shares(self.LEFT_WIDTH)
+        strip = controls.FlowLayout()
+        strip.addWidget(self.filters)
+        strip.addWidget(controls.box(controls.row(self.resamples.chk_bin, self.resamples.chk_interp),
+                                     controls.row(self.stacks.chk_stack, self.stacks.chk_substack), orient='v'))
+        strip.addWidget(controls.box(controls.row(self.chk_feenstra, self.radio_channel),
+                                     controls.row(*(self.buttons[n] for n in ('run', 'clear', 'restore',
+                                                                               'Send to fit', 'save'))),
+                                     orient='v'))
+        root = QtWidgets.QVBoxLayout()
+        root.addLayout(controls.row(self.box_name, 'stretch', self.pipeline))
+        root.addLayout(self._panels, 1)
+        root.addLayout(strip)
+        fig.set_layout(root)
         self.buttons.on('run', self._on_run)
         self.buttons.on('clear', self._on_clear)
         self.buttons.on('restore', self._on_restore)
@@ -753,6 +771,11 @@ class MultiAverageWindow:
         self.draw()
         self.feenstra = FeenstraWindow(self, self.name)
         plt.show()
+
+    def _set_shares(self, w_left):
+        """The two panels' shares of the panel row (the layout's column stretches): the overlay w_left of PANELS_WIDTH, the average the rest."""
+        self._panels.setColumnStretch(0, max(int(round(1000 * w_left)), 1))
+        self._panels.setColumnStretch(1, max(int(round(1000 * (self.PANELS_WIDTH - w_left))), 1))
 
     def is_open(self):
         """True while the window's figure is open (widgets.figure_is_open: the Figure object itself, not its number)."""
@@ -1537,17 +1560,16 @@ class MultiAverageWindow:
         # stack has the same height-to-width ratio as the average's range in the
         # right panel: with r = max_range / yspan, w_stack = W_avg * r and
         # w_stack + W_avg = PANELS_WIDTH give w_stack = PANELS_WIDTH * r / (1 + r).
-        # w_stack is kept within [0.05, LEFT_WIDTH]; the average panel takes the rest.
+        # w_stack is kept within [LEFT_MIN, LEFT_WIDTH]; the average panel takes the rest (the two
+        # shares are the panel cells' stretches in the window's layout, _set_shares).
         n_slots = n + (1 if (stacked and avg_curve is not None) else 0)
         if stacked and n:
             yspan = (n_slots - 1) * offset + max_range
             r = max_range / yspan if yspan > 0 else 1.0
-            w_left = float(np.clip(self.PANELS_WIDTH * r / (1.0 + r), 0.05, self.LEFT_WIDTH))
+            w_left = float(np.clip(self.PANELS_WIDTH * r / (1.0 + r), self.LEFT_MIN, self.LEFT_WIDTH))
         else:
             w_left = self.LEFT_WIDTH
-        ax.set_position([self.LEFT_X, self.PANEL_Y, w_left, self.PANEL_H])
-        self.ax_avg.set_position([self.LEFT_X + w_left + self.GAP, self.PANEL_Y,
-                                  self.PANELS_WIDTH - w_left, self.PANEL_H])
+        self._set_shares(w_left)
         colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
         labelled = set()                 # entries whose legend label has been attached to a curve
         for k, (i, j, V, c) in enumerate(curves):

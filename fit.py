@@ -2488,7 +2488,6 @@ class Fit:
     PANEL_GAP = 1.4        # in, between slots
     MARGIN_L = 1.1         # in, room for the y labels
     MARGIN_R = 0.4         # in
-    PANEL_Y, PANEL_H = 0.30, 0.62     # figure fractions: the panels' bottom and height
     STACK_OFFSET_FRAC = 0.25          # stack: offset per curve, fraction of the largest curve range
     STACK_GAP = 0.15       # in, between the data panel and its stack
     STACK_MIN, STACK_MAX = 0.12, 0.5  # the stack's share of the data slot, limits
@@ -2497,17 +2496,14 @@ class Fit:
         """The figure width (inches) for n panel slots: the margins, the slots and the gaps between them (3 slots: DESIGN[0])."""
         return self.MARGIN_L + n_panels * self.PANEL_W + (n_panels - 1) * self.PANEL_GAP + self.MARGIN_R
 
-    def _in(self, x, y, w, h):
-        """A rect in inches as a figure-fraction rect of the current figure size."""
-        W, H = self._plot_fig.get_size_inches()
-        return [x / W, y / H, w / W, h / H]
-
     def _layout(self):
         """
         Size the figure for the panels the shown fit needs (three with the WKB
-        background, two without, the background panel hidden), place the fit
-        and background panels and the widget row; the data slot is split
-        between the data panel and the stack by _place_data_stack.
+        background, two without, the background panel hidden: its cell leaves
+        the window's layout); the data slot is split between the data panel
+        and the stack by _place_data_stack.  The window's Qt layout places
+        the panels and the controls (automatic layout: the one rule for every
+        window).
         """
         with_bg = self._fit_has_bg(self.shown_fit())
         n = 3 if with_bg else 2
@@ -2516,41 +2512,32 @@ class Fit:
         if abs(fig.get_size_inches()[0] - W) > 1e-6:
             fig.set_size_inches(W, self.FIG_H, forward=True)
         ax_d, ax_m, ax_r = self._plot_axes
-        slot = self.PANEL_W
-        ax_m.set_position(self._in(self.MARGIN_L + slot + self.PANEL_GAP, self.PANEL_Y * self.FIG_H,
-                                   slot, self.PANEL_H * self.FIG_H))
+        # One slot each for the model and the background-divided panels (the cells' stretches in the
+        # window's layout); a hidden panel's cell leaves the layout.
         ax_r.set_visible(with_bg)
-        if with_bg:
-            ax_r.set_position(self._in(self.MARGIN_L + 2 * (slot + self.PANEL_GAP), self.PANEL_Y * self.FIG_H,
-                                       slot, self.PANEL_H * self.FIG_H))
+        self._cells[3].setVisible(with_bg)
+        self._panel_grid.setColumnStretch(2, 1000)
+        self._panel_grid.setColumnStretch(3, 1000 if with_bg else 0)
         self._place_data_stack(getattr(self, '_stack_share', 0.0))
-        # Widget row (inches from the lower left corner).
-        self._filter_controls.set_rect(self._in(0.6, 0.12, 3.4, 0.93))
-        self._chk_bg.place_in(4.4, 0.72)
-        self._chk_substack.place_in(6.2, 0.72)
-        self._chk_feenstra.place_in(7.4, 0.72)
-        W, H = fig.get_size_inches()
-        self._fs.place(8.85 / W, 0.72 / H)
-        for i, btn in enumerate((self._btn_revert, self._btn_forward, self._btn_edit, self._btn_save)):
-            btn.place_in(4.4 + 1.6 * i, 0.22)
 
     def _place_data_stack(self, share):
         """
         Split the data slot: the stack takes `share` of the slot width (0: no
-        stack, the data panel fills the slot), a gap, the data panel the rest.
+        stack, its cell hidden, the data panel fills the slot), the data panel
+        the rest (the two cells' stretches in the window's layout).
         """
-        ax_d = self._plot_axes[0]
         ax_s = self._ax_stack
-        slot = self.PANEL_W
-        y, h = self.PANEL_Y * self.FIG_H, self.PANEL_H * self.FIG_H
+        g = self._panel_grid
         if share <= 0:
             ax_s.set_visible(False)
-            ax_d.set_position(self._in(self.MARGIN_L, y, slot, h))
+            self._cells[1].setVisible(False)
+            g.setColumnStretch(0, 1000)
+            g.setColumnStretch(1, 0)
             return
-        w_s = share * slot
-        w_d = slot - w_s - self.STACK_GAP
-        ax_d.set_position(self._in(self.MARGIN_L, y, w_d, h))
-        ax_s.set_position(self._in(self.MARGIN_L + w_d + self.STACK_GAP, y, w_s, h))
+        # The data slot's two shares as the two cells' stretches (the slot is one model slot wide).
+        g.setColumnStretch(0, max(int(round(1000 * (1.0 - share))), 1))
+        g.setColumnStretch(1, max(int(round(1000 * share)), 1))
+        self._cells[1].setVisible(True)
         ax_s.set_visible(True)
 
     # --- the background toggles (fit window and edit window) ---
@@ -2945,15 +2932,11 @@ class Fit:
         held = [label for key, label in params if key in names]
         return f" [held: {', '.join(held)}]" if held else ""
 
-    # Edit window geometry (figure fractions): the plot, and right of it the
-    # parameter panel of the selected curve, as tall as the plot; panel rows from
-    # the top at a compact pitch, three columns: hold toggle, name, text box.
+    # Edit window layout (automatic layout: the one rule for every window): the plot, and right of
+    # it the parameter panel of the selected curve, as tall as the plot; its rows from the top,
+    # three columns: hold toggle, name, text box (_open_edit_figure).
     EDIT_DESIGN = (14.5, 6.5)      # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
-    EDIT_PLOT = [0.055, 0.30, 0.60, 0.61]            # left, bottom, width, height (the settings band under it)
     FEENSTRA_WIDTH_DEFAULT_V = 0.2                   # the width box when the fit holds no broadening (plain I/V)
-    EDIT_ROW_H, EDIT_ROW_PITCH = 0.05, 0.072
-    EDIT_COL_CHK, EDIT_COL_NAME, EDIT_COL_BOX = 0.70, 0.745, 0.865   # column x positions
-    EDIT_CHK_W, EDIT_BOX_W = 0.03, 0.115
     EDIT_FONTSIZE = 8
 
     def _open_edit_figure(self, event=None):
@@ -2989,56 +2972,78 @@ class Fit:
                 plt.close(old['fig'])
             except Exception:
                 pass
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
         fig = plt.figure(figsize=self.EDIT_DESIGN)
-        ax = fig.add_axes(self.EDIT_PLOT)
+        plot_cell = fig.cell()
+        ax = fig.add_axes(cell=plot_cell)
         st = {'fig': fig, 'ax': ax, 'peaks': self._working_peaks(b), 'bg': self._working_bg(b),
               'selected': None, 'bg_selected': False, 'drag': None, 'add_armed': False,
               'quiet': False}
-        # Bottom band: the two toggles, 'Add peak', 'Refit', 'edit background'.
-        # The controls through widgets.py (the same specifications as every window's).
-        st['chk_bg'] = widgets.make(fig, 'WKB background', 0.055, 0.06, value=self._bg_pending == 'wkb')
+        # Bottom band: the two toggles, 'Add peak', 'Refit', 'edit background' (controls.py: the one set
+        # of every window).
+        st['chk_bg'] = controls.make(fig, 'WKB background', value=self._bg_pending == 'wkb')
         st['ax_bg'] = st['chk_bg'].ax
         st['chk_bg'].on_change(lambda flag: self._on_bg_toggle(None))
-        st['chk_feenstra'] = widgets.make(fig, 'Feenstra (refit)', 0.185, 0.06, value=self._q_pending_of() == 'ratio')
+        st['chk_feenstra'] = controls.make(fig, 'Feenstra (refit)', value=self._q_pending_of() == 'ratio')
         st['ax_feenstra'] = st['chk_feenstra'].ax
         st['chk_feenstra'].on_change(lambda flag: self._on_feenstra_toggle(None))
-        st['btn_add'] = widgets.make(fig, 'Add peak', 0.31, 0.055)
+        st['btn_add'] = controls.make(fig, 'Add peak')
         st['ax_add'] = st['btn_add'].ax
         st['btn_add'].on_change(lambda: self._edit_on_add(None))
-        st['btn_refit'] = widgets.make(fig, 'Refit', 0.43, 0.055)
+        st['btn_refit'] = controls.make(fig, 'Refit')
         st['ax_refit'] = st['btn_refit'].ax
         st['btn_refit'].on_change(lambda: self._edit_on_refit(None))
-        st['btn_bg_edit'] = widgets.make(fig, 'edit background', 0.55, 0.055)
+        st['btn_bg_edit'] = controls.make(fig, 'edit background')
         st['ax_bg_edit'] = st['btn_bg_edit'].ax
         st['btn_bg_edit'].on_change(lambda: self._edit_on_bg_select(None))
         # The settings band between the plot and the buttons: the Feenstra settings and the Hampel /
         # Savitzky-Golay controls of the next Refit, in step with the fit window's (same colours).
-        st['fs'] = widgets.FeenstraSettings(fig, 0.055, 0.14, self._fs_settings())
+        st['fs'] = controls.FeenstraSettings(fig, self._fs_settings())
         st['fs'].on_change(self._on_fs_change)
         hp0, sp0, hd0, sd0 = self._control_params()
-        st['filters'] = widgets.FilterControls(fig, [0.40, 0.11, 0.25, 0.11], hampel=hp0 or hd0, sgolay=sp0 or sd0,
-                                               hampel_on=hp0 is not None, sgolay_on=sp0 is not None,
-                                               hampel_didv_on=hd0 is not None, sgolay_didv_on=sd0 is not None)
+        st['filters'] = controls.FilterControls(fig, hampel=hp0 or hd0, sgolay=sp0 or sd0,
+                                                hampel_on=hp0 is not None, sgolay_on=sp0 is not None,
+                                                hampel_didv_on=hd0 is not None, sgolay_didv_on=sd0 is not None)
         st['filters'].on_change(self._on_edit_filter_change)
-        # Parameter panel: as many rows as the longest parameter list, the word
-        # 'hold' once above the first toggle.
+        # Parameter panel: as many rows as the longest parameter list, the word 'hold' once above the
+        # toggles' column.
         n_rows = max(len(self.PEAK_PARAMS), len(self.BG_PARAMS))
-        top = self.EDIT_PLOT[1] + self.EDIT_PLOT[3]
-        fig.text(self.EDIT_COL_CHK + 0.5 * self.EDIT_CHK_W, top - 0.01, 'hold',
-                 fontsize=self.EDIT_FONTSIZE, ha='center', va='bottom')
+        pgrid = QtWidgets.QGridLayout()
+        pgrid.setHorizontalSpacing(6)
+        pgrid.setVerticalSpacing(4)
+        pgrid.addWidget(controls.Label(fig, 'hold title', text='hold', fs=self.EDIT_FONTSIZE).qt, 0, 0)
         st['rows'] = []
         for k in range(n_rows):
-            y = top - 0.03 - self.EDIT_ROW_H - k * self.EDIT_ROW_PITCH
-            chk = widgets.make(fig, 'hold', self.EDIT_COL_CHK, y, value=False)
+            chk = controls.make(fig, 'hold', value=False)
             ax_chk = chk.ax
-            ax_chk.set_frame_on(False)
             chk.on_change(lambda flag, k=k: self._edit_on_hold(k))
-            name = fig.text(self.EDIT_COL_NAME, y + 0.5 * self.EDIT_ROW_H, '',
-                            fontsize=self.EDIT_FONTSIZE, ha='left', va='center')
-            box = widgets.make(fig, 'param', self.EDIT_COL_BOX, y, value='')
+            name = controls.Label(fig, 'param name', text='', fs=self.EDIT_FONTSIZE)
+            box = controls.make(fig, 'param', value='')
             ax_box = box.ax
             box.on_change(lambda text, k=k: self._edit_on_param(k, text))
+            pgrid.addWidget(chk.qt, k + 1, 0)
+            pgrid.addWidget(name.qt, k + 1, 1)
+            pgrid.addWidget(box.qt, k + 1, 2)
             st['rows'].append({'ax_chk': ax_chk, 'chk': chk, 'name': name, 'ax_box': ax_box, 'box': box})
+        pgrid.setRowStretch(n_rows + 1, 1)
+        # automatic layout: the one rule for every window (nothing placed by hand).  The plot with the
+        # parameter panel at its right; under them the settings band, then the buttons (rows that wrap
+        # in a narrow window).
+        settings = controls.FlowLayout()
+        settings.addWidget(controls.box(st['fs'], orient='v'))
+        settings.addWidget(st['filters'])
+        buttons = controls.FlowLayout()
+        buttons.addWidget(controls.box(st['chk_bg'], st['chk_feenstra'], st['btn_add'], st['btn_refit'],
+                                       st['btn_bg_edit']))
+        top = QtWidgets.QHBoxLayout()
+        top.addWidget(plot_cell, 1)
+        top.addLayout(pgrid)
+        root = QtWidgets.QVBoxLayout()
+        root.addLayout(top, 1)
+        root.addLayout(settings)
+        root.addLayout(buttons)
+        fig.set_layout(root)
         fig.canvas.mpl_connect('button_press_event', self._edit_on_press)
         fig.canvas.mpl_connect('motion_notify_event', self._edit_on_motion)
         fig.canvas.mpl_connect('button_release_event', self._edit_on_release)
@@ -3432,11 +3437,22 @@ class Fit:
         every fitted peak, with the parameter panel and the background edit),
         'Save fit' (JSON + CSV of the displayed fit).
         """
+        from sm4_Browser import controls
+        from sm4_Browser.qtplot import QtWidgets
         fig = plt.figure(figsize=(self._fig_width(3), self.FIG_H))
         self._plot_fig = fig
-        self._plot_axes = (fig.add_axes([0.1, 0.3, 0.2, 0.6]), fig.add_axes([0.4, 0.3, 0.2, 0.6]),
-                           fig.add_axes([0.7, 0.3, 0.2, 0.6]))        # placed by _layout
-        self._ax_stack = fig.add_axes([0.3, 0.3, 0.05, 0.6])
+        # The panels in cells of the window's layout (automatic layout: the one rule for every window):
+        # the data panel and its stack sharing the first slot (_place_data_stack), the model, the
+        # background-divided panel (hidden without a WKB background, _layout).
+        self._cells = [fig.cell(), fig.cell(), fig.cell(), fig.cell()]          # data, stack, model, background
+        self._plot_axes = (fig.add_axes(cell=self._cells[0]), fig.add_axes(cell=self._cells[2]),
+                           fig.add_axes(cell=self._cells[3]))
+        self._ax_stack = fig.add_axes(cell=self._cells[1])
+        fig.align_row(self._plot_axes[0], self._ax_stack, self._plot_axes[1], self._plot_axes[2])
+        self._panel_grid = QtWidgets.QGridLayout()
+        self._panel_grid.setHorizontalSpacing(int(self.STACK_GAP * plt.DPI))
+        for c, cell in enumerate(self._cells):
+            self._panel_grid.addWidget(cell, 0, c)
         self._stack_share = 0.0
         self._substack = False
         self._edit = None
@@ -3449,35 +3465,47 @@ class Fit:
                               (self.hampel_filter_params, self.sgolay_filter_params,
                                getattr(self, 'hampel_didv_params', None), getattr(self, 'sgolay_didv_params', None)))
         self._bg_pending = b.get('background', 'wkb') if b is not None else self.background
-        self._filter_controls = widgets.FilterControls(fig, [0.04, 0.02, 0.19, 0.15],
-                                               hampel=hp0 or hd0, sgolay=sp0 or sd0,
-                                               hampel_on=hp0 is not None, sgolay_on=sp0 is not None,
-                                               hampel_didv_on=hd0 is not None, sgolay_didv_on=sd0 is not None)
+        self._filter_controls = controls.FilterControls(fig, hampel=hp0 or hd0, sgolay=sp0 or sd0,
+                                                        hampel_on=hp0 is not None, sgolay_on=sp0 is not None,
+                                                        hampel_didv_on=hd0 is not None, sgolay_didv_on=sd0 is not None)
         self._filter_controls.on_change(self._on_filter_change)
-        # The controls through widgets.py (the same specifications as every window's); placed by _layout.
-        self._chk_bg = widgets.make(fig, 'WKB background', 0.25, 0.1, value=self._bg_pending == 'wkb')
+        # The controls (controls.py: the one set of every window).
+        self._chk_bg = controls.make(fig, 'WKB background', value=self._bg_pending == 'wkb')
         self._chk_bg.on_change(lambda flag: self._on_bg_toggle(None))
-        self._chk_substack = widgets.make(fig, 'substack', 0.36, 0.1, value=self._substack)
+        self._chk_substack = controls.make(fig, 'substack', value=self._substack)
         self._chk_substack.on_change(lambda flag: self._on_stack_toggle(None))
         # The 'Feenstra (refit)' toggle: the quantity of the next Refit, starting at the shown fit's
         # (blue while it differs from the shown fit's, red once a fit was run with it).
         self._q_pending = b.get('quantity', self.quantity) if b is not None else self.quantity
-        self._chk_feenstra = widgets.make(fig, 'Feenstra (refit)', 0.43, 0.1, value=self._q_pending == 'ratio')
+        self._chk_feenstra = controls.make(fig, 'Feenstra (refit)', value=self._q_pending == 'ratio')
         self._chk_feenstra.on_change(lambda flag: self._on_feenstra_toggle(None))
         # The Feenstra settings of the next Refit as the ratio ('0Vsub', 'broadened', width), starting at the
-        # analyzer's (the sender's at the send, the shown fit's after a revert or forward); placed by _layout.
-        self._fs = widgets.FeenstraSettings(fig, 0.7, 0.1, self._fs_settings())
+        # analyzer's (the sender's at the send, the shown fit's after a revert or forward).
+        self._fs = controls.FeenstraSettings(fig, self._fs_settings())
         self._fs.on_change(self._on_fs_change)
 
-        # Buttons (kept as attributes so they are not garbage-collected); placed by _layout.
-        self._btn_revert = widgets.make(fig, 'Revert fit', 0.30, 0.04)
+        # Buttons (kept as attributes so they are not garbage-collected).
+        self._btn_revert = controls.make(fig, 'Revert fit')
         self._btn_revert.on_change(lambda: self._on_revert(None))
-        self._btn_forward = widgets.make(fig, 'Forward fit', 0.42, 0.04)
+        self._btn_forward = controls.make(fig, 'Forward fit')
         self._btn_forward.on_change(lambda: self._on_forward(None))
-        self._btn_edit = widgets.make(fig, 'Edit peaks', 0.54, 0.04)
+        self._btn_edit = controls.make(fig, 'Edit peaks')
         self._btn_edit.on_change(lambda: self._open_edit_figure(None))
-        self._btn_save = widgets.make(fig, 'Save fit', 0.66, 0.04)
+        self._btn_save = controls.make(fig, 'Save fit')
         self._btn_save.on_change(lambda: self._on_save(None))
+        # automatic layout: the one rule for every window (nothing placed by hand).  The panels above;
+        # below, in a row that wraps in a narrow window: the filter box, then the toggles and the
+        # Feenstra settings over the buttons.
+        strip = controls.FlowLayout()
+        strip.addWidget(self._filter_controls)
+        strip.addWidget(controls.box(
+            controls.row(self._chk_bg, self._chk_substack, self._chk_feenstra, self._fs, spacing=12),
+            controls.row(self._btn_revert, self._btn_forward, self._btn_edit, self._btn_save, 'stretch'),
+            orient='v'))
+        root = QtWidgets.QVBoxLayout()
+        root.addLayout(self._panel_grid, 1)
+        root.addLayout(strip)
+        fig.set_layout(root)
 
         self._draw_current()          # sizes and places everything (_layout), then the fit panels
         self._draw_left()             # the data panel and the stack

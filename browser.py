@@ -134,15 +134,13 @@ file's own channel when it lacks that one; dI/dV spectra fill the four
 Feenstra panels described below, the IETS channel one panel); for a
 phase rotation the panel shows its curves against the phase with the fitted
 maximum and minimum and the set rotation marked, for a noise spectrum the
-recorded channels against frequency.  Under the panel '< spectra' /
-'spectra >' and the 'spectra' slider, which run over the spectra files of
-the directory only (points, grids, phase rotations, and noise spectra, in
-time order; the types from the header scan, see "Files") and go to the
-chosen spectra file with the same loading rules as the file slider; the
-two sliders are tied, the spectra slider staying on the spectra file last
-shown while a topo is current; 'prev region' / 'next region' beside the
-arrows go to the previous / next stop at an experiment region (see "Sites
-and regions").  Under that the info panel (selectable text): the file's
+recorded channels against frequency.  Under the panel the spectra line
+names the spectra file last shown (it stays while a topo is current; the
+spectra files are the points, grids, phase rotations, and noise spectra,
+in time order, the types from the header scan, see "Files"; the browser's
+step filter chooses what Prev / Next and the file slider stop at);
+'prev region' / 'next region' go to the previous / next stop at an
+experiment region (see "Sites and regions").  Under that the info panel (selectable text): the file's
 place, name, stamp, type, its site flag and region, and the loaded count,
 then the measurement information of the file (Sm4File.measurement_info:
 setpoint, lock-in and modulation settings, filters, sample time, range and
@@ -167,12 +165,12 @@ correction") beside 'load saved averages'; in the
 same row the 'channel' radio, the 'show' radio and the 'step through' box
 with its 'min (min)' duration box, and under them a status line counting
 the files placed on the scan area.  Keyboard: Ctrl+Left / Ctrl+Right step
-files and Ctrl+PgUp / Ctrl+PgDown step spectra files, through the step
-filter (Ctrl so that the arrows still move the cursor in the text boxes).
+files through the step filter (Ctrl so that the arrows still move the
+cursor in the text boxes).
 Right, for the current file: 'Line' / 'Map'
 (grid; the line is chosen inside the Line window and the scan area
 highlights it), the 'calibrate' / 'normalize' box of the spectra panels
-(widgets.PipelineBox, both off at open, as in the averaging, Map, and
+(controls.PipelineBox, both off at open, as in the averaging, Map, and
 line-average windows; see the pipeline order below), the section path's controls
 ('section' with 'clear' under it, and the stack of its three features
 'cross section', 'measure', 'set scale'; see "Section path"),
@@ -184,10 +182,12 @@ itself when a topo is current, and for a grid's own topo when a grid is
 current (its stripes under the markers; see "Grid stripes"; remembered per
 file and used wherever that topo is drawn),
 and, always, the 'site' radio (pulsing / clean / experiment) of the current
-file.  Every control is a native Qt wrapper (QControl and its kinds, the
-Q... classes below) carrying the widgets.py specification's labels and the
-composite controllers' logic, so a control shared with a figure window is
-named and labelled the same there; every drawing goes through plots.py.
+file.  Every control comes from controls.py, the one control set of every
+window (made without a figure, so the window's font rules it), with the
+widgets.py specification's labels, so a control shared with a figure window
+is the same control there; every control sits in the window's Qt layouts
+(automatic layout: the one rule for every window), groups of them in box
+frames; every drawing goes through plots.py.
 Text size: the window's design size is Browser.DESIGN (1700 x 950 pixels);
 every text of the window, the controls, the info panel, the panels' ticks,
 labels and legends, is scaled by the window's size relative to it, from
@@ -273,10 +273,10 @@ Map         : toggle between a tiled grid of every energy and one energy
               beside the file's own embedded topography with energy arrows.
 The browser, the average, Map, Line, and line-average windows, and the
 fit's edit window carry the Savitzky-Golay / Hampel controls
-(widgets.FilterControls; every filter off by default, each switchable on
+(controls.FilterControls; every filter off by default, each switchable on
 its own); the browser, the average, Map, Line, and line-average windows
 and the Feenstra companions carry the 'calibrate' / 'normalize' box
-(widgets.PipelineBox, each step switchable on its own; both off at open
+(controls.PipelineBox, each step switchable on its own; both off at open
 in every window: the Line window starts at line_window_kwargs'
 apply_calibration / apply_normalize, both False in main() and in the
 Spyder block).  The filters act on the
@@ -678,7 +678,7 @@ class _BrowserCore:
         self.topo_dir = {}         # topo path -> 'forward' | 'reverse' | 'average' (what it was left on)
         self.channel = 'didv'      # the 'channel' radio: dI/dV or IETS in the spectra panel, the Line, the Map, a new average
         # Every file's type and every topo's scan centre from a header-only read at startup
-        # (sm4_header_info), so that the spectra slider knows the spectra files and the
+        # (sm4_header_info), so that the spectra line knows the spectra files and the
         # long-range moves are known from the recorded locations before any file is loaded.
         # The header scan goes through the computed store (sm4file.header_cache): only new or
         # changed files are opened; the rest come from its 'headers' section.
@@ -747,7 +747,7 @@ class _BrowserCore:
                                           iv_zero_sub=self.iv_zero_sub, iv_broadened=self.iv_broadened,
                                           cmap=self.line_window_kwargs.get('cmap', 'jet'), averages=self.averages)
         self.saved_window = None   # the saved averages window (SavedAveragesWindow)
-        self._picker = None        # the 'add existing' list (widgets.AveragePicker), made with the figure
+        self._picker = None        # the 'add existing' list (controls.AveragePicker), made with the figure
         # The persistent scan layer (scanlayer.ScanLayer, made with the figure), its 'show' mode, and the
         # background placing of the files not yet read (_bg_schedule / _bg_tick).
         self.show_mode = DEFAULT_SHOW_MODE
@@ -975,13 +975,6 @@ class _BrowserCore:
             self.line_index = 0
             self._draw_all()
 
-    def _goto_spectra(self, k):
-        """Go to the k-th spectra file (point, grid, phase, or fft) of the directory."""
-        if not self.spectra_files:
-            return
-        k = int(np.clip(k, 0, len(self.spectra_files) - 1))
-        self._goto(self.spectra_files[k])
-
     def _on_region_step(self, d):
         """'prev region' / 'next region': the previous / next stop at an experiment region (Sites.neighbour_region)."""
         i = self.sites.neighbour_region(self.files[self.index], d)
@@ -999,11 +992,9 @@ class _BrowserCore:
         f = self.current
         self._set_controls_for_kind(f.kind)
         self.box_scale.set(f"{self.scale_of(f.path):g}")       # the current file's scale (the timeline)
-        # Both sliders follow the file shown: the file slider the current file, the
-        # spectra slider the spectra file last shown (unchanged while a topo is current).
+        # The file slider follows the file shown; the spectra line names the spectra file last
+        # shown (unchanged while a topo is current).
         self.sld_file.set(self.index)
-        if self.spectra_files:
-            self.sld_spec.set(self.spectra_pos)
         self._nav_text(self.index)
         self._spec_nav_text(self.spectra_pos)
         # Each panel on its own: a file whose recording is incomplete in an unforeseen way (a scan
@@ -1343,16 +1334,6 @@ class _BrowserCore:
                     return j
         return None
 
-    def _step_spectra(self, d):
-        """'< spectra' / 'spectra >' (and Ctrl+PgUp / PgDown): the next spectra file that passes the step filter."""
-        k = self.spectra_pos + d
-        while 0 <= k < len(self.spectra_files):
-            if self._allowed(self.spectra_files[k]):
-                self._goto_spectra(k)
-                return
-            k += d
-        print(f"step filter: no {'later' if d > 0 else 'earlier'} spectra file passes the filter.")
-
     def _on_step_kinds(self, label, states):
         """The 'step through' box: the kinds Prev / Next and the sliders stop at ('other' files always pass)."""
         names = ['topo', 'point', 'grid', 'phase', 'fft']
@@ -1568,11 +1549,14 @@ class _BrowserCore:
         f = self.current
         four = bool(f.kind in ('grid', 'point') and f.spectra is not None
                     and (self.channel if self.channel in f.channels() else f.channels()[0]) == 'didv')
-        ax.set_position(self.SPEC_RECTS[0] if four else self.SPEC_RECT)
+        # One panel or four: the other three panels' cells leave the canvas's layout (automatic layout).
+        for cell in self._spec_cells[1:]:
+            cell.setVisible(four)
         for extra in (self.ax_spec_iv, self.ax_spec_ivv, self.ax_spec_ratio):
             extra.clear()
             extra.set_visible(four)
         self.spec_settings.show(four)
+        self._spec_settings_box.setVisible(four)       # its box frame with it (no empty frame)
         self.filters.show(four)
         self.pipeline.show(f.kind in ('grid', 'point') and f.spectra is not None)
         if f.kind in ('grid', 'point') and f.spectra is not None:
@@ -1747,21 +1731,10 @@ class _BrowserCore:
         self._nav_text(i)
         self.fig.canvas.draw_idle()
 
-    def _on_spec_slider(self, val):
-        """While the spectra slider moves: show the spectra file it points at; the load waits for the release."""
-        if not self.spectra_files:
-            return
-        k = int(np.clip(int(round(val)), 0, len(self.spectra_files) - 1))
-        self._spec_slider_pending = k
-        self._spec_nav_text(k)
-        self.fig.canvas.draw_idle()
-
     def _on_slider_release(self, event):
-        """Mouse released after moving a slider: go to the chosen file."""
+        """Mouse released after moving the file slider: go to the chosen file."""
         i = self._slider_pending
-        k = self._spec_slider_pending
         self._slider_pending = None
-        self._spec_slider_pending = None
         if i is not None:
             j = self._nearest_allowed(i)
             if j is None:
@@ -1771,12 +1744,6 @@ class _BrowserCore:
             elif j is not None and j != i:
                 self.sld_file.set(self.index)
                 self._nav_text(self.index)
-        elif k is not None:
-            allowed = [kk for kk in range(len(self.spectra_files)) if self._allowed(self.spectra_files[kk])]
-            if allowed:
-                kk = min(allowed, key=lambda a: (abs(a - k), a))
-                if self.spectra_files[kk] != self.index:
-                    self._goto_spectra(kk)
 
     def _on_scale(self, text):
         try:
@@ -1811,7 +1778,7 @@ class _BrowserCore:
         self._on_path_changed()
 
     def _on_topo_toggle(self, active):
-        """The topo processor box (widgets.TopoProcessorBox; one active at most): everything redrawn."""
+        """The topo processor box (controls.TopoProcessorBox; one active at most): everything redrawn."""
         self.topo_active = list(active)
         self._draw_all()
 
@@ -2575,539 +2542,19 @@ Qt = QtCore.Qt
 
 
 # ---------------------------------------------------------------------- #
-#  Native controls with the widgets.Control interface                     #
-#  (value, set (never fires), on_change, show, enable)                    #
+#  The controls: the one set of every window (controls.py)                 #
 # ---------------------------------------------------------------------- #
+#
+# The browser's controls are the shared ones (controls.py), made without a figure: the window's
+# font rules their text (_WindowZoom, the one text-size rule of every window), and every group sits
+# in a box frame (controls.box), the same frame in every window.
 
-class QControl:
-    """
-    The interface of widgets.Control on a native Qt widget: value, set (never fires), on_change,
-    show, enable, and set_short (the browser's window taller than wide: every label with a short
-    form in widgets.SHORT_LABELS shows it; _WindowZoom switches every registered control).
-    """
+from sm4_Browser import controls
 
-    _all = weakref.WeakSet()       # every native control made, for _WindowZoom's label switch
-
-    def __init__(self, name, qwidget):
-        self.name = name
-        self.qt = qwidget
-        self._cb = None
-        self._quiet = False
-        self._short = False
-        self.qt.setObjectName(name)
-        QControl._all.add(self)
-
-    def _shown(self, text):
-        """The text a label shows: its short form in the short mode, else as it is."""
-        return widgets.short_form(text) if self._short else str(text)
-
-    def _apply_labels(self):
-        """Every label of the control set to its shown form (the kinds with text override this)."""
-        return None
-
-    def set_short(self, flag):
-        flag = bool(flag)
-        if flag != self._short:
-            self._short = flag
-            self._apply_labels()
-
-    def show(self, flag):
-        self.qt.setVisible(bool(flag))
-
-    def enable(self, flag):
-        self.qt.setEnabled(bool(flag))
-
-    def on_change(self, callback):
-        self._cb = callback
-
-    def _fire(self, *args):
-        if self._cb is not None and not self._quiet:
-            self._cb(*args)
-
-    def _silently(self, fn, *args):
-        self._quiet = True
-        blocked = self.qt.blockSignals(True)
-        try:
-            fn(*args)
-        finally:
-            self.qt.blockSignals(blocked)
-            self._quiet = False
-
-
-def _label_of(name):
-    """The label text of a widget name (widgets.LABELS; the name itself without an entry), stripped."""
-    lab = widgets.LABELS.get(name, name)
-    return name if lab is None else lab.strip()
-
-
-class QCheck(QControl):
-    """A one-row toggle: callback(flag)."""
-
-    def __init__(self, name, value=False, label=None):
-        self._label = _label_of(name) if label is None else label
-        super().__init__(name, QtWidgets.QCheckBox(self._label))
-        self.qt.setChecked(bool(value))
-        self.qt.toggled.connect(lambda flag: self._fire(bool(flag)))
-
-    def _apply_labels(self):
-        self.qt.setText(self._shown(self._label))
-
-    @property
-    def value(self):
-        return self.qt.isChecked()
-
-    def set(self, flag):
-        if self.value != bool(flag):
-            self._silently(self.qt.setChecked, bool(flag))
-
-    def set_label_color(self, color):
-        self.qt.setStyleSheet(f"color: {color};")
-
-
-class QChecks(QControl):
-    """A box of toggle rows: callback(label, states) after a click (the clicked row already flipped)."""
-
-    def __init__(self, name, labels, values=None, title=None):
-        box = QtWidgets.QGroupBox(title or '')
-        super().__init__(name, box)
-        self._title = title or ''
-        lay = QtWidgets.QVBoxLayout(box)
-        lay.setContentsMargins(6, 4, 6, 4)
-        lay.setSpacing(2)
-        self._labels = list(labels)
-        vals = [False] * len(self._labels) if values is None else [bool(v) for v in values]
-        self._boxes = []
-        for lab, v in zip(self._labels, vals):
-            cb = QtWidgets.QCheckBox(lab)
-            cb.setChecked(v)
-            cb.toggled.connect(lambda _f, lab=lab: self._fire(lab, self.value))
-            lay.addWidget(cb)
-            self._boxes.append(cb)
-
-    def _apply_labels(self):
-        self.qt.setTitle(self._shown(self._title))
-        for cb, lab in zip(self._boxes, self._labels):
-            cb.setText(self._shown(lab))
-
-    @property
-    def labels(self):
-        return list(self._labels)
-
-    @property
-    def value(self):
-        return [b.isChecked() for b in self._boxes]
-
-    def set(self, i, flag):
-        b = self._boxes[i]
-        if b.isChecked() != bool(flag):
-            self._quiet = True
-            blocked = b.blockSignals(True)
-            try:
-                b.setChecked(bool(flag))
-            finally:
-                b.blockSignals(blocked)
-                self._quiet = False
-
-    def set_all(self, flags):
-        for i, f in enumerate(flags):
-            self.set(i, f)
-
-
-class QRadio(QControl):
-    """A radio list: callback(label)."""
-
-    def __init__(self, name, labels, value=None, title=None):
-        box = QtWidgets.QGroupBox(title or '')
-        super().__init__(name, box)
-        self._title = title or ''
-        lay = QtWidgets.QVBoxLayout(box)
-        lay.setContentsMargins(6, 4, 6, 4)
-        lay.setSpacing(2)
-        self._labels = list(labels)
-        self._group = QtWidgets.QButtonGroup(box)
-        self._buttons = []
-        active = self._labels.index(value) if value in self._labels else 0
-        for i, lab in enumerate(self._labels):
-            rb = QtWidgets.QRadioButton(lab)
-            rb.setChecked(i == active)
-            self._group.addButton(rb, i)
-            lay.addWidget(rb)
-            self._buttons.append(rb)
-        self._group.idClicked.connect(lambda i: self._fire(self._labels[i]))
-
-    def _apply_labels(self):
-        self.qt.setTitle(self._shown(self._title))
-        for rb, lab in zip(self._buttons, self._labels):
-            rb.setText(self._shown(lab))
-
-    @property
-    def labels(self):
-        return list(self._labels)
-
-    @property
-    def value(self):
-        i = self._group.checkedId()
-        return self._labels[i] if i >= 0 else None
-
-    def set(self, label):
-        if label in self._labels and self.value != label:
-            # QButtonGroup.idClicked fires on user clicks only; setChecked never fires it.
-            self._buttons[self._labels.index(label)].setChecked(True)
-
-
-class QPush(QControl):
-    """A button: callback()."""
-
-    def __init__(self, name, label=None):
-        self._text = _label_of(name) if label is None else label
-        super().__init__(name, QtWidgets.QPushButton(self._text))
-        self.qt.clicked.connect(lambda _=False: self._fire())
-
-    @property
-    def value(self):
-        return self.qt.text()
-
-    def set_text(self, text):
-        self._text = str(text)
-        self._apply_labels()
-
-    def _apply_labels(self):
-        self.qt.setText(self._shown(self._text))
-
-
-class QRange(QControl):
-    """
-    An integer slider with its value shown: callback(value) while it moves.
-    release(callback) registers callback() for the end of a move: the mouse
-    released after a drag, or at once for a keyboard / page-click step (the
-    browser loads the file then).
-    """
-
-    def __init__(self, name, value=0, vmin=0, vmax=1, label=None):
-        w = QtWidgets.QWidget()
-        super().__init__(name, w)
-        lay = QtWidgets.QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        self._label = _label_of(name) if label is None else label
-        self.label = QtWidgets.QLabel(self._label)
-        lay.addWidget(self.label)
-        self.slider = QtWidgets.QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(int(vmin), int(vmax))
-        self.slider.setValue(int(value))
-        self.slider.setPageStep(max(1, (int(vmax) - int(vmin)) // 20))
-        self.readout = QtWidgets.QLabel(str(int(value)))
-        self.readout.setMinimumWidth(36)
-        lay.addWidget(self.slider, 1)
-        lay.addWidget(self.readout)
-        self._release = None
-        self.slider.valueChanged.connect(self._changed)
-        self.slider.sliderReleased.connect(self._released)
-
-    def _apply_labels(self):
-        self.label.setText(self._shown(self._label))
-
-    def _changed(self, v):
-        self.readout.setText(str(v))
-        if self._quiet:
-            return
-        self._fire(v)
-        if not self.slider.isSliderDown():          # keyboard, wheel, or page click: no drag to wait for
-            self._released()
-
-    def _released(self):
-        if self._release is not None and not self._quiet:
-            self._release()
-
-    def release(self, callback):
-        self._release = callback
-
-    @property
-    def value(self):
-        return self.slider.value()
-
-    def set(self, value):
-        v = int(round(value))
-        if self.slider.value() != v:
-            self._quiet = True
-            blocked = self.slider.blockSignals(True)
-            try:
-                self.slider.setValue(v)
-                self.readout.setText(str(v))
-            finally:
-                self.slider.blockSignals(blocked)
-                self._quiet = False
-
-
-class QText(QControl):
-    """A text box: callback(text) on Enter or focus-out when the text changed."""
-
-    def __init__(self, name, value='', label=None, width=70):
-        w = QtWidgets.QWidget()
-        super().__init__(name, w)
-        lay = QtWidgets.QHBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lab = _label_of(name) if label is None else label
-        self._label = lab
-        self.label = QtWidgets.QLabel(lab)
-        if lab:
-            lay.addWidget(self.label)
-        self.edit = QtWidgets.QLineEdit(str(value))
-        self.edit.setMaximumWidth(width)
-        self.edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self.edit)
-        self._last = str(value)
-        self.edit.editingFinished.connect(self._submit)
-
-    def _submit(self):
-        text = self.edit.text()
-        if text == self._last:
-            return
-        self._last = text
-        self._fire(text)
-
-    @property
-    def value(self):
-        return self.edit.text()
-
-    def set(self, text):
-        text = str(text)
-        self._last = text
-        if self.edit.text() != text:
-            blocked = self.edit.blockSignals(True)
-            try:
-                self.edit.setText(text)
-            finally:
-                self.edit.blockSignals(blocked)
-
-    def set_label_color(self, color):
-        self.label.setStyleSheet(f"color: {color};")
-
-    def _apply_labels(self):
-        self.label.setText(self._shown(self._label))
-
-
-class QTextLabel:
-    """
-    Stands in for a matplotlib figure text: set_text, set_visible.  The text wraps: a long line (a
-    file name in the navigation text) never widens the window beyond its design size, and nothing
-    of it is cut; the text can be selected and copied.
-    """
-
-    def __init__(self, text=''):
-        self.qt = QtWidgets.QLabel(text)
-        self.qt.setWordWrap(True)
-        self.qt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-    def set_text(self, text):
-        self.qt.setText(str(text))
-
-    def set_visible(self, flag):
-        self.qt.setVisible(bool(flag))
-
-    def get_text(self):
-        return self.qt.text()
-
-
-# ---------------------------------------------------------------------- #
-#  Composite controllers: the widgets.py logic, Qt construction            #
-# ---------------------------------------------------------------------- #
 
 def _row(*items, stretch=True):
-    """A widget holding the items (controls or Qt widgets) in one row, left-aligned with `stretch`."""
-    w = QtWidgets.QWidget()
-    lay = QtWidgets.QHBoxLayout(w)
-    lay.setContentsMargins(0, 0, 0, 0)
-    for it in items:
-        lay.addWidget(it.qt if hasattr(it, 'qt') else it)
-    if stretch:
-        lay.addStretch(1)
-    return w
-
-
-class QStepButtons(widgets.StepButtons):
-    """widgets.StepButtons with native buttons: on_change(cb(d)), d = -1 for the left one, +1 for the right."""
-
-    def __init__(self, left_name, right_name):
-        self.left = QPush(left_name)
-        self.right = QPush(right_name)
-        self._cb = None
-        self.left.on_change(lambda: self._fire(-1))
-        self.right.on_change(lambda: self._fire(+1))
-        self.qt = _row(self.left, self.right, stretch=False)
-
-
-class QPipelineBox(widgets.PipelineBox):
-    """
-    widgets.PipelineBox on native widgets: one group box with the rows 'calibrate', 'gate' (indented),
-    the gate's 'H' and 'SG' boxes on a row each under it, and 'normalize' (the settings column stays
-    as narrow as the two-row box was); callback(state).
-    """
-
-    def __init__(self, calibrate=True, normalize=True, gate=None):
-        from sm4_Browser import calibration
-        self._gate = calibration.gate_settings(gate)
-        self.box = QChecks('pipeline', widgets.SPECS['pipeline']['labels'], [calibrate, self._gate.on, normalize])
-        self.box_h = QText('gate H', self._fmt(self._gate.hampel), label='H', width=36)
-        self.box_sg = QText('gate SG', self._fmt(self._gate.sgolay), label='SG', width=36)
-        self._cb = None
-        self._quiet = False
-        self.box.on_change(lambda label, states: self._on_toggle())
-        self.box_h.on_change(lambda text: self._on_edit('hampel', text))
-        self.box_sg.on_change(lambda text: self._on_edit('sgolay', text))
-        # The two boxes as two rows under the gate row, inside the group box (one row each: the
-        # settings column must stay as narrow as the box was, so that the window still goes portrait).
-        lay = self.box.qt.layout()
-        for i, qtext in enumerate((self.box_h, self.box_sg)):
-            row = QtWidgets.QWidget()
-            rl = QtWidgets.QHBoxLayout(row)
-            rl.setContentsMargins(18, 0, 0, 0)
-            rl.setSpacing(2)
-            rl.addWidget(qtext.qt)
-            rl.addStretch(1)
-            lay.insertWidget(2 + i, row)
-        self.qt = self.box.qt
-
-    def show(self, flag):
-        self.qt.setVisible(bool(flag))
-
-
-class QTopoProcessorBox(widgets.TopoProcessorBox):
-    """widgets.TopoProcessorBox (one processor active at most, callback(active)) on a native box titled 'topo processing'."""
-
-    def __init__(self, labels, active):
-        self.box = QChecks('topo processors', labels, active, title='topo processing')
-        self._cb = None
-        self.box.on_change(self._on_click)
-        self.qt = self.box.qt
-
-
-class QFeenstraSettings(widgets.FeenstraSettings):
-    """widgets.FeenstraSettings ('0Vsub', 'broadened', the width box; callback(**change)) as one native row."""
-
-    def __init__(self, settings):
-        self.chk_zero = QCheck('0Vsub', settings['zero_sub'])
-        self.chk_broad = QCheck('broadened', settings['broadened'])
-        self.box_width = QText('width', f"{settings['broadening']:g}", label='width (V)')
-        self._cb = None
-        self._settings = dict(settings)
-        self.chk_zero.on_change(lambda flag: self._fire(zero_sub=flag))
-        self.chk_broad.on_change(lambda flag: self._fire(broadened=flag))
-        self.box_width.on_change(self._on_width)
-        self.qt = _row(self.chk_zero, self.chk_broad, self.box_width)
-
-    def show(self, flag):
-        self.qt.setVisible(bool(flag))
-
-    def place(self, x, y):
-        pass
-
-    def color_labels(self, zero_color, broad_color):
-        self.chk_zero.set_label_color(zero_color)
-        self.chk_broad.set_label_color(broad_color)
-        self.box_width.set_label_color(broad_color)
-
-
-class QFilterControls(widgets.FilterControls):
-    """The Hampel / Savitzky-Golay box: widgets.FilterControls' parsing and state, Qt widgets (two toggle columns, 'dI/dV' and 'I(V)', the row name and its boxes shared)."""
-
-    def __init__(self, hampel=None, sgolay=None, hampel_on=False, sgolay_on=False,
-                 hampel_didv_on=False, sgolay_didv_on=False):
-        self._hp = dict(self.HAMPEL_DEFAULT if hampel is None else hampel)
-        self._sp = dict(self.SGOLAY_DEFAULT if sgolay is None else sgolay)
-        self._on = [bool(hampel_on), bool(sgolay_on)]
-        self._on_d = [bool(hampel_didv_on), bool(sgolay_didv_on)]
-        self._callback = None
-        self._quiet = False
-        self._title = 'filters'
-        self.qt = QtWidgets.QGroupBox(self._title)
-        grid = QtWidgets.QGridLayout(self.qt)
-        grid.setContentsMargins(6, 4, 6, 4)
-        self._hdr_d = QtWidgets.QLabel('dI/dV')
-        self._hdr_i = QtWidgets.QLabel('I(V)')
-        for lab in (self._hdr_d, self._hdr_i):
-            lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-        self.chk_sd = QCheck('sgolay_didv', self._on_d[1], label='')
-        self.chk_s = QCheck('sg', self._on[1], label='')
-        self.chk_hd = QCheck('hampel_didv', self._on_d[0], label='')
-        self.chk_h = QCheck('hampel', self._on[0], label='')
-        self._name_s = QtWidgets.QLabel('SG')
-        self._name_h = QtWidgets.QLabel('Hampel')
-        self.box_wl = QText('window_length', self._fmt(self._sp['window_length']), label='window', width=45)
-        self.box_po = QText('polyorder', self._fmt(self._sp['polyorder']), label='polyorder', width=45)
-        self.box_win = QText('window', self._fmt(self._hp['window']), label='window', width=45)
-        self.box_nsig = QText('n_sigma', self._fmt(self._hp['n_sigma']), label='nσ', width=45)
-        grid.addWidget(self._hdr_d, 0, 0)
-        grid.addWidget(self._hdr_i, 0, 1)
-        rows = [(self.chk_sd, self.chk_s, self._name_s, self.box_wl, self.box_po),
-                (self.chk_hd, self.chk_h, self._name_h, self.box_win, self.box_nsig)]
-        for r, items in enumerate(rows, start=1):
-            for c, it in enumerate(items):
-                grid.addWidget(it.qt if hasattr(it, 'qt') else it, r, c)
-        self.chk_h.on_change(lambda flag: self._toggle(0))
-        self.chk_s.on_change(lambda flag: self._toggle(1))
-        self.chk_hd.on_change(lambda flag: self._toggle(2))
-        self.chk_sd.on_change(lambda flag: self._toggle(3))
-        for name in ('window', 'n_sigma', 'window_length', 'polyorder'):
-            self._box(name).on_change(lambda text, name=name: self._submit(name, text))
-
-    def set_rect(self, rect):
-        pass
-
-    def set_short(self, flag):
-        """Short labels on or off (the browser's window taller than wide): the box's title shows 'filters'; its controls switch on their own."""
-        self.qt.setTitle(widgets.short_form(self._title) if flag else self._title)
-
-    def show(self, flag):
-        self.qt.setVisible(bool(flag))
-
-    def _set_box(self, name, value):
-        self._box(name).set(self._fmt(value))
-
-    def _set_toggle(self, i, state):
-        (self.chk_h, self.chk_s, self.chk_hd, self.chk_sd)[i].set(bool(state))
-        if i < 2:
-            self._on[i] = bool(state)
-        else:
-            self._on_d[i - 2] = bool(state)
-
-    def _fire(self):
-        if self._callback is not None:
-            self._callback()
-
-    def color_labels(self, hampel_color, sgolay_color=None):
-        self._name_h.setStyleSheet(f"color: {hampel_color};")
-        self._name_s.setStyleSheet(f"color: {hampel_color if sgolay_color is None else sgolay_color};")
-
-
-class QAveragePicker:
-    """The 'add existing' list as a native pop-up menu under the button (widgets.AveragePicker's rows)."""
-
-    def __init__(self, averages):
-        self.averages = averages
-        self.menu = None
-
-    def is_open(self):
-        return self.menu is not None and self.menu.isVisible()
-
-    def open(self, anchor, entry, on_pick):
-        self.close()
-        open_avgs = self.averages.open()
-        if not open_avgs:
-            print("add existing: no average is open ('add new' starts one).")
-            return
-        menu = QtWidgets.QMenu(anchor)
-        for i in sorted(open_avgs):
-            win = open_avgs[i]
-            text = f"{win.name}  ({len(win.entries)} entries)" + ("  holds this entry" if win.has(entry) else "")
-            act = menu.addAction(text)
-            act.triggered.connect(lambda _=False, i=i: on_pick(i))
-        self.menu = menu
-        menu.popup(anchor.mapToGlobal(QtCore.QPoint(0, anchor.height())))
-
-    def close(self):
-        if self.menu is not None:
-            self.menu.close()
-            self.menu = None
+    """A widget holding the items (controls or Qt widgets) in one row, left-aligned with `stretch` (automatic layout)."""
+    return controls.widget_of(controls.row(*items, stretch=stretch))
 
 
 # ---------------------------------------------------------------------- #
@@ -3116,13 +2563,13 @@ class QAveragePicker:
 
 class _WindowZoom(QtCore.QObject):
     """
-    The main window's own controls (native Qt) follow the one text-size rule of every window
+    The main window's own controls follow the one text-size rule of every window
     (qtplot.window_zoom): their font is the window's size relative to its design size, ZOOM_MIN
     to ZOOM_MAX, as the figures' text does (qtplot's font_zoom); when the controls would not fit
     the window at that zoom the font is reduced, to at most FIT_MIN of it, until they do (_fit),
-    so no text is cut, as a figure window's control shrinks its font to fit its box.  The same resize decides the
-    window's shape: taller than wide, every native control with a short form shows it
-    (QControl.set_short, widgets.SHORT_LABELS), the objects given to track_short switch their own
+    so no text is cut: the same test as a figure window's (qtplot.fits_controls).  The same resize decides the
+    window's shape: taller than wide, every control with a short form shows it
+    (controls.Control.set_short, widgets.SHORT_LABELS), the objects given to track_short switch their own
     titles, and the embedded figures are told (Figure.set_portrait), so their controls and their
     file-name titles switch with the window and not with their own canvas.
     """
@@ -3137,7 +2584,7 @@ class _WindowZoom(QtCore.QObject):
         self.base.setPointSizeF(self.base.pointSizeF() * plt.FONT_SCALE)
         self.extra = []              # (widget, its own base font)
         self.figs = []               # the embedded figures: their portrait flag follows the window
-        self.shorts = []             # objects with set_short(flag) that are not QControls (the filter box)
+        self.shorts = []             # objects with set_short(flag) that are not controls.Control (the filter box)
         self.zoom = None
         self.portrait = None
         self._busy = False           # against re-entry: the fit delivers layout events itself
@@ -3160,7 +2607,14 @@ class _WindowZoom(QtCore.QObject):
                 and not self._busy:
             self._busy = True
             try:
-                self._apply()
+                # A fit that raised the window's minimum grows the window while it runs (that resize
+                # is not seen here, the fit being busy): the fit runs again at the new size, until the
+                # size holds, so the zoom is the rule's at the size the window ends at.
+                for _ in range(6):
+                    size = self.win.size()
+                    self._apply()
+                    if self.win.size() == size:
+                        break
             finally:
                 self._busy = False
         return False
@@ -3171,7 +2625,7 @@ class _WindowZoom(QtCore.QObject):
         if p == self.portrait:
             return
         self.portrait = p
-        for c in list(QControl._all):
+        for c in list(controls.Control._all):
             try:
                 if self.win.isAncestorOf(c.qt):
                     c.set_short(p)
@@ -3205,6 +2659,7 @@ class _WindowZoom(QtCore.QObject):
         if lay is None:
             return z
         z0, zc = z, z
+        before = self.zoom           # the zoom applied before this fit: a larger one must fit with slack to spare
         for _ in range(12):
             self._set_fonts(zc)
             # The widgets' size hints follow the new font only once the layout events the font
@@ -3213,7 +2668,7 @@ class _WindowZoom(QtCore.QObject):
             lay.invalidate()
             lay.activate()
             m = lay.minimumSize()
-            if m.width() <= self.win.width() and m.height() <= self.win.height():
+            if plt.fits_controls((m.width(), m.height()), (self.win.width(), self.win.height()), zc, before):
                 return zc
             if zc <= z0 * self.FIT_MIN + 1e-9:
                 break
@@ -3230,6 +2685,16 @@ class _WindowZoom(QtCore.QObject):
         f = QtGui.QFont(self.base)
         f.setPointSizeF(self.base.pointSizeF() * z / k)
         self.win.setFont(f)
+        # Every widget of the window gets the font itself, not through the window's: a widget with a
+        # style sheet (a box frame, a coloured label) and everything inside it keep the font they had
+        # when styled instead of following their window's (Qt), and so does every widget once the
+        # window has the indicators' sheet (above 1.15x).  A figure window sets its controls' fonts
+        # the same way (controls.Control._set_zoom); the embedded figures' canvases, whose controls
+        # follow their own figure, are left alone.
+        canvases = self.win.findChildren(plt.FigureCanvas)
+        for w in self.win.findChildren(QtWidgets.QWidget):
+            if not any(c is w or c.isAncestorOf(w) for c in canvases):
+                w.setFont(f)
         from sm4_Browser.widgets import indicator_css
         self.win.setStyleSheet(indicator_css(z))
         for e in self.win.findChildren(QtWidgets.QLineEdit):
@@ -3311,10 +2776,6 @@ class Browser(_BrowserCore):
     DESIGN = (1700, 950)
     SCAN_DESIGN = (9, 7)          # the scan-area canvas
     SPEC_DESIGN = (8, 3.6)        # the spectra canvas
-    # The spectra figure is its own canvas: the panel rects are fractions of IT.
-    SPEC_RECT = [0.07, 0.17, 0.91, 0.72]
-    SPEC_RECTS = [[0.06, 0.17, 0.205, 0.72], [0.305, 0.17, 0.205, 0.72], [0.55, 0.17, 0.205, 0.72],
-                  [0.795, 0.17, 0.195, 0.72]]
 
     def __init__(self, *args, **kwargs):
         self.app = plt._app()
@@ -3359,8 +2820,13 @@ class Browser(_BrowserCore):
         lv.setContentsMargins(0, 0, 0, 0)
         self.fig_scan = Figure(figsize=self.SCAN_DESIGN)
         self.canvas_scan = FigureCanvasQTAgg(self.fig_scan)
-        self.ax_scan = self.fig_scan.add_axes([0.11, 0.09, 0.78, 0.81])
-        self.ax_topo_cbar = plots.draw_topo_cbar(self.fig_scan, [0.925, 0.25, 0.02, 0.5])
+        # automatic layout: the one rule for every window (nothing placed by hand): the scan area and
+        # its topo ramp in cells of the canvas's own layout.
+        cell_scan, cell_ramp = self.fig_scan.cell(), self.fig_scan.cell(inner_w=20)
+        self.ax_scan = self.fig_scan.add_axes(cell=cell_scan)
+        self.ax_topo_cbar = plots.draw_topo_cbar(self.fig_scan, cell=cell_ramp)
+        self.fig_scan.align_row(self.ax_scan, self.ax_topo_cbar)
+        self.fig_scan.set_layout(controls.row(cell_scan, cell_ramp, spacing=10))
         self.toolbar_scan = NavigationToolbar2QT(self.canvas_scan, left)
         lv.addWidget(self.toolbar_scan)
         lv.addWidget(self.canvas_scan, 1)
@@ -3369,39 +2835,36 @@ class Browser(_BrowserCore):
         self.layer = ScanLayer(self.ax_scan, self.files, TOPO_CMAP)
 
         n = len(self.files)
-        self.sld_file = QRange('file', 0, 0, max(n - 1, 1))
-        self.txt_nav = QTextLabel()
+        self.sld_file = controls.Slider(None, 'file', 0, 0, max(n - 1, 1))
+        self.txt_nav = controls.Label(None, 'navigation', wrap=True)
         self._slider_pending = None
-        self.btn_prev, self.btn_next = QPush('< Prev'), QPush('Next >')
-        self.btn_topo = QPush('Topo Window')
-        self.box_scale = QText('scale factor', f"{self.scalefactor:g}")
-        self.topo_box = QTopoProcessorBox(processor_labels(), self.topo_active)
-        self.chk_auto = QCheck('auto drift', self.auto_on)
-        self.chk_manual = QCheck('manual drift', self.manual_on)
-        self.chk_anchor = QCheck('anchor to topo', self.anchor_on)
-        self.chk_stripe = QCheck('stripe', False)          # the current grid's stripe matching on / off (Drift.set_stripe_on)
-        self.btn_stripe = QPush('stripe match')
-        self.btn_drift = QPush('drift')
-        self.btn_saved = QPush('load saved averages')
-        self.rad_channel = QRadio('channel', widgets.SPECS['channel']['labels'],
-                                  STS.CHANNEL_NAMES[self.channel], title='channel')
+        self.btn_prev, self.btn_next = controls.Button(None, '< Prev'), controls.Button(None, 'Next >')
+        self.btn_topo = controls.Button(None, 'Topo Window')
+        self.box_scale = controls.Text(None, 'scale factor', f"{self.scalefactor:g}", width=70)
+        self.topo_box = controls.TopoProcessorBox(None, processor_labels(), self.topo_active, title='topo processing')
+        self.chk_auto = controls.Check(None, 'auto drift', self.auto_on)
+        self.chk_manual = controls.Check(None, 'manual drift', self.manual_on)
+        self.chk_anchor = controls.Check(None, 'anchor to topo', self.anchor_on)
+        self.chk_stripe = controls.Check(None, 'stripe', False)          # the current grid's stripe matching on / off (Drift.set_stripe_on)
+        self.btn_stripe = controls.Button(None, 'stripe match')
+        self.btn_drift = controls.Button(None, 'drift')
+        self.btn_saved = controls.Button(None, 'load saved averages')
+        self.rad_channel = controls.Radio(None, 'channel', STS.CHANNEL_NAMES[self.channel],
+                                          labels=widgets.SPECS['channel']['labels'], title='channel')
         lv.addWidget(self.txt_nav.qt)
         lv.addWidget(self.sld_file.qt)
         bottom = QtWidgets.QHBoxLayout()
-        nav = QtWidgets.QVBoxLayout()
-        nav.addWidget(_row(self.btn_prev, self.btn_next, self.btn_topo, self.box_scale))
-        nav.addWidget(_row(self.chk_auto, self.chk_manual, self.chk_stripe, self.btn_drift))
-        nav.addWidget(_row(self.chk_anchor, self.btn_stripe, self.btn_saved))     # under the drift toggles: their row has no room for a fifth control at the design size
-        self.rad_show = QRadio('show', list(SHOW_MODES), self.show_mode, title='show')
-        self.chk_kinds = QChecks('step through', ['topo', 'point', 'grid', 'phase', 'fft'], [True] * 5,
-                                 title='step through')
-        self.box_min_dur = QText('min duration', '0', label='min (min)', width=45)
-        filt = QtWidgets.QWidget()
-        fl = QtWidgets.QVBoxLayout(filt)
-        fl.setContentsMargins(0, 0, 0, 0)
-        fl.addWidget(self.chk_kinds.qt)
-        fl.addWidget(self.box_min_dur.qt)
-        bottom.addLayout(nav, 1)
+        # The navigation and drift rows in one box frame (the anchor row under the drift toggles: their
+        # row has no room for a fifth control at the design size).
+        nav = controls.box(controls.row(self.btn_prev, self.btn_next, self.btn_topo, self.box_scale, 'stretch'),
+                           controls.row(self.chk_auto, self.chk_manual, self.chk_stripe, self.btn_drift, 'stretch'),
+                           controls.row(self.chk_anchor, self.btn_stripe, self.btn_saved, 'stretch'), orient='v')
+        self.rad_show = controls.Radio(None, 'show', self.show_mode, labels=list(SHOW_MODES), title='show')
+        self.chk_kinds = controls.Checks(None, 'step through', values=[True] * 5,
+                                         labels=['topo', 'point', 'grid', 'phase', 'fft'], title='step through')
+        self.box_min_dur = controls.Text(None, 'min duration', '0', label='min (min)', width=45)
+        filt = controls.box(self.chk_kinds, self.box_min_dur, orient='v')
+        bottom.addWidget(nav, 1)
         bottom.addWidget(self.topo_box.qt)
         bottom.addWidget(self.rad_channel.qt)
         bottom.addWidget(self.rad_show.qt)
@@ -3418,22 +2881,26 @@ class Browser(_BrowserCore):
         rv.setContentsMargins(0, 0, 0, 0)
         self.fig_spec = Figure(figsize=self.SPEC_DESIGN)
         self.canvas_spec = FigureCanvasQTAgg(self.fig_spec)
-        self.ax_spec = self.fig_spec.add_axes(self.SPEC_RECT)
-        self.ax_spec_iv = self.fig_spec.add_axes(self.SPEC_RECTS[1])
-        self.ax_spec_ivv = self.fig_spec.add_axes(self.SPEC_RECTS[2])
-        self.ax_spec_ratio = self.fig_spec.add_axes(self.SPEC_RECTS[3])
+        # The spectra panels in cells of the canvas's own layout: one panel, or the four Feenstra panels
+        # side by side (the last three cells hidden for one: _draw_spectra), one row.
+        self._spec_cells = [self.fig_spec.cell() for _ in range(4)]
+        self.ax_spec, self.ax_spec_iv, self.ax_spec_ivv, self.ax_spec_ratio = \
+            [self.fig_spec.add_axes(cell=c) for c in self._spec_cells]
+        self.fig_spec.align_row(self.ax_spec, self.ax_spec_iv, self.ax_spec_ivv, self.ax_spec_ratio)
+        self.fig_spec.set_layout(controls.row(*self._spec_cells, spacing=14))
         rv.addWidget(NavigationToolbar2QT(self.canvas_spec, right))
         rv.addWidget(self.canvas_spec, 4)
-        self.spec_settings = QFeenstraSettings(self.feenstra_settings())
+        self.spec_settings = controls.FeenstraSettings(None, self.feenstra_settings())
         self.spec_settings.on_change(self.set_feenstra_settings)
-        self.filters = QFilterControls(hampel=self.hampel_defaults, sgolay=self.sgolay_defaults)
+        self.filters = controls.FilterControls(None, hampel=self.hampel_defaults, sgolay=self.sgolay_defaults, title='filters')
         self.filters.on_change(self._on_filter_change)
         self._zoomer.track_short(self.filters)
-        self.pipeline = QPipelineBox(calibrate=False, normalize=False)
+        self.pipeline = controls.PipelineBox(None, calibrate=False, normalize=False, hs='rows')
         self.pipeline.on_change(self._on_pipeline_change)
         settings = QtWidgets.QHBoxLayout()
         sv = QtWidgets.QVBoxLayout()
-        sv.addWidget(self.spec_settings.qt)
+        self._spec_settings_box = controls.box(self.spec_settings)
+        sv.addWidget(self._spec_settings_box)
         sv.addStretch(1)
         settings.addLayout(sv)
         settings.addWidget(self.filters.qt)
@@ -3441,19 +2908,13 @@ class Browser(_BrowserCore):
         settings.addStretch(1)
         rv.addLayout(settings)
 
-        n_spec = len(self.spectra_files)
-        self.spec_steps = QStepButtons('< spectra', 'spectra >')
-        self.spec_steps.on_change(self._step_spectra)
-        self.set_steps = QStepButtons('prev region', 'next region')
+        self.set_steps = controls.StepButtons(None, 'prev region', 'next region')
         self.set_steps.on_change(self._on_region_step)
-        self.sld_spec = QRange('spectra', 0, 0, max(n_spec - 1, 1))
-        self.txt_spec_nav = QTextLabel()
-        self._spec_slider_pending = None
+        self.txt_spec_nav = controls.Label(None, 'spectra line', wrap=True)
         rv.addWidget(self.txt_spec_nav.qt)
         sn = QtWidgets.QHBoxLayout()
-        sn.addWidget(self.spec_steps.qt)
-        sn.addWidget(self.set_steps.qt)
-        sn.addWidget(self.sld_spec.qt, 1)
+        sn.addWidget(controls.box(self.set_steps))
+        sn.addStretch(1)
         rv.addLayout(sn)
 
         self.info = QtWidgets.QPlainTextEdit()
@@ -3465,15 +2926,15 @@ class Browser(_BrowserCore):
         self._zoomer.track(self.info, font)
         rv.addWidget(self.info, 1)
 
-        self.btn_line, self.btn_map = QPush('Line'), QPush('Map')
-        self.btn_add_new, self.btn_add_existing = QPush('add new'), QPush('add existing')
-        self.txt_in_avgs = QTextLabel()
-        self.btn_section, self.btn_clear = QPush('section'), QPush('clear')
-        self.btn_cross, self.btn_measure, self.btn_scale = QPush('cross section'), QPush('measure'), QPush('set scale')
-        self.txt_dir = QTextLabel('topo under')
-        self.rad_dir = QRadio('topo pass', list(TOPO_DIRECTIONS), 'forward')
-        self.txt_site = QTextLabel('site')
-        self.rad_site = QRadio('site', list(widgets.SPECS['site']['labels']), 'experiment')
+        self.btn_line, self.btn_map = controls.Button(None, 'Line'), controls.Button(None, 'Map')
+        self.btn_add_new, self.btn_add_existing = controls.Button(None, 'add new'), controls.Button(None, 'add existing')
+        self.txt_in_avgs = controls.Label(None, 'in averages', wrap=True)
+        self.btn_section, self.btn_clear = controls.Button(None, 'section'), controls.Button(None, 'clear')
+        self.btn_cross, self.btn_measure, self.btn_scale = (controls.Button(None, 'cross section'), controls.Button(None, 'measure'), controls.Button(None, 'set scale'))
+        self.txt_dir = controls.Label(None, 'topo under title', 'topo under')
+        self.rad_dir = controls.Radio(None, 'topo pass', 'forward', labels=list(TOPO_DIRECTIONS))
+        self.txt_site = controls.Label(None, 'site title', 'site')
+        self.rad_site = controls.Radio(None, 'site', 'experiment', labels=list(widgets.SPECS['site']['labels']))
         actions = QtWidgets.QHBoxLayout()
         col = QtWidgets.QVBoxLayout()
         col.addWidget(_row(self.btn_line, self.btn_map))
@@ -3497,7 +2958,7 @@ class Browser(_BrowserCore):
         sl.addStretch(1)
         col.addWidget(sec)
         col.addStretch(1)
-        actions.addLayout(col, 1)
+        actions.addWidget(controls.box(col, orient='v'), 1)
         for lab, rad in ((self.txt_dir, self.rad_dir), (self.txt_site, self.rad_site)):
             c = QtWidgets.QVBoxLayout()
             c.addWidget(lab.qt)
@@ -3514,7 +2975,7 @@ class Browser(_BrowserCore):
         self._zoomer.track_figures(self.fig_scan, self.fig_spec)
         # The details cut from the panel titles go into this window's info panel.
         self.fig_scan.on_info = self.fig_spec.on_info = lambda text: self._draw_info()
-        self._picker = QAveragePicker(self.averages)
+        self._picker = controls.AveragePicker(None, self.averages)
 
         self.btn_prev.on_change(lambda: self._step(-1))
         self.btn_next.on_change(lambda: self._step(+1))
@@ -3522,9 +2983,7 @@ class Browser(_BrowserCore):
         self.chk_kinds.on_change(self._on_step_kinds)
         self.box_min_dur.on_change(self._on_min_duration)
         self.sld_file.on_change(self._on_slider)
-        self.sld_spec.on_change(self._on_spec_slider)
         self.sld_file.release(lambda: self._on_slider_release(None))
-        self.sld_spec.release(lambda: self._on_slider_release(None))
         self.btn_topo.on_change(self._on_topo_window)
         self.box_scale.on_change(self._on_scale)
         self.topo_box.on_change(self._on_topo_toggle)
@@ -3549,13 +3008,11 @@ class Browser(_BrowserCore):
         self.rad_site.on_change(self._on_site)
         self.rad_channel.on_change(self._on_channel)
 
-        # Keyboard: Ctrl+Left / Ctrl+Right step files, Ctrl+PgUp / Ctrl+PgDown step spectra files
-        # (with Ctrl so that the arrows still move the cursor in the text boxes).
+        # Keyboard: Ctrl+Left / Ctrl+Right step files (with Ctrl so that the arrows still move the
+        # cursor in the text boxes).
         QShortcut = getattr(QtGui, 'QShortcut', None) or QtWidgets.QShortcut   # Qt6 / Qt5
         for key, fn in (('Ctrl+Left', lambda: self._step(-1)),
-                        ('Ctrl+Right', lambda: self._step(+1)),
-                        ('Ctrl+PgUp', lambda: self._step_spectra(-1)),
-                        ('Ctrl+PgDown', lambda: self._step_spectra(+1))):
+                        ('Ctrl+Right', lambda: self._step(+1))):
             sc = QShortcut(QtGui.QKeySequence(key), self.win)
             sc.setContext(Qt.ShortcutContext.WindowShortcut)
             sc.activated.connect(fn)
