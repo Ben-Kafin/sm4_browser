@@ -19,7 +19,7 @@ if __package__ in (None, ''):
 import os
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import sm4file
+from sm4_Browser import sm4file, plots
 
 FFT_PAGE_TYPE = 'RHK_PAGE_NOISE_POWER_SPECTRUM'
 
@@ -105,20 +105,9 @@ class NoiseSpectrum:
 
     DESIGN = (10, 5)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
-    def show(self, title=None):
-        """
-        The spectra in a figure of their own, of size DESIGN (draw), titled
-        with `title` or the file name, the measurement information (info)
-        printed on the console; stand-alone use (the __main__ block), the
-        browser draws into its own panel.  Returns the figure.
-        """
-        fig, ax = plt.subplots(figsize=self.DESIGN)
-        self.draw(ax)
-        ax.set_title(title or self.name, fontsize=9)
-        for name, text in self.info():
-            print(f"{name}: {text}")
-        plt.show()
-        return fig
+    # The spectra in a figure of their own (stand-alone use, the __main__ block; the browser draws
+    # into its own panel): plots.show_alone, the one stand-alone window of these views.
+    show = plots.show_alone
 
 
 if __name__ == '__main__':

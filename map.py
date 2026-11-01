@@ -455,8 +455,8 @@ class Map:
             self.calibrate, self.normalize, self.gate = old
             self.pipeline.set_state(*old)
             return
-        print(f"calibration {'on' if self.calibrate else 'off'}, gate {'on' if self.gate.on else 'off'} ({self.gate.text}), {self.gate.locks_text}, "
-              f"normalization {'on' if self.normalize else 'off'}: the map window shows {self._quantity()}.")
+        state = {'calibrate': self.calibrate, 'normalize': self.normalize, 'gate': self.gate}
+        print(f"{controls.PipelineBox.text(state)}: the map window shows {self._quantity()}.")
 
     def _on_cmap_norm(self, flag):
         """'cmap norm': each map its own colour scale (on) or one scale over the whole cube (off)."""

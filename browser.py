@@ -1793,8 +1793,7 @@ class _BrowserCore:
 
     def _on_pipeline_change(self, state):
         """The 'calibrate' / 'gate' / '0-lock' / 'Vbias lock' / 'normalize' box: the spectra panels redrawn with the pipeline steps as set."""
-        print(f"spectra panels: calibrate {'on' if state['calibrate'] else 'off'}, gate "
-              f"{'on' if state['gate'].on else 'off'} ({state['gate'].text}), {state['gate'].locks_text}, normalize {'on' if state['normalize'] else 'off'}.")
+        print(f"spectra panels: {controls.PipelineBox.text(state)}.")
         self._draw_spectra()
         self.fig.canvas.draw_idle()
 

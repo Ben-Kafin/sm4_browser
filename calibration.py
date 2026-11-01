@@ -902,7 +902,7 @@ if __name__ == '__main__':
         ax.plot(V, X_all, **faint)
         ax.plot(V, cf.X, **bold)
         ax.set_ylabel(f"X = ∫ LIA dV ({uL}·V)")
-        ax.set_title("the regressor X(V) = ∫ LIA dV from the lowest-energy sample (where it starts is absorbed by c)")
+        ax.set_title("Regressor X(V): ∫ LIA dV from the lowest-energy sample (where it starts is absorbed by c)")
 
         ax = axes[0, 2]
         ax.plot(V, iv_raw, **faint)
@@ -910,7 +910,7 @@ if __name__ == '__main__':
             ax.plot(V, iv_raw[:, k], color='0.4', lw=0.6, alpha=0.6, label="recorded")
         ax.plot(V, iv_k, **bold, label="filtered" if filtered else "recorded")
         ax.set_ylabel(f"I(V) ({uI})")
-        ax.set_title("recorded current I(V)" + (" and its filtered version" if filtered else ""))
+        ax.set_title("Current I(V): " + ("recorded and filtered" if filtered else "recorded"))
         ax.legend(fontsize=8)
         if uI == 'A':
             ax.secondary_yaxis('right', functions=to_pA).set_ylabel("pA")
@@ -925,7 +925,7 @@ if __name__ == '__main__':
         ax.plot(V, cf.b_own * V, ':', color='C2', lw=1, label="b·V")
         ax.axhline(cf.c_own, ls='-.', color='C1', lw=1, label="c")
         ax.set_ylabel(f"I ({uI})")
-        ax.set_title("the fit in the I(V) frame: I = a·X + b·V + c")
+        ax.set_title("Fit in I(V): I = a·X + b·V + c")
         ax.legend(loc='upper left', fontsize=8)
         ax.text(0.02, 0.03, f"a = {cf.a_own:.4g} ± {cf.se[0]:.2g} {ua}\nb = {sm4file.si_text(cf.b_own, uI + '/V')}"
                             f"\nc = {sm4file.si_text(cf.c_own, uI)}\nrms = {sm4file.si_text(cf.rms, uI, 3)}"
@@ -934,7 +934,7 @@ if __name__ == '__main__':
         ins = ax.inset_axes([0.6, 0.08, 0.38, 0.28])
         ins.plot(V, cf.residual, color='0.3', lw=0.6)
         ins.axhline(0, color='k', lw=0.5)
-        ins.set_title(f"residual I − model ({uI})", fontsize=7)
+        ins.set_title(f"Residual: I − model ({uI})", fontsize=7)
         ins.tick_params(labelsize=6)
 
         ax = axes[1, 1]
@@ -946,7 +946,7 @@ if __name__ == '__main__':
             ax.plot(V, cf.a_own * lia_k + cf.b_own, color='C1', lw=0.9, ls='--', label="a·LIA + b with the sweep's own pair")
         ax.plot(V, cal[:, k], color='C3', lw=1.3, label="a·LIA + b" + (" with the gate's pair" if cf.replaced else ""))
         ax.set_ylabel(f"dI/dV ({uI}/V)")
-        ax.set_title("the dI/dV frame: a scales the LIA, b shifts it")
+        ax.set_title("Calibrated dI/dV: a·LIA + b; a scales the LIA, b shifts it")
         ax.legend(fontsize=8)
         if uI == 'A':
             ax.secondary_yaxis('right', functions=to_pA).set_ylabel("pA/V")
@@ -966,7 +966,7 @@ if __name__ == '__main__':
             ax.axvline(cf.a_mod, color='w', lw=0.8, ls='--', label=f"1 / V_mod = {cf.a_mod:.4g}")
         ax.set_xlabel(f"a ({ua})")
         ax.set_ylabel(f"b ({uI}/V)")
-        ax.set_title("least-squares cost S(a, b) of this sweep, c at its optimum (±4 standard errors)")
+        ax.set_title("Cost S(a,b): the least squares of this sweep, c at its optimum (±4 standard errors)")
         ax.legend(fontsize=8, loc='upper right')
         for ax in list(axes[0]) + list(axes[1, :2]):
             ax.set_xlabel("Energy (eV)")

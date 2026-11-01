@@ -575,7 +575,35 @@ def measurement_info(attrs):
     return rows
 
 
-class Sm4File:
+class ScanFrame:
+    """
+    A scan image's frame in the absolute frame, the one definition shared by every object that
+    holds an image's geometry (Sm4File, drift.TopoRef): from the attributes angle_deg (RHK_Angle,
+    degrees counter-clockwise), center_m (absolute, metres), nx, ny (pixels) and xscale_m,
+    yscale_m (metres per pixel).
+    """
+
+    def rotation(self):
+        """The 2 x 2 rotation of the image's scan frame into the absolute frame (RHK_Angle, counter-clockwise), applied as R @ uv."""
+        th = np.deg2rad(self.angle_deg)
+        return np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+
+    def frame_extent_m(self):
+        """[left, right, bottom, top] of the image in its own scan frame (pixel edges, metres)."""
+        u0 = -(self.nx - 1) / 2.0 * self.xscale_m
+        u1 = (self.nx - 1) / 2.0 * self.xscale_m
+        v0 = -(self.ny - 1) / 2.0 * self.yscale_m
+        v1 = (self.ny - 1) / 2.0 * self.yscale_m
+        return [u0 - self.xscale_m / 2.0, u1 + self.xscale_m / 2.0,
+                v0 - self.yscale_m / 2.0, v1 + self.yscale_m / 2.0]
+
+    def to_frame_m(self, xy_m):
+        """Absolute positions (N, 2) into the image's scan frame (u, v), metres."""
+        xy = np.atleast_2d(np.asarray(xy_m, dtype=np.float64)) - np.asarray(self.center_m)
+        return xy @ self.rotation()           # R^-1 = R^T, applied as rows
+
+
+class Sm4File(ScanFrame):
     """
     One .sm4 file: type (kind: 'grid', 'point', 'phase', 'fft', 'topo',
     'other', kind_from_types), image geometry, raw topography, spectra
@@ -1432,30 +1460,11 @@ class Sm4File:
         except Exception:
             return None
 
-    def rotation(self):
-        """The 2 x 2 rotation of the image's scan frame into the absolute frame (RHK_Angle, counter-clockwise), applied as R @ uv."""
-        th = np.deg2rad(self.angle_deg)
-        return np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
-
-    def frame_extent_m(self):
-        """[left, right, bottom, top] of the image in its own scan frame (pixel edges, metres)."""
-        u0 = -(self.nx - 1) / 2.0 * self.xscale_m
-        u1 = (self.nx - 1) / 2.0 * self.xscale_m
-        v0 = -(self.ny - 1) / 2.0 * self.yscale_m
-        v1 = (self.ny - 1) / 2.0 * self.yscale_m
-        return [u0 - self.xscale_m / 2.0, u1 + self.xscale_m / 2.0,
-                v0 - self.yscale_m / 2.0, v1 + self.yscale_m / 2.0]
-
     def corners_m(self):
         """The four absolute corner positions of the image (metres), shape (4, 2)."""
         l, r, b, t = self.frame_extent_m()
         uv = np.array([[l, b], [r, b], [r, t], [l, t]])
         return uv @ self.rotation().T + np.asarray(self.center_m)
-
-    def to_frame_m(self, xy_m):
-        """Absolute positions (N, 2) into the image's scan frame (u, v), metres."""
-        xy = np.atleast_2d(np.asarray(xy_m, dtype=np.float64)) - np.asarray(self.center_m)
-        return xy @ self.rotation()           # R^-1 = R^T, applied as rows
 
     def geometry(self):
         """Footprint record (center, angle, frame extent) kept in the browser's index; None without an image."""

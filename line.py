@@ -609,8 +609,8 @@ class Line:
         old = (self._int_apply_calibration, self._int_apply_normalize, self._int_gate)
         self._int_apply_calibration, self._int_apply_normalize = state['calibrate'], state['normalize']
         self._int_gate = state.get('gate', self._int_gate)      # a state without the gate keeps it
-        note = (f"calibration {'on' if state['calibrate'] else 'off'}, gate {'on' if self._int_gate.on else 'off'} "
-                f"({self._int_gate.text}), {self._int_gate.locks_text}, normalization {'on' if state['normalize'] else 'off'}")
+        note = controls.PipelineBox.text({'calibrate': state['calibrate'], 'normalize': state['normalize'],
+                                          'gate': self._int_gate})
         if not self._int_apply_feenstra(note):
             self._int_apply_calibration, self._int_apply_normalize, self._int_gate = old
             self._int_pipeline_box.set_state(*old)

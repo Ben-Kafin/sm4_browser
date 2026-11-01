@@ -67,7 +67,7 @@ class Experiment:
     (attrs, stored data) pairs that stand for its pages.  `v` is the drift velocity (m/s), `surface`
     the height function of the absolute frame, `prefix` the file names' stem.  topo, grid and point
     add files; install serves them.  A grid built with stripe_b records the true line starts in
-    true_starts (checks/check_stripe.py).
+    true_starts.
     """
 
     def __init__(self, directory, v=(0.0, 0.0), surface=default_surface, prefix='Synth_CT'):

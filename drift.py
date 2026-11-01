@@ -1828,10 +1828,11 @@ def drift_correct_grid(grid, prev, drift_fn, t_ref, params=DRIFT_PARAMS, points=
     return xy_corr, report, lines, pix
 
 
-class TopoRef:
+class TopoRef(sm4file.ScanFrame):
     """
     A topo of the directory without its data: what the baseline model reads
-    of a topo (its name, path, times, pixel scales, and footprint), built from
+    of a topo (its name, path, times, pixel scales, and footprint; its scan
+    frame, rotation, frame_extent_m and to_frame_m, sm4file.ScanFrame's), built from
     the header scan (sm4_header_info's geometry, `geom`) and the topo times
     of the computed store ('pairs' section, TrackedPairs.topos, `times`), so
     a file's pair is looked up without loading its topos; the pair tracking
@@ -1883,26 +1884,11 @@ class TopoRef:
         """{'start', 'end', 'mid'} (seconds since the epoch): the store's entry for this topo."""
         return {'start': float(self.start_time), 'end': float(self.end_time), 'mid': float(self.mid_time)}
 
-    def rotation(self):
-        th = np.deg2rad(self.angle_deg)
-        return np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
-
-    def frame_extent_m(self):
-        u0 = -(self.nx - 1) / 2.0 * self.xscale_m
-        u1 = (self.nx - 1) / 2.0 * self.xscale_m
-        v0 = -(self.ny - 1) / 2.0 * self.yscale_m
-        v1 = (self.ny - 1) / 2.0 * self.yscale_m
-        return [u0 - self.xscale_m / 2.0, u1 + self.xscale_m / 2.0, v0 - self.yscale_m / 2.0, v1 + self.yscale_m / 2.0]
-
     def geometry(self):
         return {'center_m': tuple(self.center_m), 'angle_deg': self.angle_deg, 'extent_m': list(self.frame_extent_m())}
 
     def contains_m(self, xy_m):
         return sm4file.geom_contains(self.geometry(), xy_m)
-
-    def to_frame_m(self, xy_m):
-        xy = np.atleast_2d(np.asarray(xy_m, dtype=np.float64)) - np.asarray(self.center_m)
-        return xy @ self.rotation()
 
 
 class Drift:

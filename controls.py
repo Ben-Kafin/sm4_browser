@@ -1550,6 +1550,17 @@ class PipelineBox:
         self.box_h.on_change(lambda text: self._on_edit('hampel', text))
         self.box_sg.on_change(lambda text: self._on_edit('sgolay', text))
 
+    @staticmethod
+    def text(state):
+        """
+        The one console phrase of a box's state, every window's (a window adds its own context):
+        'calibration on, gate on (H 3,3 SG 9,2), nothing locked, normalization off'.  `state` as
+        state() gives it ({'calibrate', 'normalize', 'gate'}).
+        """
+        g = state['gate']
+        return (f"calibration {'on' if state['calibrate'] else 'off'}, gate {'on' if g.on else 'off'} ({g.text}), "
+                f"{g.locks_text}, normalization {'on' if state['normalize'] else 'off'}")
+
     def _rows_now(self):
         """The five rows' states (calibrate, gate, 0-lock, Vbias lock, normalize); the rows not shown as kept."""
         out = [self._calibrate, bool(self._gate.on), bool(self._gate.lock0), bool(self._gate.lockv), self._normalize]

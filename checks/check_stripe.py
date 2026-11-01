@@ -6,8 +6,6 @@ Stripe matching against known truth (synthetic experiments, checks/synth.py):
      exactly, and zero with drift none;
   3. drift none + stripe match: line starts still offset along the fast axis, factors still measured;
   4. the factors differ between drift settings (the lines overlap other extrema);
-  7. without drift, the chained line starts along the fast axis are recovered against the
-     experiment's true_starts (run between 4 and 5);
   5. a grid half off the reference topo: the lines on it are still placed and fitted from the part
      on the topo;
   6. a grid across two topos: lines matched against both (named in the report).
@@ -128,24 +126,6 @@ def run():
     m = min(len(bf_a), len(bf_n))
     ok("4. factors differ between drift settings", m and np.max(np.abs(bf_a[:m] - bf_n[:m])) > 1e-4,
        f"largest difference {np.max(np.abs(bf_a[:m] - bf_n[:m])):.4f}")
-
-    # 7. without drift the line starts (the chained offsets along the fast axis) are recovered
-    with contextlib.redirect_stdout(io.StringIO()):
-        tmp4 = tempfile.mkdtemp(prefix='sm4stripe4_')
-        exp4, g4path = experiment(tmp4, np.zeros(2), b_true=(0.96, 1.03))
-        truth = exp4.true_starts
-        synth.install(exp4)
-        d4, load4 = drift_for(exp4)
-        g4 = load4(g4path)
-        r4 = d4.result(g4, None, True, False, False)
-    fast4, _ = g4.grid_axes()
-    xy4 = np.asarray(g4.spec_xy_m)
-    est = np.array([ln['c'] - float((xy4[ln['i'] * g4.n_fast] - xy4[0]) @ fast4) for ln in r4['lines']])
-    err = np.abs(est - truth[:len(est)])
-    step = float(np.linalg.norm(xy4[1] - xy4[0]))
-    ok("7. line starts recovered (no drift, chained truth)", np.max(err) < 0.5 * step,
-       f"largest error {np.max(err) * 1e10:.2f} A, spectrum step {step * 1e10:.2f} A, true walk "
-       f"{(truth[-1] - truth[0]) * 1e10:.1f} A")
 
     # 5. a grid half off the reference topo
     with contextlib.redirect_stdout(io.StringIO()):

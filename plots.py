@@ -197,6 +197,35 @@ def row_edges(rows):
     return np.concatenate([[r[0] - (mid[0] - r[0])], mid, [r[-1] + (r[-1] - mid[-1])]])
 
 
+def _cell_colors(self):
+    """
+    The cells' colours (RGBA bytes) of a heatmap drawn as quads: its image through its norm and
+    colour map, a cell that is not finite (never written) transparent.  The one rule of
+    RowHeatmap and PixelMap (their _colors).
+    """
+    v = self.img.ravel()
+    c = self.cmap(np.asarray(self.norm(v), dtype=np.float64), bytes=True)
+    c[~np.isfinite(v)] = 0
+    return c
+
+
+def show_alone(view, title=None):
+    """
+    A file's own drawing in a figure of its own, the one stand-alone window of the views that the
+    browser otherwise draws into its spectra panel (fft.NoiseSpectrum, phase.PhaseRotate: their
+    show): a figure of the view's DESIGN size (automatic layout: plt.subplots fills its grid),
+    view.draw(ax), titled with `title` or the view's file name, its measurement information
+    (view.info()) printed on the console.  Returns the figure.
+    """
+    fig, ax = plt.subplots(figsize=view.DESIGN)
+    view.draw(ax)
+    ax.set_title(title or view.name, fontsize=9)
+    for name, text in view.info():
+        print(f"{name}: {text}")
+    plt.show()
+    return fig
+
+
 class RowHeatmap:
     """
     A heatmap whose rows sit at their own positions along the vertical axis:
@@ -255,11 +284,7 @@ class RowHeatmap:
                          axis=2)
         self._quads = quads.reshape(-1, 4, 2)
 
-    def _colors(self):
-        v = self.img.ravel()
-        c = self.cmap(np.asarray(self.norm(v), dtype=np.float64), bytes=True)
-        c[~np.isfinite(v)] = 0
-        return c
+    _colors = _cell_colors        # the one cell-colour rule (RowHeatmap, PixelMap)
 
     def _build(self):
         if self.img.ndim != 2 or self.img.size == 0:
@@ -356,11 +381,7 @@ class PixelMap:
             quads = quads + s[:, :, None, :]
         return quads.reshape(-1, 4, 2)
 
-    def _colors(self):
-        v = self.img.ravel()
-        c = self.cmap(np.asarray(self.norm(v), dtype=np.float64), bytes=True)
-        c[~np.isfinite(v)] = 0
-        return c
+    _colors = _cell_colors        # the one cell-colour rule (RowHeatmap, PixelMap)
 
     def _build(self):
         if self.item is None:

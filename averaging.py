@@ -1156,9 +1156,8 @@ class MultiAverageWindow:
         """The 'calibrate' / 'gate' / 'normalize' box: every file's sweeps rebuilt with the flags and the run repeated."""
         old = (self.calibrate, self.normalize, self.gate)
         self.calibrate, self.normalize, self.gate = state['calibrate'], state['normalize'], state.get('gate', self.gate)
-        if not self._rebuild_sweeps(f"calibration {'on' if self.calibrate else 'off'}, gate "
-                                    f"{'on' if self.gate.on else 'off'} ({self.gate.text}), {self.gate.locks_text}, "
-                                    f"normalization {'on' if self.normalize else 'off'}"):
+        if not self._rebuild_sweeps(controls.PipelineBox.text(
+                {'calibrate': self.calibrate, 'normalize': self.normalize, 'gate': self.gate})):
             self.calibrate, self.normalize, self.gate = old
             self.pipeline.set_state(*old)
 
