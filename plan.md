@@ -199,9 +199,9 @@ Status marks: `[ ]` to do, `[~]` in progress, `[x]` done.
 - Open: a column averaging forward and reverse sweeps (the 'all sweeps' view) takes no Vbias pin,
   said on the console; reported to the owner.
 
-### Phase 5: final  [ ]
-- [ ] Full smoke checks pass; every window rendered and checked; README and comments current;
-      plan.md ticked complete.
+### Phase 5: final  [x]
+- [x] Full smoke checks pass (48 of 48, smoke_sweeps per_pixel and pages); every window rendered
+      and checked; README and comments current; plan.md ticked complete.  Pushed to main (3bd0061).
 
 ## 5. The layout API built in Phase 1 (use it for every window)
 
