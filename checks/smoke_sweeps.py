@@ -1,8 +1,10 @@
 """
 The browser, the Line window, and the Map window on an experiment whose grid records a forward and a
-reverse sweep at every pixel (offscreen).
+reverse sweep at every pixel (offscreen); with the 'paired' layout (the instrument's) the point file
+holds 20 sweeps in forward / reverse pairs too, and the averaging window's 'sweeps' radio and the
+record round trip are checked on it.
 
-    python -m sm4_Browser.checks.smoke_sweeps [per_pixel|pages]
+    python -m sm4_Browser.checks.smoke_sweeps [per_pixel|pages|paired]
 """
 import os
 import sys
@@ -29,13 +31,14 @@ def ok(name, cond, detail=''):
 def run(layout='per_pixel'):
     """
     The standard experiment with a forward and a reverse sweep per grid pixel, stored `layout`
-    ('per_pixel' or 'pages'): the browser's sweep view and line styles, the Line window's 'sweeps'
-    radio (the views, the shear direction, a marker group's Selection carrying the view), the Map
-    window's views, one drift result per view, and a selection record reloading on its view.  An
-    exception fails the run.  Returns True when all passed.
+    ('per_pixel', 'pages' or 'paired'): the browser's sweep view and line styles, the Line window's
+    'sweeps' radio (the views, the shear direction, a marker group's Selection carrying the view),
+    the Map window's views, one drift result per view, and a selection record reloading on its
+    view; with 'paired', the point file's pairs in the browser panel, the averaging window's
+    'sweeps' radio and its record.  An exception fails the run.  Returns True when all passed.
     """
     tmp = tempfile.mkdtemp(prefix='sm4sweepb_')
-    exp = synth.standard(tmp, grid_sweeps=('forward', 'reverse'), grid_layout=layout)
+    exp = synth.standard(tmp, grid_sweeps=('forward', 'reverse'), grid_layout=layout, point_pairs=(layout == 'paired'))
     synth.install(exp)
     b = make_browser(tmp)
     try:
@@ -82,6 +85,37 @@ def run(layout='per_pixel'):
         fi = dict(s_rec, path=g.path, name=g.name)
         e = b._entry_from_record(fi)
         ok("records: a selection reloads on its sweep view", e.file.sweep_mode == 'reverse sweeps')
+        if layout == 'paired':
+            # the point file's pairs: the browser panel, the averaging window's 'sweeps' radio, its record
+            p = goto_kind(b, 'point')
+            ok("browser: point with 20 sweeps in pairs", p.n_sweeps == 20 and p.sweep_mode == 'all sweeps')
+            styles = {getattr(a, '_style', {}).get('ls') for a in b.ax_spec._children}
+            styles |= {getattr(a, '_ls', None) for a in b.ax_spec._children}
+            styles.discard(None)
+            ok("browser panel: the point's forward sweeps solid and reverse dashed", {'-', '--'} <= styles, str(styles))
+            index = b._next_avg_index()
+            b._on_add_new_avg()
+            w = b._open_avgs().get(index)
+            ok("averaging window: the point added through the forward view",
+               w is not None and w.sweep_mode == 'forward sweeps' and w.entries[0]['sweeps'].shape[1] == 10)
+            fwd = w.entries[0]['sweeps'].copy()
+            w.removed = [(0, 0)]
+            w._on_sweeps('reverse sweeps')
+            ok("averaging window: the reverse view applied, the removed sweeps dropped",
+               w.sweep_mode == 'reverse sweeps' and w.entries[0]['sweeps'].shape[1] == 10
+               and not np.allclose(w.entries[0]['sweeps'], fwd, rtol=1e-6, atol=0) and w.removed == [])
+            w._on_sweeps('all sweeps')
+            ok("averaging window: the all-sweeps view holds every sweep", w.entries[0]['sweeps'].shape[1] == 20)
+            w._on_sweeps('forward sweeps')
+            rec = w.record()
+            ok("records: the window's sweep view is saved", rec.get('sweeps') == 'forward sweeps' and rec['files'][0]['n_sweeps'] == 10)
+            index2 = b._next_avg_index()
+            w2 = b._new_avg_window(index2, channel='didv')
+            files = [b._entry_from_record(fi, rec['sweeps']) for fi in rec['files']]
+            w2.restore(files, rec['removed'], rec['hampel'], rec['sgolay'], rec['resample'], rec['channel'],
+                       sweeps=rec['sweeps'])
+            ok("records: a window restores on its sweep view",
+               w2.sweep_mode == 'forward sweeps' and w2.entries[0]['sweeps'].shape[1] == 10)
     except Exception:
         traceback.print_exc()
         ok("no exception", False)

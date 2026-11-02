@@ -2166,15 +2166,20 @@ class _BrowserCore:
             raise FileNotFoundError(f"{name} is not in {self.directory} and {path or '(no path)'} does not exist")
         return self.loaded.get(p) or self._load(p)
 
-    def _entry_from_record(self, fi):
+    def _entry_from_record(self, fi, sweeps=None):
         """
-        The entry of a record's file item: the Sm4File of a point item, or the
-        Selection of a 'selection' item (its grid file resolved, the recorded
-        columns checked against the file's spectra: ValueError when a column
-        is outside them or on a never-acquired spectrum).
+        The entry of a record's file item: the Sm4File of a point item (a
+        single point with several sweeps per location through the record's
+        sweep view `sweeps`, the window's; ValueError when the file does not
+        offer it), or the Selection of a 'selection' item (its grid file
+        resolved, the recorded columns checked against the file's spectra:
+        ValueError when a column is outside them or on a never-acquired
+        spectrum).
         """
         f = self._resolve_file(fi.get('path'), fi.get('name'))
         if fi.get('kind') != 'selection':
+            if sweeps and f.kind == 'point' and f.n_sweeps > 1:
+                f = f.with_sweeps(sweeps)
             return f
         if fi.get('sweeps'):
             f = f.with_sweeps(fi['sweeps'])          # the columns index that sweep view
@@ -2248,8 +2253,9 @@ class _BrowserCore:
             if self.averages.by_name(name) is not None:
                 print(f"an open average is already named {name}; load refused.")
                 return
+            sw = rec.get('sweeps')                         # format 6: the window's sweep view; older records: all sweeps
             try:
-                files = [self._entry_from_record(fi) for fi in rec.get('files', [])]
+                files = [self._entry_from_record(fi, sw) for fi in rec.get('files', [])]
             except (FileNotFoundError, ValueError) as exc:
                 print(f"{name} load refused: {exc}.")
                 return
@@ -2285,6 +2291,7 @@ class _BrowserCore:
             hp, sp = entry.get('hampel'), entry.get('sgolay')
             hd, sd = entry.get('hampel_didv'), entry.get('sgolay_didv')
             rs, ch = None, 'didv'                          # old fit histories: no resampling, dI/dV
+            sw = None                                      # and no sweep view: all sweeps
             div = False                                    # old fit histories hold dI/dV
             bro = self.iv_broadening
             zs, brd = False, bro > 0
@@ -2326,7 +2333,7 @@ class _BrowserCore:
             w = self._new_avg_window(index, divide_iv=div, iv_broadening=bro if div else self.iv_broadening,
                                      channel=ch, name=name, iv_zero_sub=zs, iv_broadened=brd)
             w.restore(files, removed, hp, sp, rs, ch, calibrate=cal, normalize=nrm, hampel_didv=hd, sgolay_didv=sd,
-                      gate=gt)
+                      gate=gt, sweeps=sw)
         except Exception as exc:
             print(f"avg{index} load: {exc}")
             return

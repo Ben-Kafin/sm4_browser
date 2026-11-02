@@ -19,6 +19,7 @@ import numpy as np
 from sm4_Browser import qtplot as plt
 from scipy.integrate import cumulative_trapezoid
 from sm4_Browser import sm4file, fit, widgets, records, calibration, controls
+from sm4_Browser import sweeps as sweeps_mod
 from sm4_Browser.qtplot import QtWidgets
 from sm4_Browser.sts import STS, curve_units_of
 from sm4_Browser.feenstra import (feenstra_width, feenstra_titles, energy_has_zero, iv_corrected, iv_broadened,
@@ -707,6 +708,7 @@ class MultiAverageWindow:
         self.average = None        # (V, lo, hi, maps) after a successful run; maps bring each entry onto V (see _to_grid)
         self.resample = None       # 'bin' / 'interp' toggles: how files of another energy step reach the grid; None = off
         self.removed = []          # (entry index, sweep index) in removal order
+        self.sweep_mode = sweeps_mod.FORWARD   # the view a single point with several sweeps per location is added through
         self._lines = []           # (entry index, sweep index, Line2D) of the sweeps drawn in the left panel
         self.fit_settings = dict(fit_settings) if fit_settings else {}
         self._fits = []   # sent and loaded fits stay referenced so their widgets stay live
@@ -717,7 +719,8 @@ class MultiAverageWindow:
             pass
         fig = self.fig
         # The controls (controls.py: the one set of every window): the name box at the top left, the
-        # filter box, the channel radio, stack / substack, bin / interp, the window's own 'Feenstra'
+        # filter box, the channel radio, the sweeps radio (the view of a single point with several
+        # sweeps per location, sweeps.py), stack / substack, bin / interp, the window's own 'Feenstra'
         # toggle, the 'calibrate' / 'normalize' box (top right, as in every window), the buttons.
         self.box_name = controls.NameBox(fig, name=self.name)
         self.box_name.on_change(self._on_rename)
@@ -726,6 +729,9 @@ class MultiAverageWindow:
         self.filters.on_change(self._on_filter_change)
         self.radio_channel = controls.make(fig, 'channel', value=STS.CHANNEL_NAMES[self.channel])
         self.radio_channel.on_change(self._on_channel)
+        self.radio_sweeps = controls.make(fig, 'sweeps', labels=[sweeps_mod.FORWARD, sweeps_mod.REVERSE, sweeps_mod.ALL],
+                                          value=self.sweep_mode)
+        self.radio_sweeps.on_change(self._on_sweeps)
         self.stacks = controls.StackControls(fig, needs_average=False, tag=self.tag)
         self.stacks.on_change(self.draw)
         self.resamples = controls.ResampleControls(fig)
@@ -752,7 +758,7 @@ class MultiAverageWindow:
         strip.addWidget(self.filters)
         strip.addWidget(controls.box(controls.row(self.resamples.chk_bin, self.resamples.chk_interp),
                                      controls.row(self.stacks.chk_stack, self.stacks.chk_substack), orient='v'))
-        strip.addWidget(controls.box(controls.row(self.chk_feenstra, self.radio_channel),
+        strip.addWidget(controls.box(controls.row(self.chk_feenstra, self.radio_channel, self.radio_sweeps),
                                      controls.row(*(self.buttons[n] for n in ('run', 'clear', 'restore',
                                                                                'Send to fit', 'save'))),
                                      orient='v'))
@@ -984,7 +990,8 @@ class MultiAverageWindow:
         label, the entries in added order (kind 'point' or 'selection',
         absolute path, base name, number of acquired sweeps; a selection also
         its columns and where they are), the removed sweeps in removal order (indices among the
-        acquired sweeps), the channel ('didv' or 'iets'), the filter settings
+        acquired sweeps), the window's sweep view ('sweeps': the view a single point with several
+        sweeps per location is taken through), the channel ('didv' or 'iets'), the filter settings
         (Hampel, SG; None = off), the 'bin' / 'interp' setting ('resample':
         'bin', 'interp', or None), the Feenstra state and settings, the
         calibrate / normalize flags, the range, point count, and grid step of the
@@ -1013,6 +1020,7 @@ class MultiAverageWindow:
                 'directory': self.directory,
                 'files': files,
                 'removed': [[int(i), int(j)] for i, j in self.removed],
+                'sweeps': self.sweep_mode,
                 'channel': self.channel,
                 'hampel': hp,
                 'sgolay': sp,
@@ -1043,16 +1051,20 @@ class MultiAverageWindow:
         print(f"{self.tag}: record written: {self.save()}")
 
     def restore(self, files, removed, hampel, sgolay, resample=None, channel='didv', calibrate=True, normalize=True,
-                hampel_didv=None, sgolay_didv=None, gate=None):
+                hampel_didv=None, sgolay_didv=None, gate=None, sweeps=None):
         """
         Rebuild the window from a record: the channel, the calibrate /
-        normalize flags, the files added in order, the sweeps removed in the
-        recorded order (so 'restore' walks them back), the filter controls
-        and the 'bin' / 'interp' boxes set (a record written before the
-        resampling has no setting: both boxes off), then 'run'.  The caller
-        has resolved the files and checked the removed indices against the
-        acquired sweeps.
+        normalize flags, the sweep view (`sweeps`; a record written before
+        the sweep views has none: 'all sweeps', what it held), the files
+        added in order, the sweeps removed in the recorded order (so
+        'restore' walks them back), the filter controls and the 'bin' /
+        'interp' boxes set (a record written before the resampling has no
+        setting: both boxes off), then 'run'.  The caller has resolved the
+        files (a single point through the record's view) and checked the
+        removed indices against the acquired sweeps.
         """
+        self.sweep_mode = sweeps if sweeps in (sweeps_mod.FORWARD, sweeps_mod.REVERSE, sweeps_mod.ALL) else sweeps_mod.ALL
+        self.radio_sweeps.set(self.sweep_mode)
         self._set_channel(channel)
         self.calibrate, self.normalize = bool(calibrate), bool(normalize)
         self.gate = calibration.gate_settings(gate)
@@ -1183,16 +1195,66 @@ class MultiAverageWindow:
             self.channel = old
         self._set_channel(self.channel)
 
+    def _viewed(self, point, mode=None):
+        """
+        A single-point entry with several sweeps per location seen through
+        the window's sweep view (`mode`, else self.sweep_mode): its chosen
+        sweeps (Sm4File.with_sweeps; sweeps.py); any other entry as given.
+        ValueError when the file does not offer the view (no reverse sweep).
+        """
+        mode = self.sweep_mode if mode is None else mode
+        if getattr(point, 'kind', None) == 'point' and getattr(point, 'n_sweeps', 1) > 1:
+            return point.with_sweeps(mode)
+        return point
+
+    def _on_sweeps(self, label):
+        """
+        The 'sweeps' radio: every single-point entry with several sweeps per
+        location is taken through the chosen view (forward sweeps, reverse
+        sweeps, all sweeps) and every file's sweeps are rebuilt; the removed
+        sweeps are dropped, said on the console (their indices count the
+        view's sweeps); when a run existed, the run is repeated.  A file
+        without the view (no reverse sweep) puts the radio back.
+        """
+        if label == self.sweep_mode:
+            return
+        old_mode = self.sweep_mode
+        old_files = [e['file'] for e in self.entries]
+        try:
+            new_files = [self._viewed(f, label) for f in old_files]
+        except ValueError as exc:
+            print(f"{self.tag}: sweeps '{label}' not applied: {exc}")
+            self.radio_sweeps.set(self.sweep_mode)
+            return
+        changed = any(a is not b for a, b in zip(new_files, old_files))
+        self.sweep_mode = label
+        for e, f in zip(self.entries, new_files):
+            e['file'] = f
+            e['cols'] = np.flatnonzero(f.acquired)
+        if changed and self.removed:
+            print(f"{self.tag}: {len(self.removed)} removed sweep(s) dropped: the sweeps now index the "
+                  f"'{label}' view.")
+            self.removed = []
+        if not self._rebuild_sweeps(f"sweeps '{label}'"):
+            self.sweep_mode = old_mode
+            for e, f in zip(self.entries, old_files):
+                e['file'] = f
+                e['cols'] = np.flatnonzero(f.acquired)
+        self.radio_sweeps.set(self.sweep_mode)
+
     def add(self, point):
         """
         Add an entry (a single-point Sm4File or a Selection; nothing when
-        the window holds it already, has): its acquired sweeps through the
-        pipeline with the window's settings (_sweeps_of), its ascending
-        energy axis, its kept columns and its label; the average is cleared
-        until the next run and the window redrawn.
+        the window holds it already, has): a single point with several
+        sweeps per location through the window's sweep view (_viewed), its
+        acquired sweeps through the pipeline with the window's settings
+        (_sweeps_of), its ascending energy axis, its kept columns and its
+        label; the average is cleared until the next run and the window
+        redrawn.
         """
         if self.has(point):
             return
+        point = self._viewed(point)
         order = np.argsort(point.energy)
         sweeps = self._sweeps_of(point)
         self.entries.append({'file': point, 'V': point.energy[order].astype(np.float64),

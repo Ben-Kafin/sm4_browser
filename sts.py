@@ -221,6 +221,8 @@ class STS:
         s.spec_xy_m = np.vstack([pt.spec_xy_m for pt in parts])
         s.spec_time_s = (np.concatenate([pt.spec_time_s for pt in parts])
                          if all(len(pt.spec_time_s) == pt.n_spectra for pt in parts) else np.zeros(0))
+        ths = [getattr(pt, 'tip_height', None) for pt in parts]
+        s.tip_height = None if any(t is None for t in ths) else np.concatenate(ths)
         s.n_spectra = int(sum(pt.n_spectra for pt in parts))
         s._sweep_notes = notes
         s._group_sweeps(np.concatenate(desc), one_page=False)
@@ -250,11 +252,12 @@ class STS:
     def _group_sweeps(self, desc, one_page):
         """
         Group the columns into pixels and sweeps by their recorded locations (sweeps.py); with k > 1
-        sweeps per pixel, the direction of every sweep found (one_page: from stopped sweeps and the
-        reversed-storage test; else from the pages, `desc` per column), the reversed columns put
-        onto the axis, the columns reordered pixel after pixel (each pixel's sweeps in acquisition
-        order), the masks recomputed in acquisition order, and self.sweep_info set; with one sweep
-        per pixel nothing changes (sweep_info None).
+        sweeps per pixel, the direction of every sweep found (one_page: from stopped sweeps, the
+        reversed-storage test, then the pair rule on the tip height; else from the pages, `desc`
+        per column), the reversed columns put onto the axis, the columns reordered pixel after pixel
+        (each pixel's sweeps in acquisition order), the masks recomputed in acquisition order, and
+        self.sweep_info set; with one sweep per pixel nothing changes (sweep_info None).  One
+        console line per file says what was found, with the current's report on the directions.
         """
         from sm4_Browser import sweeps as sw_mod
         self.sweep_info = None
@@ -300,21 +303,44 @@ class STS:
         sweep = np.empty(N, dtype=int)
         for c in cols_of:
             sweep[c] = np.arange(k)
+        # Forward runs from the axis end at the setpoint bias (RHK_Bias): up the stored axis when that is
+        # the first sample, down it when the last; a forward sweep acquired down the axis is `fwd_desc`.
+        fwd_desc = False
         if one_page:
-            # Columns sharing a page: the direction from stopped sweeps (never-written samples at the start
-            # of the axis) and from storage in acquisition order (the I(V) matches the first sweep reversed).
+            E = self.energy
+            step = float(np.median(np.abs(np.diff(E)))) if len(E) > 1 else 0.0
+            at_first = abs(float(E[0]) - self.V_bias) <= 0.5 * step
+            at_last = abs(float(E[-1]) - self.V_bias) <= 0.5 * step
+            if at_last and not at_first:
+                fwd_desc = True
+                notes.append(f"the setpoint bias {self.V_bias:g} V is the last stored sample: a forward sweep runs "
+                             f"down the stored axis")
+            elif not at_first:
+                notes.append(f"the setpoint bias {self.V_bias:g} V lies at neither end of the axis "
+                             f"({E[0]:g} .. {E[-1]:g} V); forward taken as running up the stored axis")
+            desc[:] = fwd_desc
+        if one_page:
+            # Columns sharing a page.  First what the storage proves: a stopped sweep whose never-written
+            # samples lie at the start of the axis ran down it; a sweep stored in acquisition order against
+            # the axis (its I(V) matches the first sweep reversed) is reversed onto the axis and ran the
+            # other way.  Then the pair rule (sweeps.py): the tip height, held while the feedback is open,
+            # groups a pixel's consecutive sweeps into feedback periods; in a period the stored order is
+            # forward, reverse, forward, ...  Without a tip height the undecided sweeps are forward.
             lead = self.lia if self.lia is not None else self.iets
             u = self.zoffset_lia if self.lia is not None else self.zoffset_iets
             u = 0.0 if u is None else u
             ref_arr = self.iv if self.iv is not None else lead
             firsts = np.array([c[0] for c in cols_of])
+            decided = np.zeros(k, dtype=bool)
+            decided[0] = True
             for s_i in range(1, k):
                 cs = np.array([c[s_i] for c in cols_of])
                 stopped_start = (lead[0, cs] == u) & (lead[-1, cs] != u) & np.any(lead[:, cs] != u, axis=0)
                 if np.any(stopped_start):
                     desc[sweep == s_i] = True
+                    decided[s_i] = True
                     notes.append(f"sweep {s_i + 1}: a stopped sweep's never-written samples lie at the start of the "
-                                 f"axis, so it runs down the axis (reverse)")
+                                 f"axis, so it runs down the axis ({'forward' if fwd_desc else 'reverse'})")
                     continue
                 ok = np.any(lead[:, cs] != u, axis=0) & np.any(lead[:, firsts] != u, axis=0)
                 if ok.sum() == 0:
@@ -327,19 +353,38 @@ class STS:
                         a = getattr(self, attr)
                         if a is not None:
                             a[:, m] = a[::-1, m]
-                    desc[m] = True
+                    desc[m] = not fwd_desc
+                    decided[s_i] = True
                     notes.append(f"sweep {s_i + 1}: stored in acquisition order against the axis (its current matches "
                                  f"sweep 1 reversed, r = {flipped:.3f} against {as_is:.3f} as stored); reversed onto "
                                  f"the axis, a reverse sweep")
+            if not np.all(decided):
+                g, why = sw_mod.feedback_periods(getattr(self, 'tip_height', None), cols_of, k,
+                                                 np.asarray(self.ever, dtype=bool))
+                undecided = [s_i for s_i in range(1, k) if not decided[s_i]]
+                if g is not None:
+                    for s_i in undecided:
+                        desc[sweep == s_i] = fwd_desc != sw_mod.period_reverse(s_i, g)
+                    if g == 1:
+                        notes.append("every sweep its own feedback period (the tip height changes between "
+                                     "sweeps): all forward")
+                    else:
+                        notes.append(f"{g} sweeps per feedback period (the tip height): in stored order "
+                                     + ", ".join('reverse' if sw_mod.period_reverse(s, g) else 'forward'
+                                                 for s in range(g)))
                 else:
-                    notes.append(f"sweep {s_i + 1}: the file does not record its bias direction; taken as running "
-                                 f"like the page")
+                    which = (f"sweep {undecided[0] + 1}" if len(undecided) == 1
+                             else f"sweeps {undecided[0] + 1}-{undecided[-1] + 1}")
+                    notes.append(f"{which}: {why}; nothing in the storage marks a direction; taken as forward")
         # Pixel after pixel, each pixel's sweeps in acquisition order.
         order = np.concatenate(cols_of)
         for attr in ('lia', 'iets', 'iv'):
             a = getattr(self, attr)
             if a is not None:
                 setattr(self, attr, a[:, order])
+        th = getattr(self, 'tip_height', None)
+        if th is not None and len(th) == N:
+            self.tip_height = th[order]
         self.spec_xy_m = xy[order]
         if len(rec) == N:
             self.spec_time_s = rec[order]
@@ -353,9 +398,46 @@ class STS:
         self.sweep_info = {'k': k, 'n_pix': n_pix, 'pixel': pixel, 'sweep': sweep, 'dir': direction,
                            'acq_desc': desc, 'cols_of': new_cols, 'locs': locs, 'notes': notes}
         n_rev = int(np.sum(direction[:k] < 0))
-        print(f"{self.name}: {k} sweeps per pixel at {n_pix} locations ({k - n_rev} forward, {n_rev} reverse"
+        if n_rev and self.iv is not None:
+            notes.append(self._direction_report(direction, desc))
+        print(f"{self.name}: {k} sweeps per pixel at {n_pix} location{'s' if n_pix != 1 else ''} "
+              f"({k - n_rev} forward, {n_rev} reverse"
               + (", order by recorded time" if timed else ", order as stored") + ")"
               + ("; " + "; ".join(notes) if notes else ""))
+
+    def _direction_report(self, direction, desc):
+        """
+        One sentence on the sweep directions found, from the recorded current (the all-sweeps columns
+        in pixel order, `direction` +1 / -1 and `desc` acquired-down-the-axis per column): the median
+        distance of the forward sweeps' first sample from the setpoint current, of the reverse sweeps'
+        last sample from it, and between a forward sweep and the reverse sweep that follows it at the
+        far end of the axis (the sweep pair's meeting point).  A report, never a filter.
+        """
+        iv = self.iv
+        npts = iv.shape[0]
+        kept = np.asarray(self.acquired, dtype=bool)
+        first_idx = np.where(desc, npts - 1, 0)         # the first acquired sample of every column
+        last_idx = npts - 1 - first_idx
+        cols = np.arange(iv.shape[1])
+        fwd = cols[(direction > 0) & kept]
+        rev = cols[(direction < 0) & kept]
+        d_fwd = np.abs(iv[first_idx[fwd], fwd] - self.I_setpoint)
+        d_rev = np.abs(iv[last_idx[rev], rev] - self.I_setpoint)
+        pix = np.asarray(self.sweep_info['pixel'])
+        meet = []
+        for c in rev:
+            if c > 0 and pix[c - 1] == pix[c] and direction[c - 1] > 0 and kept[c - 1]:
+                meet.append(abs(iv[last_idx[c - 1], c - 1] - iv[first_idx[c], c]))
+
+        def txt(v):
+            if v.size == 0:
+                return "n/a"
+            m = float(np.median(v))
+            return f"{m * 1e12:.1f} pA" if self.units_iv == 'A' else f"{m:.3g} {self.units_iv or ''}".rstrip()
+        far_V = self.energy[last_idx[fwd[0]]] if fwd.size else self.energy[-1]
+        return (f"forward sweeps start a median {txt(d_fwd)} from the setpoint current and reverse sweeps end "
+                f"{txt(d_rev)} from it; a forward sweep and its reverse meet at {far_V:g} V within a median "
+                f"{txt(np.asarray(meet))} ({len(meet)} pairs)")
 
     def sweep_view(self, mode):
         """
@@ -408,6 +490,7 @@ class STS:
         s.spec_time_s = (np.array([rec[c[0]] if len(c) else 0.0 for c in chosen])
                          if len(rec) == self.n_spectra else np.zeros(0))
         s.sweep_info = None
+        s.tip_height = None
         s.view_mode = mode
         s.view_cols = chosen
         s.parent = self
@@ -566,6 +649,10 @@ class STS:
                 iv_unset = iv_page.zoffset
             else:
                 self.iv_dropped = iv.shape
+        # The tip height of every sweep from the 'Topography' page of the same type (the Z recorded
+        # during the sweep, one value while the feedback is open): the pairing of forward and reverse
+        # sweeps reads it (_group_sweeps, sweeps.feedback_periods).  None without a usable page.
+        self.tip_height = cls._tip_height(pages, page_type, ref_xy, lead.shape[1], name)
         # The modulation amplitude (V) and the recorded grid size, None when not recorded.
         self.vmod = cls._float_attr(ref.attrs, 'RHK_CH1Drive_Amplitude')
         self.lia_ref = self.iets_ref = self.iv_ref = None     # a sweep view's forward-sweep reference (sweep_view)
@@ -722,6 +809,46 @@ class STS:
         return perm
 
     @classmethod
+    def _tip_height(cls, pages, page_type, ref_xy, n_cols, name):
+        """
+        One tip height per sweep, (N,) in the page's units (metres), from the
+        file's 'Topography' spectroscopy page of `page_type` (the Z recorded
+        during each sweep): the one value of a column's written samples, NaN
+        for a column never written; the columns aligned onto the reference
+        page's recorded locations (page_perm).  None, said on the console,
+        when the page is missing, holds another number of sweeps, cannot be
+        aligned, or varies within a sweep (the Z was not held).
+        """
+        idx = [i for i, p in enumerate(pages)
+               if p.page_type == page_type and _normalized_label(p.label) == 'topography' and p.data is not None]
+        if not idx:
+            return None
+        page = pages[idx[0]]
+        z = np.array(page.data, dtype=np.float64)
+        z = z[:, None] if z.ndim == 1 else z
+        if z.shape[1] != n_cols:
+            print(f"{name}: the 'Topography' page holds {z.shape[1]} sweeps, the channel page {n_cols}; "
+                  f"the tip height is not used.")
+            return None
+        written = z != page.zoffset
+        out = np.full(z.shape[1], np.nan)
+        for c in range(z.shape[1]):
+            v = z[written[:, c], c]
+            if v.size == 0:
+                continue
+            if np.any(v != v[0]):
+                print(f"{name}: the 'Topography' page's value varies within sweep {c + 1}; the tip height is "
+                      f"not used for the sweep directions.")
+                return None
+            out[c] = v[0]
+        try:
+            perm = cls.page_perm(ref_xy, cls._page_locations(page), name, 'Topography')
+        except AlignmentError as exc:
+            print(f"{exc}  The tip height is not used.")
+            return None
+        return out if perm is None else out[perm]
+
+    @classmethod
     def from_file(cls, path, page_type='RHK_PAGE_RAMP_SPECTROSCOPY_RP'):
         """
         The spectroscopy of a .sm4 file opened here, from its pages of
@@ -833,6 +960,8 @@ class STS:
         s.spec_xy_m = self.spec_xy_m[cols].copy() if len(self.spec_xy_m) == len(self.acquired) else np.zeros((0, 2))
         s.spec_time_s = (self.spec_time_s[cols].copy() if len(self.spec_time_s) == len(self.acquired)
                          else np.zeros(0))
+        th = getattr(self, 'tip_height', None)
+        s.tip_height = th[cols].copy() if th is not None and len(th) == len(self.acquired) else None
         s.sweep_info = None
         s.view_mode = getattr(self, 'view_mode', None)
         return s

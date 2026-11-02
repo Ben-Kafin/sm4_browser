@@ -72,8 +72,16 @@ Every page's stored values are converted on load to physical units (`data = stor
 RHK_Zoffset`); "raw" in the package means the loader's data in physical units, never the stored
 integers. Absolute positions come from each page's recorded offset, angle and scales; the recorded
 spectrum positions of a grid are reproduced exactly by this geometry (`sm4file.py`, "Coordinates"
-in `browser.py`). A grid can record several sweeps per pixel (forward and reverse); `sweeps.py`
-reads how they are grouped and directed from the file itself.
+in `browser.py`). A grid or a single point can record several sweeps per location (forward and
+reverse); `sweeps.py` reads how they are grouped and directed from the file itself. The instrument
+stores a location's sweeps as consecutive columns, every one in the page's axis order whichever
+way it ran, and marks no direction; the package pairs them by the tip height recorded on the file's
+`Topography` spectroscopy page (one value while the feedback is open: the sweeps of one feedback
+period share it), and in a period the stored order is forward, reverse, forward, ... A forward
+sweep leaves the setpoint: it starts at the axis end holding the setpoint bias with the current at
+the setpoint, and its reverse follows it back from the far end. The console says per file how many
+sweeps per location and feedback period were found, how far the forward sweeps start from the
+setpoint current and how closely each pair meets at the far end (a report, never a filter).
 
 ## The browser window
 
@@ -121,7 +129,8 @@ them.
 every filter off: for dI/dV spectra four panels, the dI/dV, the current, its I/V and the Feenstra
 ratio; for a phase rotation the lock-in output against the phase with the fitted maximum and minimum
 and the set rotation; for a noise spectrum every channel against frequency. Unfinished sweeps are
-dashed. Under them: the Feenstra settings (`0Vsub`, `broadened`, `width (V)`), the filters box
+dashed, and so are the reverse sweeps of a file with several sweeps per location (see
+[Passes and sweeps](#passes-and-sweeps)). Under them: the Feenstra settings (`0Vsub`, `broadened`, `width (V)`), the filters box
 (`SG` with `window` and `polyorder`, `Hampel` with `window` and `nσ`; each row has two toggles
 under `dI/dV` and `I(V)`, the filter on the spectra themselves and the filter on the recorded
 current, every toggle independent and the row's settings shared), and the `calibrate` /
@@ -273,8 +282,16 @@ A topography has a forward and a reverse pass; the `topo pass` radios choose `fo
 or `average` (the two range-matched and averaged pixelwise) for the images. A grid's own stripes
 are never averaged: `average` counts as `forward` for them, and with a velocity on both passes are
 drawn, the chosen one on top. A grid with several sweeps per pixel gets a `sweeps` radio in the Line and Map
-windows (`forward sweeps`, `reverse sweeps`, `all sweeps`, `sweep n`); the browser draws every
-sweep, reverse ones dashed.
+windows (`forward sweeps`, `reverse sweeps`, `all sweeps`, `sweep n`), each view one column per
+pixel (the mean of the chosen sweeps); a single point with several sweeps gets the same choice in
+the averaging windows (`forward sweeps`, `reverse sweeps`, `all sweeps`), a view being the chosen
+sweeps themselves, and the fit follows the window it is sent from. The browser draws every sweep
+of either kind, reverse ones dashed, and its information panel counts them (`sweeps per location`).
+A reverse sweep keeps its stored values on the file's axis; its points are timed from the far end
+(the clock, the drift placement) and the calibration's `Vbias lock` pins it at its own first
+sample. A file without the `Topography` page, or whose tip height does not pair the sweeps, takes
+its sweeps as forward unless the storage itself shows a reverse one (a stopped sweep with its
+never-written samples at the start of the axis, a sweep stored against the axis), said on the console.
 
 ### Settings and computed values
 
@@ -372,9 +389,14 @@ puts the last removed one back, `clear` empties the window. `run` averages the k
 files on their common energy range when their energy steps and values coincide, or with `bin` or
 `interp` on, files of another step binned onto the coarsest grid or interpolated onto the finest.
 The window's own `Feenstra` toggle (on at open) and companion, the `calibrate` / `normalize` box,
-the filters and the `channel` radio act on every sweep. The name box names the average; `save` writes
-the record; `Send to fit` writes it and sends the average to the single-point fit. The right panel
-shows the average after a run.
+the filters and the `channel` radio act on every sweep. The `sweeps` radio (`forward sweeps` at
+open, `reverse sweeps`, `all sweeps`) chooses which sweeps of a single point with several sweeps
+per location the window takes (see [Passes and sweeps](#passes-and-sweeps)); a change rebuilds
+every file's sweeps, drops the removed sweeps (their indices count the view's sweeps, said on the
+console) and repeats the run; a file without reverse sweeps puts the radio back. A marker-group
+selection keeps the view chosen in its Line or Map window. The name box names the average; `save`
+writes the record, the chosen view with it; `Send to fit` writes it and sends the average to the
+single-point fit. The right panel shows the average after a run.
 
 ### Line averages (lineavg1, ...) and the alignment editor
 
@@ -498,7 +520,7 @@ take it.
 | `computed_<stamp>.json` | the experiment directory | everything computed from the files: the header scan, the sites' metrics, the tracked drift pairs (each with its two files' size and modification time, so a file replaced under the same name is tracked again) and topography times, each section with its own format number; written at the end of each computation stage and whenever a pair is tracked later | yes: rebuilt at the next start |
 | `scan_cache_<stamp>/` | the experiment directory | one array file per processed topography image, keyed by the file's name, size and time, the pass, the processors and the loader format; this folder's stamp also carries the first file's millisecond field | yes: rebuilt as files are placed |
 | `drift_cache_*.json.old`, `sites_*.json.old`, `headers_*.json.old` | the experiment directory | the stores of earlier versions, carried over once into the two files above and renamed | yes, once the new files exist |
-| `averages/<stem>_average.json` | the `averages` subfolder | an averaging window's record: the files, the removed sweeps, the filters, the channel, the resampling, the Feenstra state, the flags, the run | they are your results |
+| `averages/<stem>_average.json` | the `averages` subfolder | an averaging window's record: the files, the removed sweeps, the sweep view, the filters, the channel, the resampling, the Feenstra state, the flags, the run | they are your results |
 | `averages/<stem>_fits.pkl` | the `averages` subfolder | the fit history of an average sent to the fit, with everything a refit needs | your results |
 | `averages/<stem>_fit<K>.json`, `.csv` | the `averages` subfolder (next to the data file for a file fitted directly) | a saved fit: its parameters, and V, data, background, components, model | your results |
 | `averages/<file stem>_line<k>_markers.json` | the `averages` subfolder | a Line window's marker record: groups, markers, E-markers, ranges, the scale it was made with | your results |
@@ -689,9 +711,12 @@ over the whole axis or the `range_mask` of an energy range.
 
 ### `sweeps.py`
 
-A grid with several sweeps per pixel: how the sweeps are grouped and directed, read from the file
-(`group_locations`, `sweep_modes`, `default_mode`), and which columns a chosen mode shows
-(`chosen_columns`). The Line and Map windows' `sweeps` radio is built from it.
+A grid or a single point with several sweeps per location: how the sweeps are grouped and
+directed, read from the file (`group_locations`; the pair rule on the tip height,
+`feedback_periods` and `period_reverse`; `sweep_modes`, `default_mode`), and which columns a
+chosen mode shows (`chosen_columns`). The Line, Map and averaging windows' `sweeps` radios are
+built from it; the grouping itself runs in `sts.STS._group_sweeps`, which also prints the
+current's report on the directions found (`STS._direction_report`).
 
 ### `topo.py`
 
@@ -843,7 +868,8 @@ edge around everything drawn; every row of panels at one height; the calibration
 nothing locked; the dI/dV filter toggles; the calibration locks). The other
 checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
 (the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
-pixel), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on
+location: the three storage layouts of a grid, a point's forward / reverse pairs, the views, the
+clock, the averaging window's radio and its record), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on
 a large directory), `alignment_windows` (the alignment of a line's stripe with its heatmap on real
 files), `diagnose_file` (one real file, step by step), `zero_crossing` (the raw current's zero
 crossing over saved averages).

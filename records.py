@@ -2,12 +2,12 @@
 The saved records of an experiment directory, all in its 'averages'
 subfolder (AVG_SUBDIR), which also holds the fit histories
 (<stem>_fits.pkl and its numbered family) and the saved fits:
-  - the averaging windows' records <stem>_average.json (RECORD_FORMAT 5:
+  - the averaging windows' records <stem>_average.json (RECORD_FORMAT 6:
     the index, name and send label, the files or selections in added
-    order, the removed sweeps, the channel, the filters, the resampling,
-    the Feenstra state and settings, the calibrate / normalize flags, the
-    last run's range and grid, the time of saving; averaging.
-    MultiAverageWindow.record);
+    order, the removed sweeps, the window's sweep view, the channel, the
+    filters, the resampling, the Feenstra state and settings, the
+    calibrate / normalize flags, the last run's range and grid, the time
+    of saving; averaging.MultiAverageWindow.record);
   - the Line window's marker records <file stem>_line<k>_markers.json
     (LINE_RECORD_FORMAT 1: the file and line, the channel and sweep view,
     the filters with their on / off states, the calibrate / normalize
@@ -43,8 +43,9 @@ from sm4_Browser import qtplot as plt
 from sm4_Browser import sm4file, widgets
 
 AVG_SUBDIR = 'averages'    # subfolder of the experiment directory holding records, fit histories, saved fits
-RECORD_FORMAT = 5          # 1: removed sweeps indexed among all of a file's sweeps (the old browser); 2: among the
-#                            acquired ones; 3: name and entry kinds; 4: the Feenstra settings; 5: calibrate / normalize
+RECORD_FORMAT = 6          # 1: removed sweeps indexed among all of a file's sweeps (the old browser); 2: among the
+#                            acquired ones; 3: name and entry kinds; 4: the Feenstra settings; 5: calibrate / normalize;
+#                            6: the window's sweep view ('sweeps'; a single point with several sweeps per location)
 LINE_RECORD_FORMAT = 1     # the Line window's marker records
 LINEAVG_RECORD_FORMAT = 1  # the line-average records
 

@@ -156,8 +156,13 @@ class Experiment:
         """
         A grid file.  sweeps: the direction of each sweep recorded at every pixel ('forward' runs
         v_range[0] -> v_range[1], 'reverse' the other way); layout 'per_pixel' stores a pixel's
-        sweeps as consecutive columns, 'pages' stores each direction on its own set of pages (one
-        page per channel per direction), the reverse page's x axis running the other way.
+        sweeps as consecutive columns, the reverse sweep in acquisition order against the axis,
+        'pages' stores each direction on its own set of pages (one page per channel per
+        direction), the reverse page's x axis running the other way, and 'paired' is the
+        instrument's layout (the real files): a pixel's sweeps as consecutive columns, every one
+        stored in the page's axis order, the reverse sweep's peak 0.05 V higher (a hysteresis, so
+        the views differ), one tip height per pixel on the 'Topography' page.  The setpoint bias
+        RHK_Bias is v_range[0], where a forward sweep starts.
         stop_after: the number of spectra (pixel visits) acquired before the stop (None: all).
         stripe_b: the true (forward, reverse) compression of the lines' topo stripes along the fast
         axis relative to the recorded geometry (1, 1: none), applied to what each pass records.
@@ -214,6 +219,12 @@ class Experiment:
         cur = np.cumsum(didv, axis=0) * (V_fwd[1] - V_fwd[0]) * 10.0
         cur -= cur[np.argmin(np.abs(V_fwd)), :][None, :]
         cols = {'forward': (didv, cur, V_fwd), 'reverse': (didv[::-1], cur[::-1], V_fwd[::-1])}
+        if layout == 'paired':
+            # The instrument's layout: the reverse sweep stored in the axis order too, its peak shifted.
+            didv_r = (1.0 + 2.0 * np.exp(-((V_fwd[:, None] - (peak[None, :] + 0.05)) ** 2) / 0.02)) * 1e-11
+            cur_r = np.cumsum(didv_r, axis=0) * (V_fwd[1] - V_fwd[0]) * 10.0
+            cur_r -= cur_r[np.argmin(np.abs(V_fwd)), :][None, :]
+            cols['reverse'] = (didv_r, cur_r, V_fwd)
         xy_flat = p_xy.reshape(-1, 2)
         t_flat = t_pix.ravel()
 
@@ -227,7 +238,7 @@ class Experiment:
                  'RHK_Label': label, 'RHK_Xsize': len(V), 'RHK_Ysize': data.shape[1],
                  'RHK_Xoffset': float(V[0]), 'RHK_Xscale': float(V[1] - V[0]) if len(V) > 1 else 1.0, 'RHK_Yoffset': 0.0,
                  'RHK_Yscale': 1.0, 'RHK_Xunits': 'V', 'RHK_Yunits': '', 'RHK_Zunits': units,
-                 'RHK_Zscale': zscale, 'RHK_Zoffset': 0.0, 'RHK_Bias': 1.0, 'RHK_Current': 1e-10,
+                 'RHK_Zscale': zscale, 'RHK_Zoffset': 0.0, 'RHK_Bias': float(V_fwd[0]), 'RHK_Current': 1e-10,
                  'RHK_GridXsize': n_fast, 'RHK_GridYsize': n_lines, 'RHK_DateTime': _dt_text(start),
                  'RHK_Period': 1e-4, 'RHK_CH1Drive_Amplitude': 0.01,
                  'RHK_SpecDrift_Xcoord': list(xs_list), 'RHK_SpecDrift_Ycoord': list(ys_list),
@@ -240,7 +251,7 @@ class Experiment:
             return arr
 
         spec_pages = []
-        if layout == 'per_pixel':
+        if layout in ('per_pixel', 'paired'):
             order = [(pix, s) for pix in range(N_pix) for s in range(k)]
             L, I, X, Y, T = [], [], [], [], []
             for pix, s in order:
@@ -269,30 +280,48 @@ class Experiment:
                                         [(tt - start) if np.isfinite(tt) else 0.0 for tt in t_flat], 'm'))
         return self._add(t_end, pages + spec_pages)
 
-    def point(self, start, xy=(0.0, 0.0), n_sweeps=3, npts=41, v_range=(-1.0, 1.0), ramp_s=0.5):
+    def point(self, start, xy=(0.0, 0.0), n_sweeps=3, npts=41, v_range=(-1.0, 1.0), ramp_s=0.5, pairs=False,
+              heights=True):
         """
-        A single-point file with n_sweeps identical sweeps at xy (metres), starting at `start` and
-        ending n_sweeps x ramp_s later: a dI/dV with one Gaussian at 0 V and I(V) its integral
-        (both pages in A), no recorded sweep times (RHK_SpecDrift_Time 0).  Returns its path.
+        A single-point file with n_sweeps sweeps at xy (metres), starting at `start` and ending
+        n_sweeps x ramp_s later: a dI/dV with one Gaussian at 0 V and I(V) its integral (both
+        pages in A), no recorded sweep times (RHK_SpecDrift_Time 0), the setpoint bias RHK_Bias at
+        v_range[0] where a forward sweep starts.  pairs: the sweeps come in (forward, reverse)
+        pairs, every sweep stored in the page's axis order as the instrument does, the reverse
+        sweep's Gaussian 0.1 V higher (a hysteresis, so the views differ), one tip height per
+        pair; else every sweep is forward with its own tip height.  heights False: no
+        'Topography' page (no tip height recorded).  Returns its path.
         """
         V = np.linspace(v_range[0], v_range[1], npts)
-        didv = np.tile(((1.0 + np.exp(-(V ** 2) / 0.05)) * 1e-11)[:, None], (1, n_sweeps))
+        g_f = (1.0 + np.exp(-(V ** 2) / 0.05)) * 1e-11
+        g_r = (1.0 + np.exp(-((V - 0.1) ** 2) / 0.05)) * 1e-11
+        if pairs:
+            if n_sweeps % 2:
+                raise ValueError("point: pairs need an even number of sweeps.")
+            didv = np.column_stack([g_r if s % 2 else g_f for s in range(n_sweeps)])
+            z = -1.5e-7 + 1e-11 * (np.arange(n_sweeps) // 2)
+        else:
+            didv = np.tile(g_f[:, None], (1, n_sweeps))
+            z = -1.5e-7 + 1e-11 * np.arange(n_sweeps)
         cur = np.cumsum(didv, axis=0) * (V[1] - V[0]) * 10.0
         cur -= cur[np.argmin(np.abs(V)), :][None, :]
 
-        def page(label, data):
+        def page(label, data, units='A'):
             zscale = 1e-15
             stored = np.round(data / zscale)
             stored[stored == 0] = 1
             a = {'RHK_PageTypeName': 'RHK_PAGE_RAMP_SPECTROSCOPY_RP', 'RHK_PageDataTypeName': 'RHK_DATA_LINE',
                  'RHK_LineTypeName': 'RHK_LINE_IV_SPECTRUM', 'RHK_Label': label, 'RHK_Xsize': npts,
                  'RHK_Ysize': n_sweeps, 'RHK_Xoffset': float(V[0]), 'RHK_Xscale': float(V[1] - V[0]),
-                 'RHK_Xunits': 'V', 'RHK_Zunits': 'A', 'RHK_Zscale': zscale, 'RHK_Zoffset': 0.0,
-                 'RHK_Bias': 1.0, 'RHK_Current': 1e-10, 'RHK_DateTime': _dt_text(start), 'RHK_Period': 1e-4,
+                 'RHK_Xunits': 'V', 'RHK_Zunits': units, 'RHK_Zscale': zscale, 'RHK_Zoffset': 0.0,
+                 'RHK_Bias': float(V[0]), 'RHK_Current': 1e-10, 'RHK_DateTime': _dt_text(start), 'RHK_Period': 1e-4,
                  'RHK_SpecDrift_Xcoord': [xy[0]] * n_sweeps, 'RHK_SpecDrift_Ycoord': [xy[1]] * n_sweeps,
                  'RHK_SpecDrift_Time': [0.0] * n_sweeps}
             return (a, stored)
-        return self._add(start + n_sweeps * ramp_s, [page('LIA Current', didv), page('Current', cur)])
+        pages = [page('LIA Current', didv), page('Current', cur)]
+        if heights:
+            pages.append(page('Topography', np.tile(z[None, :], (npts, 1)), 'm'))
+        return self._add(start + n_sweeps * ramp_s, pages)
 
 
 _ORIG = {}
@@ -340,8 +369,9 @@ def install_files(directory, files):
     install(exp)
 
 
-def standard(directory, v=(3e-12, -2e-12), grid_sweeps=('forward',), grid_layout='per_pixel', stripe_b=(1.0, 1.0)):
-    """A small standard experiment: topo, topo, grid, point, topo (drift v in m/s); returns the Experiment."""
+def standard(directory, v=(3e-12, -2e-12), grid_sweeps=('forward',), grid_layout='per_pixel', stripe_b=(1.0, 1.0),
+             point_pairs=False):
+    """A small standard experiment: topo, topo, grid, point (20 sweeps in forward / reverse pairs with point_pairs, else 3 forward), topo (drift v in m/s); returns the Experiment."""
     exp = Experiment(directory, v=v)
     t = T_REF
     exp.topo(t, center=(0.0, 0.0), size_m=24e-9, n=64)
@@ -351,7 +381,7 @@ def standard(directory, v=(3e-12, -2e-12), grid_sweeps=('forward',), grid_layout
     exp.grid(t, center=(0.0, 0.0), n_fast=12, n_lines=12, size_m=8e-9, sweeps=grid_sweeps, layout=grid_layout,
              stripe_b=stripe_b)
     t += 12 * 12 * 0.5 * len(grid_sweeps) + 12 * 12 * 2e-3 + 60
-    exp.point(t, xy=(2e-9, 1e-9), n_sweeps=3)
+    exp.point(t, xy=(2e-9, 1e-9), n_sweeps=20 if point_pairs else 3, pairs=point_pairs)
     t += 60
     exp.topo(t, center=(0.0, 0.5e-9), size_m=24e-9, n=64)
     return exp

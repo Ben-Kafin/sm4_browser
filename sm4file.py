@@ -640,17 +640,23 @@ class Sm4File(ScanFrame):
         self.spectra_all = None
         self.sweep_info = None
         self.sweep_mode = None
+        self.point_cols = None             # a single point's view: the chosen sweeps' columns (with_sweeps)
         if self.kind in SPECTRA_PAGE_TYPE:
             try:
                 self.spectra = sts.STS.from_pages(pages, SPECTRA_PAGE_TYPE[self.kind], name=self.name)
                 if self.spectra is None:
                     print(f"{self.name}: no page matches the dI/dV or IETS channel; the file has no spectra.")
-                elif self.kind == 'grid' and getattr(self.spectra, 'sweep_info', None) is not None:
-                    # Several sweeps per pixel (sweeps.py): the windows work on a view, one column per pixel.
+                elif getattr(self.spectra, 'sweep_info', None) is not None:
+                    # Several sweeps per pixel (sweeps.py).  A grid: the windows work on a view, one column
+                    # per pixel, the default view at load.  A single point: the file keeps every sweep (the
+                    # all-sweeps view); a window that chooses a view takes it with with_sweeps.
                     self.spectra_all = self.spectra
                     self.sweep_info = self.spectra.sweep_info
-                    self.sweep_mode = sweeps.default_mode(self.sweep_info)
-                    self.spectra = self.spectra_all.sweep_view(self.sweep_mode)
+                    if self.kind == 'grid':
+                        self.sweep_mode = sweeps.default_mode(self.sweep_info)
+                        self.spectra = self.spectra_all.sweep_view(self.sweep_mode)
+                    else:
+                        self.sweep_mode = sweeps.ALL
             except sts.AlignmentError as exc:
                 # The Current (or IETS) page's recorded locations cannot be aligned onto the dI/dV
                 # page's: the pairing of the pages is unknown, so the file shows no spectra.
@@ -856,6 +862,12 @@ class Sm4File(ScanFrame):
             rows.append(('energy range', f"{si_text(float(np.min(e)), 'V')} to {si_text(float(np.max(e)), 'V')}, "
                                          f"{len(e)} points, step {si_text(step, 'V')}"))
             stopped = f", {s.n_stopped} stopped" if getattr(s, 'n_stopped', 0) else ""
+            if self.sweep_info is not None:
+                # Several sweeps per location (sweeps.py): how many, and their directions.
+                k = int(self.sweep_info['k'])
+                n_rev = int(np.sum(np.asarray(self.sweep_info['dir'])[:k] < 0))
+                rows.append(('sweeps per location', f"{k}: {k - n_rev} forward, {n_rev} reverse"
+                                                    + (f"; shown: {self.sweep_mode}" if self.kind == 'grid' else "")))
             if self.kind == 'grid':
                 rows.append(('spectra', f"{s.n_spectra} = {self.n_lines} lines x {self.n_fast}, "
                                         f"{s.n_acquired} kept{stopped}"))
@@ -918,7 +930,9 @@ class Sm4File(ScanFrame):
         """
         The file seen through another sweep view (a shallow copy sharing the pages and the
         all-sweeps spectroscopy; its own view, timing, and caches); the file itself for one sweep
-        per pixel, None, or the view it already shows.
+        per pixel, None, or the view it already shows.  A grid's view is one column per pixel
+        (STS.sweep_view); a single point's view is its chosen sweeps themselves (STS.subset of
+        sweeps.chosen_columns, kept in point_cols), the all-sweeps view being the file as loaded.
         """
         if self.sweep_info is None or mode is None or mode == self.sweep_mode:
             return self
@@ -926,7 +940,14 @@ class Sm4File(ScanFrame):
             raise ValueError(f"{self.name}: no sweep view '{mode}' (it offers {', '.join(self.sweep_modes())}).")
         import copy
         g = copy.copy(self)
-        g.spectra = self.spectra_all.sweep_view(mode)
+        if self.kind == 'point':
+            cols = np.concatenate(sweeps.chosen_columns(self.sweep_info, mode)).astype(int)
+            if cols.size == 0:
+                raise ValueError(f"{self.name}: the view '{mode}' holds no sweep.")
+            g.spectra = self.spectra_all.subset(cols)
+            g.point_cols = cols
+        else:
+            g.spectra = self.spectra_all.sweep_view(mode)
         g.sweep_mode = mode
         g._timing = None
         return g
@@ -998,11 +1019,16 @@ class Sm4File(ScanFrame):
                         has start = end, the moment it would have begun
         The last acquired point's slot ends at the stamp.
         """
-        N = self.n_spectra
-        kept = np.asarray(self.acquired, dtype=bool)
-        ever = np.asarray(getattr(self.spectra, 'ever', kept), dtype=bool)[:N] if self.spectra is not None else kept
+        # Over every sweep of the file (the all-sweeps spectroscopy: a view of a single point holds its
+        # chosen sweeps, but the span was spent on all of them); the view's sweeps picked at the end.
+        base = self.spectra_all if self.spectra_all is not None else self.spectra
+        N = base.n_spectra if base is not None else self.n_spectra
+        kept = np.asarray(base.acquired if base is not None else self.acquired, dtype=bool)
+        ever = np.asarray(getattr(base, 'ever', kept), dtype=bool)[:N] if base is not None else kept
         started = kept | ever
-        pts = np.asarray(self.points_acquired, dtype=np.float64)[:N]
+        pa = getattr(base, 'points_acquired', None) if base is not None else None
+        pts = (np.asarray(pa, dtype=np.float64)[:N] if pa is not None and len(pa) == N
+               else np.where(kept, len(self.energy), 0).astype(np.float64))
         pts = np.where(started, pts, 0.0)
         n_points = float(pts.sum())
         t0 = float(self.start_time)
@@ -1011,8 +1037,23 @@ class Sm4File(ScanFrame):
         npts = max(len(self.energy), 1)
         ends = t0 + dwell * np.cumsum(pts)
         starts = ends - dwell * pts
+        if self.point_cols is not None:
+            starts, ends = starts[self.point_cols], ends[self.point_cols]
         return {'dwell': dwell, 'period': dwell * npts, 'n_started': int(started.sum()),
                 'start': starts, 'end': ends}
+
+    def _point_ranks(self, n):
+        """
+        (N, n) the acquisition rank of every axis index of every spectrum: the index itself for a
+        sweep acquired up the axis, n - 1 - index for one acquired down it (a single point's reverse
+        sweeps, STS.sweep_pins); every sweep up the axis without sweep grouping.
+        """
+        idx = np.arange(n, dtype=np.float64)[None, :]
+        if self.sweep_info is None or self.spectra is None or self.kind != 'point':
+            return np.broadcast_to(idx, (self.n_spectra, n))
+        first = np.asarray(self.spectra.sweep_pins()[1], dtype=int)
+        desc = (first == len(self.energy) - 1)[:, None]
+        return np.where(desc, (n - 1) - idx, idx)
 
     @property
     def points_acquired(self):
@@ -1055,7 +1096,7 @@ class Sm4File(ScanFrame):
         """
         if self._timing is not None:
             return self._timing
-        if self.sweep_info is not None:
+        if self.sweep_info is not None and self.kind == 'grid':
             self._timing = self._view_timing()
             return self._timing
         N = self.n_spectra
@@ -1186,7 +1227,7 @@ class Sm4File(ScanFrame):
         its own way.
         """
         npts = len(self.energy) if self.spectra is not None else 0
-        if self.sweep_info is not None and self.spectra is not None:
+        if self.sweep_info is not None and self.spectra is not None and self.kind == 'grid':
             out = np.full((self.n_spectra, npts + 1), np.nan)
             for p, c in enumerate(self.spectra.view_cols):
                 if len(c):
@@ -1195,8 +1236,8 @@ class Sm4File(ScanFrame):
                         out[p] = np.nanmean(t, axis=0)
             return out
         win = self.spectrum_windows()
-        edges = np.arange(npts + 1, dtype=np.float64)
-        return win[:, :1] + (win[:, 1:] - win[:, :1]) * edges[None, :] / max(npts, 1)
+        rank = self._point_ranks(npts + 1)              # a single point's reverse sweep: its last edge first
+        return win[:, :1] + (win[:, 1:] - win[:, :1]) * rank / max(npts, 1)
 
     def spectrum_times(self):
         """
@@ -1262,7 +1303,7 @@ class Sm4File(ScanFrame):
         npts = len(self.energy) if self.spectra is not None else 0
         if npts == 0:
             return np.zeros((self.n_spectra, 0))
-        if self.sweep_info is not None:
+        if self.sweep_info is not None and self.kind == 'grid':
             # A view of several sweeps per pixel: every point at the mean time of its chosen sweeps,
             # each sweep running its own way along the axis.
             out = np.full((self.n_spectra, npts), np.nan)
@@ -1274,7 +1315,7 @@ class Sm4File(ScanFrame):
             return out
         win = self.spectrum_windows()
         dwell = (win[:, 1:] - win[:, :1]) / npts
-        return win[:, :1] + np.arange(npts, dtype=np.float64)[None, :] * dwell
+        return win[:, :1] + self._point_ranks(npts) * dwell     # a single point's reverse sweep: its last point first
 
     def pixel_times(self, direction='forward'):
         """
