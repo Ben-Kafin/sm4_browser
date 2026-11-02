@@ -2,8 +2,9 @@
 Scanning tunnelling spectroscopy of one .sm4 file: the dI/dV and IETS channels
 with the I(V) page (STS, loaded by page label), and the pipeline driver
 (STS.process_arrays / STS.process) that runs the steps of the other modules
-in order: filters (filters.py), calibration (calibration.py), the Feenstra
-division (feenstra.py), unit-area normalization (normalization.py).
+in order: filters (filters.py), the denoise step (gap.py), calibration
+(calibration.py), the Feenstra division (feenstra.py), unit-area
+normalization (normalization.py).
 """
 
 if __package__ in (None, ''):
@@ -12,7 +13,7 @@ if __package__ in (None, ''):
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import os
 import numpy as np
-from sm4_Browser import filters, calibration, normalization, feenstra
+from sm4_Browser import filters, calibration, normalization, feenstra, gap
 
 
 def _normalized_label(label):
@@ -95,7 +96,10 @@ class STS:
     The pipeline (process / process_arrays): the channel's columns through
     the dI/dV Hampel and Savitzky-Golay filters and the recorded current
     through the I(V) ones, each pair once (filters; the two targets have
-    their own toggles, the same settings), calibration against that
+    their own toggles, the same settings), the denoise step when the
+    window's 'denoise' row is on (gap.denoise, dI/dV only: the per-point
+    gap factor of every sweep, read from the current against the sweep's
+    Feenstra ratio, divided out of the page and the current), calibration against that
     current (calibration.calibrate / calibrate_iets: per sweep the least
     squares of the gain, the offset and the constant of integration of
     calibration.py, through the pins of the window's '0-lock' and 'Vbias
@@ -878,7 +882,20 @@ class STS:
         Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
         the recorded current through the I(V) ones (hampel, sgolay), each
-        once (filters.filter_lia), calibration of the channel's columns
+        once (filters.filter_lia); the denoise step when the window's
+        'denoise' row is on (`gate`.denoise; gap.denoise, on the dI/dV
+        channel with a current present: its own regression as `gate` sets
+        it for a and b only, the plain 0-sub Feenstra ratio of the
+        calibrated page integrated in ln|V| back to a current, the
+        recorded current over it the per-point gap factor g, the band
+        |I - I(0 V)| below gap.GAP_BAND of the sweep's maximum left at g =
+        1, and the acquired columns of the channel and of the current
+        divided by g, so that every step below works on the denoised pair;
+        with the Vbias lock on, the setpoint pin of a forward sweep becomes
+        I_setpoint / g at the setpoint sample, gap.setpoint_divided; a
+        regression the step cannot determine applies nothing, said once on
+        the console; on the IETS channel the row is said once to apply to
+        dI/dV only), calibration of the channel's columns
         against that current (when present and `calibrate` is on;
         calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep
         the least squares of the gain, the offset and the constant of
@@ -926,6 +943,27 @@ class STS:
             # The recorded current through the I(V) filters once (a copy when both are off): the
             # calibration and the division both work on this current.
             iv = filters.filter_lia(np.asarray(iv, dtype=np.float64), hampel, sgolay)
+        sw = None if sweeps is None else tuple(np.asarray(a)[cols] for a in sweeps)
+        settings = calibration.gate_settings(gate)
+        if settings.denoise and iv is not None:
+            if channel == 'didv':
+                # The denoise step (gap.denoise): the acquired columns of the channel and of the current
+                # divided by the per-point gap factor; the calibration, the division and the
+                # normalization below then work on the denoised pair.
+                try:
+                    c[:, cols], iv[:, cols], g, note = gap.denoise(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
+                                                                   I_setpoint=I_setpoint, gate=settings, sweeps=sw)
+                    if settings.lockv:
+                        # The Vbias lock's pin of a denoised forward sweep: the setpoint current over g there.
+                        divided = gap.setpoint_divided(energy, g, V_bias, I_setpoint)
+                        if divided is not None:
+                            I_setpoint = divided
+                    if name:
+                        cls._note_once(f"{name}: {note}")
+                except ValueError as exc:
+                    cls._note_once(f"denoise not applied: {exc}")
+            elif name:
+                cls._note_once(f"{name}: denoise applies to the dI/dV channel only; the IETS channel is left as recorded.")
         if calibrate and iv is not None:
             ref_f = None
             if ref is not None and ref[0] is not None and ref[1] is not None:
@@ -933,7 +971,6 @@ class STS:
                 ref_f = (filters.filter_lia(np.asarray(ref[0], dtype=np.float64), hampel_didv, sgolay_didv)[:, cols],
                          filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
             fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
-            sw = None if sweeps is None else tuple(np.asarray(a)[cols] for a in sweeps)
             try:
                 cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f,
                                gate=gate, sweeps=sw)
@@ -959,7 +996,7 @@ class STS:
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                 return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,
                 hampel_didv=None, sgolay_didv=None, gate=None):
-        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint, the columns' sweep directions and a sweep view's forward reference from the file; `gate` the window's gate and lock settings)."""
+        """Every spectrum of the channel through the pipeline (npts, N), original energy order (process_arrays: the setpoint, the columns' sweep directions and a sweep view's forward reference from the file; `gate` the window's gate, lock and denoise settings)."""
         ref = (getattr(self, 'iets_ref' if channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
         return self.process_arrays(self.energy, self.channel(channel), self.iv, hampel, sgolay, divide_iv,
                                    iv_broadening, return_areas=return_areas, channel=channel,

@@ -74,7 +74,7 @@ SPECS = {
     'WKB background': _spec('check', 1.7, 0.32),
     'hold': _spec('check', 0.3, 0.26, fs=7, labels=['']),           # the fit edit window's hold rows (unlabeled)
     # --- toggle boxes (several rows) ---
-    'pipeline': _spec('checks', 0.95, 1.2, fs=8, labels=['calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize']),   # the gate and lock rows indented under calibrate (PipelineBox.INDENT)
+    'pipeline': _spec('checks', 0.95, 1.44, fs=8, labels=['denoise', 'calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize']),   # denoise first, unindented; the gate and lock rows indented under calibrate (PipelineBox.INDENT)
     'gate H': _spec('text', 0.40, 0.20, fs=7),                      # the gate's Hampel 'window,n_sigma' beside the gate row (PipelineBox)
     'gate SG': _spec('text', 0.40, 0.20, fs=7),                     # the gate's Savitzky-Golay 'length,order'
     'topo processors': _spec('checks', 1.4, 0.36, fs=8, labels=None, row_h=0.36),   # labels from topo.TOPO_PROCESSORS
