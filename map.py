@@ -70,8 +70,9 @@ class Map:
     single view's box edits the current slice's value.
 
     Markers (both views): the Line window's marker method in 2D.  A
-    marker is a grid pixel (line, fast); it is drawn as a small square at the
-    pixel's centre on the map and on the embedded topo, in the grid view on
+    marker is a grid pixel (line, fast); it is drawn as a solid circle as
+    wide as the pixel's diagonal (overlapping its neighbours slightly),
+    centred on the pixel, on the map and on the embedded topo, in the grid view on
     the topo cell and on every energy's map (each map at its own energy's
     pixel shifts).  The 'avgs' box
     (0 to MAX_GROUPS) is the number of groups; every group has its own row
@@ -91,7 +92,9 @@ class Map:
     companion window (feenstra.FeenstraWindow) that opens with it and
     follows it: the map at the current energy in four versions with the
     marker curves under each.  Dragging: a press on a
-    marker (any panel it is drawn on) moves it to the pixel under the cursor; with
+    marker (any panel it is drawn on) moves its centre with the cursor, and
+    the pixel under its centre is the marker's (the one whose spectrum it
+    shows); with
     Average on, a press on a group's centre (a black X on a map) moves the
     whole group by the same pixel offset, clipped so no member leaves the
     grid.  The curve panel shows one spectrum per marker (from the cube: the
@@ -1000,6 +1003,7 @@ class Map:
                 'limits': self._drift_bounds() if self._drift_result() is not None else None,
                 'shift': self._frame_shift(self.e_index),
                 'marker_points': [(self.marker_xy(px, True), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
+                'marker_diameter': self.pixel_diagonal(),
                 'centers': [self.group_center_xy(m, g) for g, m in enumerate(self.groups())],
                 'cmap': self.cmap}
 
@@ -1258,6 +1262,11 @@ class Map:
         line, fast = px
         return (l + (fast + 0.5) * (r - l) / self.n_fast, b + (line + 0.5) * (t - b) / self.n_lines)
 
+    def pixel_diagonal(self):
+        """A grid pixel's diagonal, corner to corner, in the frame (nm): the diameter of a marker (plots.draw_map_marker)."""
+        l, r, b, t = self.extent
+        return float(np.hypot((r - l) / self.n_fast, (t - b) / self.n_lines))
+
     def xy_pixel(self, x, y):
         """The grid pixel (line, fast) under a point of the frame, clipped to the grid."""
         l, r, b, t = self.extent
@@ -1401,14 +1410,17 @@ class Map:
     def _draw_marker_artists(self):
         """
         The marker artists drawn anew (the old ones removed) on every panel
-        of the view shown (_marker_panels): every marker as a hollow square
-        in its colour on its pixel as drawn in that panel (marker_xy: a map at its own
-        energy slice's shift, a topo at the chain's), and with Average on
+        of the view shown (_marker_panels): every marker as a solid circle in
+        its colour, as wide as a pixel's diagonal (plots.draw_map_marker,
+        pixel_diagonal), centred on its pixel as drawn in that panel
+        (marker_xy: a map at its own energy slice's shift, a topo at the
+        chain's), and with Average on
         every non-empty group's centre as a black X at the mean of its
         members' drawn positions.  Picking: on a map with Average on the
         centres are picked (the markers are not, so a group moves as one);
-        elsewhere the markers are picked and the centres never (a Line2D
-        without a picker is unpickable).  Nothing is drawn before the first
+        elsewhere the markers are picked (a press inside the circle) and the
+        centres never (an artist without a picker is unpickable).  Nothing
+        is drawn before the first
         recompute (returns None); else returns the groups.
         """
         for art in self._marker_artists:
@@ -1421,12 +1433,12 @@ class Map:
             return None
         self._sync_centres()
         groups = self.groups()
+        d = self.pixel_diagonal()
         for ax, on_map, e in self._marker_panels():
-            marker_pick = {} if (self.avg_on and on_map) else {'picker': 6}
+            pickable = not (self.avg_on and on_map)
             for i, px in enumerate(self.marker_px):
-                x, y = self.marker_xy(px, on_map, e)
-                h, = ax.plot([x], [y], marker='s', ms=9, mfc='none', mec=self.marker_color(i), mew=1.8,
-                             ls='none', label=f'marker_{i}', **marker_pick)
+                h = plots.draw_map_marker(ax, self.marker_xy(px, on_map, e), self.marker_color(i), d,
+                                          label=f'marker_{i}', pickable=pickable)
                 self._marker_artists.append(h)
             if self.avg_on:
                 avg_pick = {'picker': 6} if on_map else {}
@@ -1466,22 +1478,42 @@ class Map:
     # --- dragging ---
 
     def _on_pick(self, event):
-        """A press on a marker ('marker_<i>') or a group centre ('_avg_<g>'): it becomes the dragged object."""
+        """
+        A press on a marker ('marker_<i>') or a group centre ('_avg_<g>'):
+        it becomes the dragged object.  Markers overlap (each is a pixel's
+        diagonal across), so of the ones under the press the one whose
+        centre is nearest it is taken; the press's offset from that centre
+        is kept (_grab), so that the drag moves the centre and the centre
+        picks the pixel (_on_motion).
+        """
         artist = event.artist
         label = getattr(artist, 'get_label', lambda: '')()
         if not isinstance(label, str):
             return
         if label.startswith('marker_'):
             idx = int(label.split('_')[1])
-            if idx < len(self.marker_px):
-                self._active_obj = ('marker', idx)
+            obj = ('marker', idx) if idx < len(self.marker_px) else None
         elif label.startswith('_avg_'):
             g = int(label.split('_')[2])
-            if g < len(self.group_sizes):
-                self._active_obj = ('avg', g)
+            obj = ('avg', g) if g < len(self.group_sizes) else None
+        else:
+            obj = None
+        if obj is None:
+            return
+        c = artist.get_center() if hasattr(artist, 'get_center') else (artist.get_xdata()[0], artist.get_ydata()[0])
+        me = getattr(event, 'mouseevent', None)
+        mx, my = (getattr(me, 'xdata', None), getattr(me, 'ydata', None)) if me is not None else (None, None)
+        if mx is None or my is None:
+            mx, my = c
+        dist = float(np.hypot(mx - c[0], my - c[1]))
+        if self._active_obj is not None and dist >= getattr(self, '_pick_dist', np.inf):
+            return
+        self._active_obj = obj
+        self._pick_dist = dist
+        self._grab = (float(mx - c[0]), float(my - c[1]))
 
     def _on_motion(self, event):
-        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): a marker to the pixel drawn under the cursor in that panel (a map at its own energy slice's shift, a topo at the chain's); a group's centre by the same whole-pixel offset for every member, clipped so no member leaves the grid."""
+        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): the dragged centre (the cursor less the press's offset from it, _grab) picks the pixel drawn nearest it in that panel (a map at its own energy slice's shift, a topo at the chain's): a marker goes to that pixel; a group's centre moves every member by the same whole-pixel offset, clipped so no member leaves the grid."""
         if self._active_obj is None or event.xdata is None or event.ydata is None:
             return
         grid_e = next((e for e, ax in enumerate(self.grid_axes) if ax is event.inaxes), None)
@@ -1494,7 +1526,8 @@ class Map:
         else:
             return
         kind, idx = self._active_obj
-        target = self.xy_pixel_drawn(event.xdata, event.ydata, on_map, e)   # the pixel drawn under the cursor
+        gx, gy = getattr(self, '_grab', (0.0, 0.0))
+        target = self.xy_pixel_drawn(event.xdata - gx, event.ydata - gy, on_map, e)   # the pixel drawn under the dragged centre
         if kind == 'marker':
             if self.marker_px[idx] == target:
                 return
@@ -1519,6 +1552,7 @@ class Map:
     def _on_release(self, event):
         """End of a drag."""
         self._active_obj = None
+        self._grab = (0.0, 0.0)
 
     # --- marker boxes and toggles ---
 

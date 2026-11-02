@@ -384,10 +384,12 @@ row of cells has the same height) and one energy beside the embedded topography
 with `< E` / `E >` and the curve panel (`sweeps`, for a file with several sweeps per pixel, under
 `< E` / `E >` at the bottom right); the curve panel is one panel, moved between the two views.
 `cmap norm` chooses one colour scale for the whole cube or one
-per map; one `γ` box per energy slice. The markers
-are drawn on the single view's map and topography and, in the grid view, on the topography cell and
-every energy's map (each map at its own energy's pixel shifts), and
-a marker or a group centre is dragged from any panel it is drawn on. The markers are the Line window's method in 2D (pixels; the
+per map; one `γ` box per energy slice. A marker is a solid circle as wide as a pixel's diagonal,
+corner to corner, centred on its pixel (it overlaps the neighbouring pixels slightly; the pixel
+under its centre is the one whose spectrum it shows), drawn on the single view's map and
+topography and, in the grid view, on the topography cell and every energy's map (each map at its
+own energy's pixel shifts), and by the same function on the Feenstra companion's maps; a marker or
+a group centre is dragged by its centre from any panel it is drawn on. The markers are the Line window's method in 2D (pixels; the
 `avgs` box and the marker box of `Markers` boxes, `Average`, `stack`, `substack`, `add new` / `add existing` per group,
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
 spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained

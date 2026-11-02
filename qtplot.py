@@ -26,8 +26,9 @@ PySide6 / pyqtgraph:
   ListedColormap, to_cmap                    matplotlib colour-map name, any
                                              matplotlib Colormap object, or a
                                              pyqtgraph ColorMap into one
-  LineCollection, PolyCollection,            collections and transforms used
-  Affine2D, ScalarMappable                   by plots.py
+  LineCollection, PolyCollection,            collections, the circle patch
+  Circle, Affine2D, ScalarMappable           (Axes.add_patch) and transforms used
+                                             by plots.py
 
 Speed: images are pyqtgraph ImageItems coloured through a lookup table (a
 new gamma or colour limit only rebuilds the table), quad meshes are filled
@@ -2143,6 +2144,63 @@ class LineCollection(Artist):
         return list(self._segments)
 
 
+class Circle(Artist):
+    """
+    A circle in data units (matplotlib's patches.Circle; Axes.add_patch draws it): centre `xy`
+    and `radius` in the axes' data units, so it keeps its size in the data at any zoom (a marker
+    one pixel of a map across stays that pixel's size).  `facecolor` (or `color`; None or 'none':
+    not filled), `edgecolor` and `linewidth` (points; None or 0: no edge), `alpha`.  A picker
+    makes contains_px test the inside of the circle as drawn (a number widens it by that many
+    display pixels).  get_center / set_center move it; get_radius gives its radius.
+    """
+
+    zorder_default = 2.0
+
+    def __init__(self, xy, radius=5.0, facecolor=None, edgecolor=None, linewidth=None, color=None, alpha=None,
+                 label=None, zorder=None, picker=None, visible=True, **kw):
+        super().__init__(None, label, zorder, picker, visible)
+        self._xy = (float(xy[0]), float(xy[1]))
+        self._r = float(radius)
+        self._face = color if facecolor is None else facecolor
+        self._edge = edgecolor
+        self._lw = linewidth
+        self._alpha = alpha
+        self.item = None
+
+    def _rect(self):
+        (x, y), r = self._xy, self._r
+        return QtCore.QRectF(x - r, y - r, 2.0 * r, 2.0 * r)
+
+    def _attach(self, axes):
+        self.axes = axes
+        self.figure = axes.figure
+        self.item = QtWidgets.QGraphicsEllipseItem(self._rect())
+        brush = mkbrush(self._face, self._alpha)
+        self.item.setBrush(brush if brush is not None else QtGui.QBrush(Qt.BrushStyle.NoBrush))
+        pen = mkpen(self._edge, self._lw, '-', self._alpha) if self._lw else None
+        self.item.setPen(pen if pen is not None else QtGui.QPen(Qt.PenStyle.NoPen))
+        self._add_item(self.item)
+
+    def get_center(self):
+        return self._xy
+
+    def set_center(self, xy):
+        self._xy = (float(xy[0]), float(xy[1]))
+        if self.item is not None:
+            self.item.setRect(self._rect())
+
+    def get_radius(self):
+        return self._r
+
+    def contains_px(self, x, y):
+        """Inside the circle as drawn (display pixels), widened by a numeric picker."""
+        if self.axes is None:
+            return False
+        c, e = self.axes.transData.transform(np.array([self._xy, (self._xy[0] + self._r, self._xy[1])]))
+        tol = float(self._picker) if isinstance(self._picker, (int, float)) and not isinstance(self._picker, bool) else 0.0
+        return float(np.hypot(x - c[0], y - c[1])) <= float(np.hypot(e[0] - c[0], e[1] - c[1])) + tol
+
+
 class PolyCollection(Artist):
     """
     Filled polygons (quads; a triangle gets its last vertex repeated) coloured from `array`
@@ -3845,6 +3903,11 @@ class Axes:
     def add_collection(self, coll, autolim=True):
         coll._attach(self)
         return self._register(coll)
+
+    def add_patch(self, patch):
+        """A patch (Circle) drawn in this axes (matplotlib's add_patch)."""
+        patch._attach(self)
+        return self._register(patch)
 
     def add_artist(self, a):
         return a

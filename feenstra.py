@@ -276,7 +276,9 @@ class FeenstraWindow:
                  map shows the drift by its pixels' positions, never by
                  drift lines)
       marker_lines : 'line': [(position, colour)] and 'centers': [position]
-      marker_points: 'map': [((x, y), colour)] and 'centers': [(x, y)]
+      marker_points: 'map': [((x, y), colour)] and 'centers': [(x, y)];
+                 marker_diameter: a pixel's diagonal (the markers' size,
+                 plots.draw_map_marker)
       cmap     : the heatmap / map colour map
     """
 
@@ -637,7 +639,7 @@ class FeenstraWindow:
                         marks.append(col['stripe'].axhline(y=c, color='black', ls='-', lw=2.5, alpha=0.9))
             else:
                 for (x, y), color in view['marker_points']:
-                    marks.extend(top.plot([x], [y], marker='s', ms=9, mfc='none', mec=color, mew=1.8, ls='none'))
+                    marks.append(plots.draw_map_marker(top, (x, y), color, view['marker_diameter']))
                 if view.get('avg_on'):
                     for (x, y) in view['centers']:
                         marks.extend(top.plot([x], [y], marker='X', ms=10, color='black', ls='none'))

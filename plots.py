@@ -13,7 +13,7 @@ these functions, and take their events from widgets.py.
   PixelMap : a map whose pixels sit at their own shifted positions (the Map
       window with drift correction on)
   draw_topo_stripe, draw_stripe_drift_lines, draw_marker_curves,
-      draw_sweeps : the Line / Map / Feenstra panels
+      draw_sweeps, draw_map_marker : the Line / Map / Feenstra panels
   TOPO_CMAP, draw_topo_absolute, draw_topo_frame, draw_point_sweeps,
       draw_grid_stripes, draw_drift_lines, draw_topo_cbar : topography drawing
   draw_section_path, draw_drift_markers, draw_topo_outline : the browser's
@@ -41,7 +41,7 @@ if __package__ in (None, ''):
 import numpy as np
 from sm4_Browser import qtplot as plt
 from sm4_Browser import qtplot as mcolors           # Normalize, PowerNorm, TwoSlopeNorm, LinearSegmentedColormap
-from sm4_Browser.qtplot import ScalarMappable, PolyCollection, LineCollection, Affine2D, QuadItem, to_cmap
+from sm4_Browser.qtplot import ScalarMappable, PolyCollection, LineCollection, Affine2D, QuadItem, Circle, to_cmap
 
 # The drift lines (every sweep's start to its end): one colour on every page that shows them
 # for the auto drift (the tracker), another for the manual drift (markers or typed), and a
@@ -793,6 +793,20 @@ def draw_point_sweeps(ax, xy, corrected, ends=None, lines=None, color=None):
         draw_drift_lines(ax, lines, markers=False, color=color)
     elif corrected and ends is not None:
         draw_drift_lines(ax, np.stack([xy, np.asarray(ends, dtype=np.float64)], axis=1), markers=False, color=color)
+
+
+def draw_map_marker(ax, xy, color, diameter, label=None, pickable=False, zorder=2.0):
+    """
+    The marker of a map pixel (the one function for every map and topo panel of the Map window,
+    both views, and the Feenstra companion's maps): a solid circle in `color` centred at `xy`
+    (the pixel's centre as drawn), `diameter` in the panel's data units (the pixel's diagonal,
+    corner to corner, so it overlaps its neighbours slightly; it keeps that size at any zoom).
+    Its centre is the pixel whose spectrum it stands for.  `pickable`: a press inside the circle
+    picks it (`label` names it to the picker).  Returns the qtplot.Circle.
+    """
+    c = Circle(xy, 0.5 * float(diameter), facecolor=color, label=label, zorder=zorder,
+               picker=True if pickable else None)
+    return ax.add_patch(c)
 
 
 def draw_drift_lines(ax, lines, markers=True, zorder=3.2, color=None):

@@ -935,10 +935,11 @@ def _map_drift(b, exp):
     px0 = m.marker_px[0]
     arts = {id(a.axes): a for a in m._marker_artists if a.get_label() == 'marker_0'}
     on_map = arts[id(m.ax_map)]
-    assert np.allclose((on_map.get_xdata()[0], on_map.get_ydata()[0]), m.marker_xy(px0, True))
+    assert np.allclose(on_map.get_center(), m.marker_xy(px0, True))
+    assert abs(on_map.get_radius() - 0.5 * m.pixel_diagonal()) < 1e-12      # a solid circle a pixel's diagonal across
     assert np.allclose(m.marker_xy(px0, True), np.asarray(m.pixel_xy(px0)) + sh[px0[0], px0[1]])
     on_topo = arts[id(m.ax_topo)]
-    assert np.allclose((on_topo.get_xdata()[0], on_topo.get_ydata()[0]), m.marker_xy(px0, False))
+    assert np.allclose(on_topo.get_center(), m.marker_xy(px0, False))
     assert not np.allclose(m.marker_xy(px0, True), m.pixel_xy(px0))
     # a drag lands on the pixel drawn under the cursor
     assert m.xy_pixel_drawn(*m.marker_xy(m.marker_px[1], True), True) == tuple(m.marker_px[1])

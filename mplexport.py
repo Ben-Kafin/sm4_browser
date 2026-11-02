@@ -235,7 +235,7 @@ def _artist(m, a):
     interpolation 'none' (the raw pixels), and its Affine2D (a rotated and translated topography)
     composed with the data transform; QuadMesh -> pcolormesh (NaN cells masked); ContourSet ->
     contourf from the arguments it was made with; LineCollection and PolyCollection -> the
-    matching collections; Annotation -> annotate; Text -> text (empty texts skipped).  Anything
+    matching collections; Circle -> a matplotlib Circle patch; Annotation -> annotate; Text -> text (empty texts skipped).  Anything
     else is not exported.
     """
     from matplotlib.collections import LineCollection, PolyCollection
@@ -276,6 +276,13 @@ def _artist(m, a):
         if a.item is None:
             return None
         return _quads(m, a.item, zorder=a.zorder)
+    if isinstance(a, q.Circle):
+        from matplotlib.patches import Circle
+        face = a._face if a._face is not None else 'none'
+        c = Circle(a._xy, a._r, facecolor=face, edgecolor=a._edge if a._lw else 'none', linewidth=a._lw or 0.0,
+                   alpha=a._alpha, zorder=a.zorder)
+        m.add_patch(c)
+        return c
     if isinstance(a, q.Annotation):
         p = a._ann
         kw = dict(color=p['color'], fontsize=q.font_pt(p['fontsize'], 10.0), fontweight=p['fontweight'],
