@@ -572,10 +572,13 @@ pass' radio chooses the pass at the recorded pixels: 'forward' the forward
 row of every line at the kept spectra's pixels (STS.acquired: a spectrum
 whose column is all zeros or ends in zeros is not kept, so an unfinished
 line stops at its last kept spectrum), 'reverse' the reverse row along the
-tip's way back; 'average' counts as forward (a grid's two passes are never
-averaged, topo.grid_stripe_layers).  With a velocity covering the grid both
-passes are always drawn at their corrected positions, the pass the radio
-names on top ('average' as forward) and the other band under it
+tip's way back, 'average' the two passes averaged pixel by pixel, each
+normalized on its own, at the forward pixels (topo.grid_stripe_layers,
+topo.average_passes).  With a velocity covering the grid both
+passes are drawn at their corrected positions, the pass the radio
+names on top and the other band under it, or for 'average' one band, the
+reverse row of every line resampled onto the forward row's corrected
+positions and the two averaged, at the forward positions
 (drift.Drift.grid_chain: the forward pixels by their
 points' times within the line, the reverse row rigid at the forward end so
 it starts there and ends at the return point, the next line at the

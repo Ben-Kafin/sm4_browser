@@ -36,7 +36,7 @@ from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_title
 from sm4_Browser.normalization import normalize_abs
 from sm4_Browser.drift import DriftWindow
 from sm4_Browser.composer import FigureComposer
-from sm4_Browser.topo import processed_topo, process_topo, TOPO_CMAP
+from sm4_Browser.topo import processed_topo, process_topo, average_passes, TOPO_CMAP
 
 
 class Map:
@@ -55,8 +55,10 @@ class Map:
     ascending, reshaped to (n_lines, n_fast) in the scan frame (self.extent:
     the recorded frame in nm after the scale factor; a never-acquired pixel
     is NaN and drawn transparent).  Filter controls at the bottom.  The
-    'topo pass' radio picks the pass of the embedded topo ('average' counts
-    as forward: a grid's passes are never averaged); the 'sweeps' radio of a
+    'topo pass' radio picks the pass of the embedded topo ('average': the
+    two passes averaged, each normalized on its own, topo.average_passes;
+    with a placement on, the reverse rows resampled onto the forward rows'
+    placed positions first, _averaged_pass); the 'sweeps' radio of a
     file with several sweeps per pixel, at the bottom right under '< E' /
     'E >', picks the sweep view the maps are made of (Sm4File.with_sweeps).
     The window is arranged by one Qt layout (automatic layout: the one rule
@@ -604,17 +606,59 @@ class Map:
             return None
         return self._to_frame_shift(pix - rec)
 
+    def _pixel_centres(self, shape):
+        """The nominal centres of the pixels of an image of `shape` (ny, nx) over the frame (nm), (ny, nx, 2), as plots.PixelMap places its cells (row i from the bottom edge, column j from the left; a reversed extent counts signed)."""
+        ny, nx = int(shape[0]), int(shape[1])
+        l, r, b, t = self.extent
+        dx, dy = (r - l) / nx, (t - b) / ny
+        jj, ii = np.meshgrid(np.arange(nx), np.arange(ny))
+        return np.stack([l + (jj + 0.5) * dx, b + (ii + 0.5) * dy], axis=-1)
+
+    def _averaged_pass(self):
+        """
+        The 'average' topo pass with a placement on: (img, shift), the two
+        processed passes averaged where they were measured
+        (topo.average_passes: the reverse row of every scan line resampled
+        onto the forward row's placed positions, each pass normalized on
+        its own, then the mean), in nm, on the forward pass's pixels at
+        its chained shifts ((ny, nx, 2), _topo_shift); a pixel the forward
+        placement leaves out is NaN.  The positions are the nominal pixel
+        centres in the frame plus each pass's shifts (_pixel_centres, as
+        plots.PixelMap draws the passes).  None without two topo pages or
+        without both passes' placements (said on the console; _draw_topo
+        then draws the passes as placed).
+        """
+        g = self.grid
+        if len(g.topo_pages) < 2:
+            return None
+        sh_f, sh_r = self._topo_shift('forward'), self._topo_shift('reverse')
+        f = process_topo(g.topo_raw('forward'), self.active_procs)
+        r = process_topo(g.topo_raw('reverse'), self.active_procs)
+        if (sh_f is None or sh_r is None or f.shape != r.shape or sh_f.shape[:2] != f.shape
+                or sh_r.shape[:2] != r.shape):
+            print("Map window: the average needs both passes placed; the passes are drawn as placed.")
+            return None
+        c = self._pixel_centres(f.shape)
+        placed_f = np.all(np.isfinite(sh_f), axis=-1)
+        placed_r = np.all(np.isfinite(sh_r), axis=-1)
+        pos_f = np.where(placed_f[..., None], c + sh_f, np.nan)
+        pos_r = np.where(placed_r[..., None], c + sh_r, np.nan)
+        img = average_passes(f, r, pos_f, pos_r) * 1e9
+        return np.where(placed_f, img, np.nan), sh_f
+
     def _drift_bounds(self):
         """
         The limits [l, r, b, t] whenever a result places the pixels: the
         bounding box of everything drawn, exactly (edge to edge, no
         margin): every acquired map pixel's cell at every energy (the maps
-        are NaN only where never acquired) and every placed topo pixel's
-        cell at their shifts (plots.pixel_bounds), and the spectra's drift
-        lines (_frame_lines; the markers sit on the pixels).  Every energy
-        counts, so the view holds still while the energy is stepped.  The
-        recorded frame without a result, or when nothing is drawn.
-        Memoized with the result (_bounds).
+        are NaN only where never acquired), every topo pixel drawn in the
+        single view's topo at its shift (the passes as placed, or the
+        average on the forward placement; plots.pixel_bounds; every placed
+        pixel of both passes before that topo is drawn), and the spectra's
+        drift lines (_frame_lines; the markers sit on the pixels).  Every
+        energy counts, so the view holds still while the energy is stepped.
+        The recorded frame without a result, or when nothing is drawn.
+        Memoized with the result (_bounds; dropped by a pass change too).
         """
         if self._bounds is not None:
             return self._bounds
@@ -634,17 +678,21 @@ class Map:
             a = np.asarray(g.acquired, dtype=bool)[:n]
             acq[:len(a)] = a
             boxes.append(plots.pixel_bounds(np.where(acq.reshape(g.n_lines, g.n_fast), 0.0, np.nan), self.extent, sh))
-        for direction in ('forward', 'reverse'):
-            sh = self._topo_shift(direction)
-            if sh is None:
-                continue
-            try:
-                img = process_topo(g.topo_raw(direction), self.active_procs)
-            except Exception:
-                continue
-            if sh.shape[:2] != img.shape:
-                continue
-            boxes.append(plots.pixel_bounds(np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan), self.extent, sh))
+        drawn = self._topo_maps.get(id(self.ax_topo)) or []
+        if drawn:
+            boxes += [plots.pixel_bounds(pm.img, self.extent, pm.shift) for pm in drawn]
+        else:
+            for direction in ('forward', 'reverse'):
+                sh = self._topo_shift(direction)
+                if sh is None:
+                    continue
+                try:
+                    img = process_topo(g.topo_raw(direction), self.active_procs)
+                except Exception:
+                    continue
+                if sh.shape[:2] != img.shape:
+                    continue
+                boxes.append(plots.pixel_bounds(np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan), self.extent, sh))
         pts = [np.array([[bx[0], bx[2]], [bx[1], bx[3]]]) for bx in boxes if bx is not None]
         box = plots.drawn_box(*pts, self._frame_lines()) if res is not None else None
         self._bounds = list(box) if box is not None else frame
@@ -656,9 +704,11 @@ class Map:
         view's topo cell with small=True): with a drift source on, the
         two passes as quads at their chained positions (plots.PixelMap:
         nothing is clipped, a pixel no spectrum places is not drawn), the
-        pass the 'topo pass' radio names on top ('average' counts as
-        forward: a grid's passes are never averaged); off, the chosen pass
-        at the recorded pixels (plots.draw_topo_frame).  The limits are
+        pass the 'topo pass' radio names on top, or for 'average' one layer,
+        the two passes averaged where they were measured, on the forward
+        pass's placement (_averaged_pass, topo.average_passes); off, the
+        chosen pass at the recorded pixels, or their average
+        (topo.processed_topo; plots.draw_topo_frame).  The limits are
         _frame_limits'.  The single view's topo carries the spectra's drift
         lines whenever a result places the pixels (plots.draw_drift_lines,
         in the source's colour; _frame_lines); the grid view's cell is
@@ -682,27 +732,35 @@ class Map:
             return
         corrected = self._topo_shift('forward') is not None
         if corrected:
-            top = 'reverse' if self.direction == 'reverse' else 'forward'
-            passes = ['forward', 'reverse'] if top == 'reverse' else ['reverse', 'forward']    # the last drawn on top
             maps = []
-            for p in passes:
-                if p == 'reverse' and len(g.topo_pages) < 2:
-                    continue
-                sh = self._topo_shift(p)
-                img = process_topo(g.topo_raw(p), self.active_procs) * 1e9
-                if sh is None or sh.shape[:2] != img.shape:
-                    print(f"Map window: the {p} topo pass has no placement; not drawn.")
-                    continue
-                img = np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan)
-                maps.append(plots.PixelMap(ax, img, self.extent, TOPO_CMAP, shift=sh,
-                                           zorder=1.0 if p == top else 0.5))
+            avg = self._averaged_pass() if self.direction == 'average' else None
+            if avg is not None:
+                # 'average': one layer, both passes averaged where they were measured, on the forward placement.
+                img, sh = avg
+                maps.append(plots.PixelMap(ax, img, self.extent, TOPO_CMAP, shift=sh, zorder=1.0))
+                what = "average on the forward placement" + self._drift_tag()
+            else:
+                top = 'reverse' if self.direction == 'reverse' else 'forward'
+                passes = ['forward', 'reverse'] if top == 'reverse' else ['reverse', 'forward']    # the last drawn on top
+                for p in passes:
+                    if p == 'reverse' and len(g.topo_pages) < 2:
+                        continue
+                    sh = self._topo_shift(p)
+                    img = process_topo(g.topo_raw(p), self.active_procs) * 1e9
+                    if sh is None or sh.shape[:2] != img.shape:
+                        print(f"Map window: the {p} topo pass has no placement; not drawn.")
+                        continue
+                    img = np.where(np.all(np.isfinite(sh), axis=-1), img, np.nan)
+                    maps.append(plots.PixelMap(ax, img, self.extent, TOPO_CMAP, shift=sh,
+                                               zorder=1.0 if p == top else 0.5))
+                what = (f"both passes, {top} on top" if len(maps) > 1 else passes[-1]) + self._drift_tag()
             self._topo_maps[id(ax)] = maps
             if ax is self.ax_topo:
                 self._topo_im = None
             ax.set_aspect('equal', adjustable='box')
-            what = (f"both passes, {top} on top" if len(maps) > 1 else passes[-1]) + self._drift_tag()
         else:
-            direction = 'reverse' if self.direction == 'reverse' else 'forward'      # a grid's passes are never averaged
+            # 'average' is topo.processed_topo's (the two passes, each normalized on its own); one page: the forward.
+            direction = 'forward' if (self.direction == 'average' and len(g.topo_pages) < 2) else self.direction
             img = processed_topo(g, direction, self.active_procs) * 1e9
             im = plots.draw_topo_frame(ax, g, img, self.scalefactor, cmap=TOPO_CMAP)
             if ax is self.ax_topo:
@@ -1249,10 +1307,11 @@ class Map:
         self._redraw_markers()
 
     def _on_direction(self, label):
-        """The 'topo pass' radio: the embedded topo redrawn from the chosen pass (both views); nothing without a topo page."""
+        """The 'topo pass' radio: the embedded topo redrawn from the chosen pass, or the two averaged ('average'), in both views; the box of what is drawn follows (the average sits on the forward placement alone); nothing without a topo page."""
         if label == self.direction or not self.grid.topo_pages:
             return
         self.direction = label
+        self._bounds = None
         self._draw_topo(self.ax_topo)
         self._grid_topo_stale = True
         if self.view == 'grid':

@@ -1,8 +1,9 @@
 """
 Topography processing: slope subtraction and Δz subtraction of an image (per
 scan line) and of a profile, the topography processors (one active at a
-time) and their directions, the range matching of averaged topographies,
-the processed topography of a file, the Topo window, the raw cross section
+time) and their directions, the range matching and the averaging of the two
+passes (average_passes: the one rule for topo images and a grid's own topo
+alike), the processed topography of a file, the Topo window, the raw cross section
 of the loaded topos along the browser's section path (cross_section: every
 segment of the path in order, each topo at its own scale), the profile window
 (ProfileWindow: raw height against position, the forward and reverse
@@ -182,6 +183,90 @@ def match_ranges(arrays):
     return out
 
 
+def _resample_rows(rev, pos_f, pos_r):
+    """
+    The reverse pass resampled onto the forward pass's placed positions, row
+    by row (the rows are the scan lines): `rev` (ny, nx) with the positions
+    `pos_f` and `pos_r` ((ny, nx, 2), one unit, NaN where a pixel is not
+    placed).  Along row i the positions are projected on the row's own
+    direction (the line from the forward row's first to its last placed
+    pixel; the reverse row's when the forward row has one placed pixel),
+    and the reverse heights are interpolated linearly at the forward
+    pixels' coordinates (np.interp over the placed reverse pixels with a
+    finite height, in order of position; a repeated coordinate keeps its
+    first pixel).  NaN beyond the reverse row's placed span, where a
+    forward pixel is not placed, and in a row with fewer than two usable
+    reverse pixels or no direction.  Returns (ny, nx).
+    """
+    rev = np.asarray(rev, dtype=np.float64)
+    pos_f = np.asarray(pos_f, dtype=np.float64)
+    pos_r = np.asarray(pos_r, dtype=np.float64)
+    out = np.full(rev.shape, np.nan)
+    for i in range(rev.shape[0]):
+        pf, pr, z = pos_f[i], pos_r[i], rev[i]
+        okf = np.all(np.isfinite(pf), axis=-1)
+        okr = np.all(np.isfinite(pr), axis=-1) & np.isfinite(z)
+        if okf.sum() < 1 or okr.sum() < 2:
+            continue
+        ends = np.flatnonzero(okf)
+        u = pf[ends[-1]] - pf[ends[0]]
+        if not np.linalg.norm(u):
+            ends = np.flatnonzero(okr)
+            u = pr[ends[-1]] - pr[ends[0]]
+        norm = float(np.linalg.norm(u))
+        if not norm:
+            continue
+        u = u / norm
+        sf = pf[okf] @ u
+        sr = pr[okr] @ u
+        zr = z[okr]
+        order = np.argsort(sr, kind='stable')
+        sr, zr = sr[order], zr[order]
+        keep = np.concatenate([[True], np.diff(sr) > 0])
+        sr, zr = sr[keep], zr[keep]
+        if len(sr) < 2:
+            continue
+        out[i, okf] = np.interp(sf, sr, zr, left=np.nan, right=np.nan)
+    return out
+
+
+def average_passes(fwd, rev, pos_f=None, pos_r=None):
+    """
+    The average of a file's two processed passes (process_topo of each: the
+    processor, then the minimum at zero), the one rule of every averaged
+    topography (processed_topo's 'average', a grid's own topo in the Map
+    window, the scan area's bands and the Topo window's stripes): the
+    passes range matched (match_ranges: each pass mapped to the larger range
+    by its own minimum and maximum, so neither dominates whatever their
+    heights), then the pixelwise mean, a pixel finite in one pass only
+    keeping that pass, then the minimum at zero.  With the passes' placed
+    positions `pos_f` and `pos_r` ((ny, nx, 2) in one unit, NaN where a
+    pixel is not placed; the drift's corrected positions) the reverse row of
+    every scan line is first resampled onto the forward row's placed
+    positions (_resample_rows), so the average is of both passes where they
+    were measured and sits on the forward pass's pixels; a forward pixel
+    beyond the reverse row's placed span keeps the forward alone.  Positions
+    of another shape are ignored; passes of different shapes give the
+    forward pass alone.  Returns (ny, nx).
+    """
+    f = np.asarray(fwd, dtype=np.float64)
+    r = np.asarray(rev, dtype=np.float64)
+    if f.shape != r.shape:
+        return f.copy()
+    if pos_f is not None and pos_r is not None:
+        pos_f = np.asarray(pos_f, dtype=np.float64)
+        pos_r = np.asarray(pos_r, dtype=np.float64)
+        if pos_f.shape == f.shape + (2,) and pos_r.shape == r.shape + (2,):
+            r = _resample_rows(r, pos_f, pos_r)
+    f, r = match_ranges([f, r])
+    both = np.isfinite(f) & np.isfinite(r)
+    out = np.where(np.isfinite(f), f, r)
+    out[both] = 0.5 * (f[both] + r[both])
+    if np.any(np.isfinite(out)):
+        out = out - np.nanmin(out)
+    return out
+
+
 def stripe_profile(topo_x, profiles, active=None):
     """
     The stripe profile of raw row profiles (the Line and line-average
@@ -205,23 +290,17 @@ def processed_topo(sm4, direction, active):
     """
     The processed topography of a file for a direction: 'forward' or
     'reverse' is process_topo of that pass; 'average' processes the two
-    passes separately, matches their ranges (match_ranges), averages them
-    pixelwise (a pixel acquired in one pass only keeps that pass), and shifts
-    the minimum to zero.  A file with a single topographic page gives its
-    forward pass for 'average'.
+    passes separately and combines them by the one rule of every averaged
+    topography (average_passes: the ranges matched, the pixelwise mean, a
+    pixel acquired in one pass only keeping that pass, the minimum at zero).
+    A file with a single topographic page gives its forward pass for
+    'average'.
     """
     if direction == 'average':
         if len(sm4.topo_pages) < 2:
             return process_topo(sm4.topo_raw('forward'), active)
-        f = process_topo(sm4.topo_raw('forward'), active)
-        r = process_topo(sm4.topo_raw('reverse'), active)
-        f, r = match_ranges([f, r])
-        both = np.isfinite(f) & np.isfinite(r)
-        out = np.where(np.isfinite(f), f, r)
-        out[both] = 0.5 * (f[both] + r[both])
-        if np.any(np.isfinite(out)):
-            out = out - np.nanmin(out)
-        return out
+        return average_passes(process_topo(sm4.topo_raw('forward'), active),
+                              process_topo(sm4.topo_raw('reverse'), active))
     return process_topo(sm4.topo_raw(direction), active)
 
 
@@ -234,17 +313,20 @@ def grid_stripe_layers(grid, direction, active, pix=None):
     only where its kept spectrum sits, found by location,
     Sm4File.spectrum_pixels) with `pix` None (the drift toggles off), else
     the drift's corrected positions (`pix` = Drift result 'pix').
-    `direction` is the 'topo pass' choice for the grid's topo, which
-    applies with `pix` None (the drift off): 'forward' or 'reverse' gives
-    that pass alone ('average' counts as forward: the two passes of a grid
-    are never averaged, averaging is for topo images).  With `pix` given
-    (the drift on) both passes are always returned at their own corrected
-    positions (the forward pass by its points' times, the reverse rigid at
-    the forward end, see drift.Drift.grid_chain), whatever `direction`
-    says; the caller draws the pass of its choice on top
-    (plots.draw_grid_stripes).  Returns (main image, second image or None,
-    main positions, second positions or None); (None, None, None, None)
-    without topo pages.
+    `direction` is the 'topo pass' choice for the grid's topo.  With `pix`
+    None (the drift off): 'forward' or 'reverse' gives that pass alone at
+    the recorded positions, 'average' the two passes averaged pixel by
+    pixel (average_passes: each pass normalized on its own) at the forward
+    positions.  With `pix` given (the drift on) 'forward' and 'reverse'
+    return both passes at their own corrected positions (the forward pass
+    by its points' times, the reverse rigid at the forward end, see
+    drift.Drift.grid_chain), the caller drawing the pass of its choice on
+    top (plots.draw_grid_stripes); 'average' returns one image, the reverse
+    row of every line resampled onto the forward row's corrected positions
+    and the two averaged (average_passes), at the forward positions.  A
+    single topo page gives the forward pass for 'average'.  Returns (main
+    image, second image or None, main positions, second positions or
+    None); (None, None, None, None) without topo pages.
     """
     if not grid.topo_pages:
         return None, None, None, None
@@ -253,8 +335,10 @@ def grid_stripe_layers(grid, direction, active, pix=None):
         pos_f = np.asarray(pix['forward'], dtype=np.float64)
         pos_r = None if pix.get('reverse') is None else np.asarray(pix['reverse'], dtype=np.float64)
         if two and pos_r is not None:
-            return (process_topo(grid.topo_raw('forward'), active), process_topo(grid.topo_raw('reverse'), active),
-                    pos_f, pos_r)
+            fwd, rev = process_topo(grid.topo_raw('forward'), active), process_topo(grid.topo_raw('reverse'), active)
+            if direction == 'average':
+                return average_passes(fwd, rev, pos_f, pos_r), None, pos_f, None
+            return fwd, rev, pos_f, pos_r
         return process_topo(grid.topo_raw('forward'), active), None, pos_f, None
     else:
         pos_f = grid.pixel_xy_m('forward')
@@ -267,6 +351,9 @@ def grid_stripe_layers(grid, direction, active, pix=None):
         pos_r = grid.pixel_xy_m('reverse') if two else None
     if direction == 'reverse' and two and pos_r is not None:
         return process_topo(grid.topo_raw('reverse'), active), None, pos_r, None
+    if direction == 'average' and two:
+        return (average_passes(process_topo(grid.topo_raw('forward'), active),
+                               process_topo(grid.topo_raw('reverse'), active)), None, pos_f, None)
     return process_topo(grid.topo_raw('forward'), active), None, pos_f, None
 
 
@@ -284,10 +371,12 @@ class TopoWindow:
     off, the processed image and the recorded positions.  A grid's own topo
     pixels are drawn over the image at their positions (grid_stripe_layers)
     as the scan area draws them, the pass chosen by the window's 'topo
-    pass' radio ('average' counts as forward: a grid's two passes are never
-    averaged): with both drift toggles off that pass alone at the recorded
-    positions; with a source on both passes at their corrected positions,
-    the pass the radio names on top.  'stripe match' (grid files) opens the
+    pass' radio: with both drift toggles off that pass alone at the recorded
+    positions ('average': the two passes averaged, each normalized on its
+    own, at the forward positions); with a source on both passes at their
+    corrected positions, the pass the radio names on top ('average': one
+    band, the reverse rows resampled onto the forward rows' corrected
+    positions and averaged; grid_stripe_layers).  'stripe match' (grid files) opens the
     stripe window (stripe.StripeWindow); the grid's stored fast-axis state
     for the setting in force places the lines (Drift.result with stripe
     None); the window's own 'anchor to topo' toggle (the MATLAB "drift for
@@ -311,7 +400,7 @@ class TopoWindow:
                     toggles then start off and cannot be turned on)
       auto_on, manual_on, anchor_on : the three toggles' starting states (the
                     browser's; anchor_on needs a drift model like the others)
-      spec_dir    : the grid's topo pass at opening ('forward' or 'reverse')
+      spec_dir    : the grid's topo pass at opening ('forward', 'reverse' or 'average')
     """
 
     DESIGN = (7.5, 7.4)    # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
@@ -331,7 +420,7 @@ class TopoWindow:
         self.auto_on = bool(auto_on and drift is not None)
         self.manual_on = bool(manual_on and drift is not None)
         self.anchor_on = bool(anchor_on and drift is not None)
-        self.spec_dir = spec_dir if spec_dir in ('forward', 'reverse') else 'forward'
+        self.spec_dir = spec_dir if spec_dir in TOPO_DIRECTIONS else 'forward'
         self.stripe_window = None
         from sm4_Browser import controls
         from sm4_Browser.qtplot import QtWidgets
@@ -538,14 +627,14 @@ class TopoWindow:
         try:
             self.stripe_window = StripeWindow(self.drift, f, self.scalefactor, list(self.active),
                                               setting=self.drift.slow_setting(f, self.auto_on, self.manual_on),
-                                              pass_top=self.spec_dir)
+                                              pass_top='reverse' if self.spec_dir == 'reverse' else 'forward')
         except ValueError as exc:
             print(f"Topo window: stripe window not opened ({exc}).")
 
     def _on_spec_dir(self, label):
-        """The 'topo pass' radio: the grid's own topo pass drawn alone (drift off) or on top (drift on); 'average' counts as forward."""
+        """The 'topo pass' radio: the grid's own topo pass drawn alone (drift off) or on top (drift on), or the two averaged ('average'; grid_stripe_layers)."""
         if label in TOPO_DIRECTIONS:
-            self.spec_dir = 'reverse' if label == 'reverse' else 'forward'
+            self.spec_dir = label
             self.draw()
 
 

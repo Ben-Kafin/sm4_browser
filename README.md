@@ -303,9 +303,12 @@ metrics in the computed store.
 ### Passes and sweeps
 
 A topography has a forward and a reverse pass; the `topo pass` radios choose `forward`, `reverse`
-or `average` (the two range-matched and averaged pixelwise) for the images. A grid's own stripes
-are never averaged: `average` counts as `forward` for them, and with a velocity on both passes are
-drawn, the chosen one on top. A grid with several sweeps per pixel gets a `sweeps` radio in the Line and Map
+or `average` (the two passes each processed and normalized on their own, then averaged pixelwise,
+`topo.average_passes`) for the images and for a grid's own topography alike: the Map window's
+embedded topography and its contour slice, the scan area's bands and the Topo window's stripes.
+With a velocity on, a grid's two passes are drawn at their corrected positions, the chosen one on
+top; `average` then draws one layer, the reverse row of every scan line resampled onto the forward
+row's corrected positions and the two averaged, on the forward placement. A grid with several sweeps per pixel gets a `sweeps` radio in the Line and Map
 windows (`forward sweeps`, `reverse sweeps`, `all sweeps`, `sweep n`), each view one column per
 pixel (the mean of the chosen sweeps); a single point with several sweeps gets the same choice in
 the averaging windows (`forward sweeps`, `reverse sweeps`, `all sweeps`), a view being the chosen
@@ -771,7 +774,7 @@ current's report on the directions found (`STS._direction_report`).
 ### `topo.py`
 
 The topography processors (`slope_subtract_image`, `delta_z_subtract_image`, their profile forms,
-`process_topo`, `match_ranges` for the averaged pass, `processed_topo` with the disk cache), the
+`process_topo`, `match_ranges` and `average_passes` for the averaged pass, `processed_topo` with the disk cache), the
 Topo window (`TopoWindow`), the cross section along the section path (`cross_section`: the raw
 heights under the path, each topography at its own scale), the profile window (`ProfileWindow`)
 and the profile plots (`ProfilePlots`, `ProfilePlot`).
@@ -930,7 +933,9 @@ clock, the averaging window's radio and its record), `check_background` (the wor
 a large directory), `alignment_windows` (the alignment of a line's stripe with its heatmap on real
 files), `diagnose_file` (one real file, step by step), `zero_crossing` (the raw current's zero
 crossing over saved averages), `check_contour` (the contour slice's marching squares and placement
-on known surfaces, numpy only: a plane, a cone, the saddles, never-acquired pixels, the frame).
+on known surfaces, numpy only: a plane, a cone, the saddles, never-acquired pixels, the frame),
+`check_pass_average` (the average of two passes, numpy only: identical passes unchanged, neither
+pass dominating whatever their heights, the reverse resampled onto the forward's placed positions).
 
 ## References
 
