@@ -1411,8 +1411,8 @@ class Map:
         """
         The marker artists drawn anew (the old ones removed) on every panel
         of the view shown (_marker_panels): every marker as a solid circle in
-        its colour, as wide as a pixel's diagonal (plots.draw_map_marker,
-        pixel_diagonal), centred on its pixel as drawn in that panel
+        its colour, as wide as a pixel's diagonal, with a white edge ring
+        (plots.draw_map_marker, pixel_diagonal), centred on its pixel as drawn in that panel
         (marker_xy: a map at its own energy slice's shift, a topo at the
         chain's), and with Average on
         every non-empty group's centre as a black X at the mean of its

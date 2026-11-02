@@ -795,17 +795,21 @@ def draw_point_sweeps(ax, xy, corrected, ends=None, lines=None, color=None):
         draw_drift_lines(ax, np.stack([xy, np.asarray(ends, dtype=np.float64)], axis=1), markers=False, color=color)
 
 
+MARKER_EDGE_PT = 1.5      # the width of a map marker's white edge ring (points)
+
+
 def draw_map_marker(ax, xy, color, diameter, label=None, pickable=False, zorder=2.0):
     """
     The marker of a map pixel (the one function for every map and topo panel of the Map window,
     both views, and the Feenstra companion's maps): a solid circle in `color` centred at `xy`
     (the pixel's centre as drawn), `diameter` in the panel's data units (the pixel's diagonal,
-    corner to corner, so it overlaps its neighbours slightly; it keeps that size at any zoom).
-    Its centre is the pixel whose spectrum it stands for.  `pickable`: a press inside the circle
-    picks it (`label` names it to the picker).  Returns the qtplot.Circle.
+    corner to corner, so it overlaps its neighbours slightly; it keeps that size at any zoom),
+    with a white edge ring MARKER_EDGE_PT wide inside its edge.  Its centre is the pixel whose
+    spectrum it stands for.  `pickable`: a press inside the circle picks it (`label` names it to
+    the picker).  Returns the qtplot.Circle.
     """
-    c = Circle(xy, 0.5 * float(diameter), facecolor=color, label=label, zorder=zorder,
-               picker=True if pickable else None)
+    c = Circle(xy, 0.5 * float(diameter), facecolor=color, linewidth=MARKER_EDGE_PT, edgecolor='white',
+               label=label, zorder=zorder, picker=True if pickable else None)
     return ax.add_patch(c)
 
 

@@ -235,7 +235,8 @@ def _artist(m, a):
     interpolation 'none' (the raw pixels), and its Affine2D (a rotated and translated topography)
     composed with the data transform; QuadMesh -> pcolormesh (NaN cells masked); ContourSet ->
     contourf from the arguments it was made with; LineCollection and PolyCollection -> the
-    matching collections; Circle -> a matplotlib Circle patch; Annotation -> annotate; Text -> text (empty texts skipped).  Anything
+    matching collections; Circle -> a matplotlib Circle patch (its fill, its edge ring inside
+    its edge); Annotation -> annotate; Text -> text (empty texts skipped).  Anything
     else is not exported.
     """
     from matplotlib.collections import LineCollection, PolyCollection
@@ -277,11 +278,16 @@ def _artist(m, a):
             return None
         return _quads(m, a.item, zorder=a.zorder)
     if isinstance(a, q.Circle):
+        # The fill and the edge ring inside the circle's edge, as on screen: matplotlib strokes on the
+        # path, half outside, so the edge is drawn twice as wide and clipped to the circle itself.
         from matplotlib.patches import Circle
         face = a._face if a._face is not None else 'none'
-        c = Circle(a._xy, a._r, facecolor=face, edgecolor=a._edge if a._lw else 'none', linewidth=a._lw or 0.0,
-                   alpha=a._alpha, zorder=a.zorder)
+        edge = bool(a._lw) and a._edge is not None
+        c = Circle(a._xy, a._r, facecolor=face, edgecolor=a._edge if edge else 'none',
+                   linewidth=2.0 * a._lw if edge else 0.0, alpha=a._alpha, zorder=a.zorder)
         m.add_patch(c)
+        if edge:
+            c.set_clip_path(Circle(a._xy, a._r, transform=m.transData))
         return c
     if isinstance(a, q.Annotation):
         p = a._ann

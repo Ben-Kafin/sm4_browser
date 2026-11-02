@@ -2144,14 +2144,60 @@ class LineCollection(Artist):
         return list(self._segments)
 
 
+class _CircleItem(QtWidgets.QGraphicsObject):
+    """
+    The item of a Circle, painted in screen pixels: the fill inside the edge ring, then the ring of
+    `edge_px` screen pixels in the edge colour whose outer edge is the circle's edge (the circle
+    keeps its size).
+    """
+
+    def __init__(self, circle):
+        super().__init__()
+        self._c = circle
+
+    def boundingRect(self):
+        return self._c._rect()
+
+    def paint(self, painter, option, widget=None):
+        c = self._c
+        (x, y), r = c._xy, c._r
+        t = painter.transform()
+        p0 = t.map(QtCore.QPointF(x, y))
+        p1 = t.map(QtCore.QPointF(x + r, y))
+        R = float(np.hypot(p1.x() - p0.x(), p1.y() - p0.y()))
+        if not R > 0:
+            return
+        w = min(float(c._edge_px), R) if c._edge_px else 0.0
+        painter.save()
+        painter.resetTransform()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, ANTIALIAS)
+        painter.setPen(QtGui.QPen(Qt.PenStyle.NoPen))
+        face = mkbrush(c._face, c._alpha)
+        if face is not None and R - w > 0:
+            painter.setBrush(face)
+            painter.drawEllipse(p0, R - w, R - w)
+        edge = mkbrush(c._edge, c._alpha)
+        if w > 0 and edge is not None:
+            ring = QtGui.QPainterPath()
+            ring.addEllipse(p0, R, R)
+            if R - w > 0:
+                inner = QtGui.QPainterPath()
+                inner.addEllipse(p0, R - w, R - w)
+                ring = ring.subtracted(inner)
+            painter.setBrush(edge)
+            painter.drawPath(ring)
+        painter.restore()
+
+
 class Circle(Artist):
     """
     A circle in data units (matplotlib's patches.Circle; Axes.add_patch draws it): centre `xy`
     and `radius` in the axes' data units, so it keeps its size in the data at any zoom (a marker
     one pixel of a map across stays that pixel's size).  `facecolor` (or `color`; None or 'none':
-    not filled), `edgecolor` and `linewidth` (points; None or 0: no edge), `alpha`.  A picker
-    makes contains_px test the inside of the circle as drawn (a number widens it by that many
-    display pixels).  get_center / set_center move it; get_radius gives its radius.
+    not filled), `alpha`; the edge: a ring of `linewidth` points (None or 0: no edge) in
+    `edgecolor` inside the circle's edge (the circle keeps its size; _CircleItem).  A picker makes contains_px test the inside of the circle as
+    drawn (a number widens it by that many display pixels).  get_center / set_center move it;
+    get_radius gives its radius.
     """
 
     zorder_default = 2.0
@@ -2164,6 +2210,7 @@ class Circle(Artist):
         self._face = color if facecolor is None else facecolor
         self._edge = edgecolor
         self._lw = linewidth
+        self._edge_px = pt2px(linewidth) if linewidth else 0.0
         self._alpha = alpha
         self.item = None
 
@@ -2174,20 +2221,18 @@ class Circle(Artist):
     def _attach(self, axes):
         self.axes = axes
         self.figure = axes.figure
-        self.item = QtWidgets.QGraphicsEllipseItem(self._rect())
-        brush = mkbrush(self._face, self._alpha)
-        self.item.setBrush(brush if brush is not None else QtGui.QBrush(Qt.BrushStyle.NoBrush))
-        pen = mkpen(self._edge, self._lw, '-', self._alpha) if self._lw else None
-        self.item.setPen(pen if pen is not None else QtGui.QPen(Qt.PenStyle.NoPen))
+        self.item = _CircleItem(self)
         self._add_item(self.item)
 
     def get_center(self):
         return self._xy
 
     def set_center(self, xy):
+        if self.item is not None:
+            self.item.prepareGeometryChange()          # before the geometry changes (Qt)
         self._xy = (float(xy[0]), float(xy[1]))
         if self.item is not None:
-            self.item.setRect(self._rect())
+            self.item.update()
 
     def get_radius(self):
         return self._r
