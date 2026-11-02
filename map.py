@@ -147,7 +147,7 @@ class Map:
 
     DESIGN = (16, 9)       # the design size (inches): the text zoom of the window is its size relative to this (qtplot.window_zoom)
 
-    def __init__(self, grid, active_procs, scalefactor, hampel_defaults, sgolay_defaults, cmap='jet',
+    def __init__(self, grid, active_procs, scalefactor, hampel_defaults, sgolay_defaults, cmap=plots.MAP_CMAP,
                  divide_iv=False, iv_broadening=0.0, channel='didv', averages=None, fit_settings=None,
                  iv_zero_sub=True, iv_broadened=False, drift=None, auto_on=False, manual_on=False):
         """
@@ -159,7 +159,7 @@ class Map:
           scalefactor     : the file's x/y scale factor: recorded metres / scalefactor are the
                             frame's nm (the browser hands the scale in force at the file's time)
           hampel_defaults, sgolay_defaults : the filter box's starting values (every filter off)
-          cmap            : the maps' colour map
+          cmap            : the maps' colour map (plots.MAP_CMAP by default)
           divide_iv, iv_broadening, iv_zero_sub, iv_broadened : the window's own 'Feenstra'
                             toggle's starting state and the Feenstra settings (the companion's
                             boxes; feenstra_width gives the width the division uses)
@@ -2098,5 +2098,5 @@ if __name__ == '__main__':
     sgolay_defaults = {'window_length': 6, 'polyorder': 3}
     # The map in the browser's start state: Slope Sub off, Δz sub on (one flag per processor),
     # Feenstra on with 0.2 V broadening.
-    window = Map(sm4file.Sm4File(path), [False, True], 2.75, hampel_defaults, sgolay_defaults, cmap='jet',
+    window = Map(sm4file.Sm4File(path), [False, True], 2.75, hampel_defaults, sgolay_defaults,
                  divide_iv=True, iv_broadening=0.2)

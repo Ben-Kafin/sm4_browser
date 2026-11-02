@@ -384,7 +384,8 @@ row of cells has the same height) and one energy beside the embedded topography
 with `< E` / `E >` and the curve panel (`sweeps`, for a file with several sweeps per pixel, under
 `< E` / `E >` at the bottom right); the curve panel is one panel, moved between the two views.
 `cmap norm` chooses one colour scale for the whole cube or one
-per map; one `γ` box per energy slice. A marker is a solid circle as wide as a pixel's diagonal,
+per map; one `γ` box per energy slice. The maps' colour map is `plots.MAP_CMAP` (midnight blue to
+light sky blue), the browser's `cmap_map` setting. A marker is a solid circle as wide as a pixel's diagonal,
 corner to corner, centred on its pixel (it overlaps the neighbouring pixels slightly; the pixel
 under its centre is the one whose spectrum it shows), drawn on the single view's map and
 topography and, in the grid view, on the topography cell and every energy's map (each map at its
@@ -719,7 +720,8 @@ curves, topographies at absolute positions (`draw_topo_absolute`) or in their ow
 (`draw_topo_frame`), drift lines and markers, point sweeps, profiles, the section path
 (`draw_section_path`), a topography's recorded outline (`draw_topo_outline`) and the Map window's
 contour slice (`draw_contour`); the colour constants (`MARKER_COLORS`, the drift line colours,
-`PARTNER_FRAME_COLOR`, the contour slice's `CONTOUR_COLOR` and `CONTOUR_LEVEL_COLOR`).
+`PARTNER_FRAME_COLOR`, the contour slice's `CONTOUR_COLOR` and `CONTOUR_LEVEL_COLOR`) and the two
+colour maps (`TOPO_CMAP` for every topography, `MAP_CMAP` for the Map window's maps).
 
 ### `sm4file.py`
 

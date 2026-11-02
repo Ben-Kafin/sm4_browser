@@ -634,7 +634,7 @@ class _BrowserCore:
     WINDOW = 25                    # the loaded set: the current file and the WINDOW - 1 files before it
 
     def __init__(self, directory, scalefactor=2.75, hampel_defaults=None, sgolay_defaults=None,
-                 line_window_kwargs=None, cmap_map='jet', drift_params=None,
+                 line_window_kwargs=None, cmap_map=plots.MAP_CMAP, drift_params=None,
                  iv_broadening_V=0.2, tip_params=None):
         """
         directory         : folder of .sm4 files of one experiment
@@ -650,7 +650,7 @@ class _BrowserCore:
                             the browser sets 'topo_lines' to the selected line's forward row and
                             replaces the Feenstra, drift and registry keys with its own
                             (_line_window_kwargs)
-        cmap_map          : colormap of the dI/dV maps
+        cmap_map          : colormap of the dI/dV maps (plots.MAP_CMAP, midnight blue to light sky blue)
         drift_params      : overrides of DRIFT_PARAMS (the tracker, the baseline, the stripe matching)
         iv_broadening_V   : broadening width (V) of I/V for the Feenstra division (divide_by_iv);
                             0 gives the plain ratio
@@ -3068,7 +3068,7 @@ def main(argv=None):
                           'sgolay_filter_params': sgolay_defaults, 'apply_calibration': False,
                           'apply_normalize': False, 'marker_positions': None, 'fit_settings': fit_settings}
     Browser.run(a.directory, scalefactor=a.scalefactor, hampel_defaults=hampel_defaults,
-                  sgolay_defaults=sgolay_defaults, line_window_kwargs=line_window_kwargs, cmap_map='jet',
+                  sgolay_defaults=sgolay_defaults, line_window_kwargs=line_window_kwargs, cmap_map=plots.MAP_CMAP,
                   drift_params={'sg_window': 5, 'sg_poly': 2, 'prominence_frac': 0.20})
 
 
@@ -3083,7 +3083,7 @@ if __name__ == '__main__':
     # Colormap object (e.g. matplotlib.colormaps['magma'] or a LinearSegmentedColormap of your own),
     # or a pyqtgraph ColorMap.  They are converted once into pyqtgraph lookup tables (qtplot.to_cmap).
     cmap_line = 'nipy_spectral'               # the Line and line-average heatmaps
-    cmap_map = 'nipy_spectral'                # the Map window's per-energy maps
+    cmap_map = plots.MAP_CMAP                 # the Map window's per-energy maps (midnight blue to light sky blue)
 
     hampel_defaults = {'window': 4, 'n_sigma': 3}
     sgolay_defaults = {'window_length': 6, 'polyorder': 3}

@@ -96,6 +96,8 @@ def marker_color(index):
 
 # The topography colour map (the scan area, the Topo window, the embedded topos, the stripes, the topo colour bars).
 TOPO_CMAP = mcolors.LinearSegmentedColormap.from_list("custom_topo", ["black", "firebrick", "yellow"])
+# The colour map of the Map window's per-energy dI/dV maps (the browser's cmap_map setting and Map's default).
+MAP_CMAP = mcolors.LinearSegmentedColormap.from_list("custom_map", ["midnightblue", "lightskyblue"])
 # Single-point markers on the scan area, chosen to stand out from the topo ramp
 # (black, firebrick, yellow) and from each other (the loaded-point colour is the browser's).
 POINT_CURRENT_COLOR = '#39ff14'     # the current single point (its first sweep): lime cross
