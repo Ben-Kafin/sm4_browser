@@ -42,6 +42,8 @@ Modules
   line           Line: a grid line's dI/dV against position, with its topography stripe
   map            Map: per-energy maps of a grid
   composer       the Map window's figure composer ('add to plot' / 'new plot')
+  contour        the Map window's contour slice: the iso-line of a topography at one level (marching squares)
+                 and its placement at the pixels as drawn
   drift          Drift: the auto drift (consecutive topo pairs tracked by feature-point matching, Diao et al.
                  2023 with KAZE), the manual drift (the drift window: marker pairs seeded by the auto velocity,
                  one velocity box applied as a confirmed, adjusted, or typed span, the MATLAB method), the optional stripe matching
@@ -55,7 +57,7 @@ Modules
   mplexport      a qtplot figure rebuilt as a matplotlib figure and saved (PDF, EPS, SVG, PNG, TIFF)
   checks/        the checks and diagnostics: synth (synthetic experiments served through the loader),
                  smoke_browser (the feature checks, offscreen, one @check per feature), smoke_sweeps,
-                 check_sweeps, check_affine, check_background, check_stripe, perf_layer, diagnose_file
+                 check_sweeps, check_affine, check_background, check_stripe, check_contour, perf_layer, diagnose_file
                  (one file step by step), alignment_windows (the old and the current line placement side
                  by side), zero_crossing (the current's zero crossing over the saved averages)
 

@@ -3,7 +3,9 @@ Per-energy maps of a grid file: the Map window (a tiled grid of every energy,
 or one energy beside the file's embedded topography with energy arrows and a
 curve panel), its marker groups (the Line window's method in 2D), its own
 'Feenstra' toggle and Feenstra companion, the 'calibrate' / 'normalize' box,
-the 'cmap norm' colour-scale toggle, and one 'γ' box per energy slice.
+the 'cmap norm' colour-scale toggle, one 'γ' box per energy slice, and the
+contour slice (a draggable level line on the topo colour bars; the topo's
+iso-line at that height on every map, contour.py).
 Also in the window: the 'channel' radio (dI/dV or IETS), the 'topo pass'
 radio of the embedded topo, the 'sweeps' radio of a file with several
 sweeps per pixel, the filter box, the window's own 'auto drift' / 'manual
@@ -23,7 +25,7 @@ if __package__ in (None, ''):
 import os
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import fit, widgets, plots, calibration, controls
+from sm4_Browser import fit, widgets, plots, calibration, controls, contour
 from sm4_Browser.qtplot import QtWidgets, QtCore
 
 Qt = QtCore.Qt
@@ -113,7 +115,27 @@ class Map:
     new or an open averaging window.  'add to plot' under the topo, the
     map and the curve panel sends that panel as shown to the figure
     composer (composer.FigureComposer, one per window); 'new plot' empties
-    it.  One topo colour bar sits right of the embedded topo.  The drift
+    it.  One topo colour bar sits right of the embedded topo in the single
+    view and one beside the topo cell in the grid view.
+
+    Contour slice (both views; WSxM's flooding, as outlines): a horizontal
+    level line on each topo colour bar (one level, the two lines move
+    together; plots.CONTOUR_LEVEL_COLOR, at half the range at open), dragged
+    by a press on it (the line follows the cursor's height on the bar while
+    the button is down).  Its
+    height is a fraction (z_frac) of the drawn topo's colour range: the pass
+    on top (the 'topo pass' radio's), on its own range as drawn (each pass
+    has its own with a drift source on).  The topo's iso-line at that height
+    (contour.iso_segments: marching squares on the processed pass in nm) is
+    drawn on the single view's map and on every grid map as single-colour
+    traces (plots.draw_contour: CONTOUR_COLOR, 1 pt, above the
+    pixels, under the markers), never as topo pixels and never on the topo
+    panels themselves, at the topo pixels' positions as drawn
+    (contour.to_frame: the frame, plus the pass's chained pixel shifts with
+    a drift source on); the same traces on every energy's map, since the
+    surface does not move with the energy while the maps' pixels do.  A
+    never-acquired pixel bounds no trace.  The traces go to the publication
+    files with the maps (mplexport: a line collection).  The drift
     toggles and the drift window are described at __init__.
     """
 
@@ -213,6 +235,11 @@ class Map:
         self.feenstra = None                        # the Feenstra companion (opened at the end of __init__)
         self.composer = None                        # the figure composer (composer.FigureComposer), made at the first add
         self._single_im = None                      # the single view's drawn map (its colour limits for the composer)
+        self.z_frac = 0.5                           # the contour slice: its level as a fraction of the drawn topo's colour range
+        self._contour_memo = None                   # the slice's segments in the frame for the level and the topo drawn (dropped with the topo)
+        self._contour_artists = []                  # the slice's traces on the maps of the view shown
+        self._level_lines = []                      # the slice's level line on each topo colour bar (single view, grid view)
+        self._topo_im = None                        # drift off: the single view's topo image (its colour range scales the slice)
 
         # Marker state: one group of two markers at the grid's centre.
         self.n_lines, self.n_fast = int(grid.n_lines), int(grid.n_fast)
@@ -292,8 +319,8 @@ class Map:
         # automatic layout: the one rule for every window (nothing placed by hand).  One Qt layout on the
         # canvas holds the controls and the panels' cells (qtplot.PanelCell); Qt sizes and places them.
         # Top: the pipeline box at the right.  Middle: the panels: the single view's cells (topo, its
-        # ramp, map, its colour bar, curves) or, in their place, the grid view's page (the topo with the
-        # curve panel under it, one map per energy to their right, each map's γ box under it; the one
+        # ramp, map, its colour bar, curves) or, in their place, the grid view's page (the topo with a ramp
+        # beside it and the curve panel under it, one map per energy to their right, each map's γ box under it; the one
         # curve panel moves between the views, _place_curve), with 'add to plot' under the topo, the map and the
         # curve panel in both views and the single view's γ box under its map.  Bottom: the controls
         # in columns, left to right in the order they always had; the sweeps choice under the '< E' /
@@ -370,6 +397,11 @@ class Map:
         self.grid_topo_ax = fig.add_axes(cell=cell)
         self.grid_topo_ax.set_xticks([])
         self.grid_topo_ax.set_yticks([])
+        # The grid view's topo colour bar beside the topo cell (the single view's is hidden there), as narrow
+        # as the maps' bars; it carries one of the contour slice's two level lines (_draw_level_lines).
+        tcell = fig.cell(min_px=(4, 20), inner_w=5)
+        gl.addWidget(tcell, 0, 1)
+        self.grid_topo_cbar = plots.draw_topo_cbar(fig, cell=tcell)
         self.grid_axes, self.grid_caxes, self.grid_gammas = [], [], []
         for e in range(self.n_e):
             rr, cc = self._grid_slot(e)
@@ -393,7 +425,7 @@ class Map:
             gl.setRowStretch(2 * rr, 1)
         # Each row of cells is one row: the maps (and the topo) set the height, their colour bars take it.
         for rr in range(self._grid_rows):
-            members = [self.grid_topo_ax] if rr == 0 else []
+            members = [self.grid_topo_ax, self.grid_topo_cbar] if rr == 0 else []
             for e in range(self.n_e):
                 if self._grid_slot(e)[0] == rr:
                     members += [self.grid_axes[e], self.grid_caxes[e]]
@@ -410,6 +442,7 @@ class Map:
             fig = self.fig
             self.drift.subscribe(self._refresh_drift, alive=lambda: plt.fignum_exists(fig))
             fig.canvas.mpl_connect('close_event', lambda event: self.drift.unsubscribe(self._refresh_drift))
+        self._draw_level_lines()
         self._draw_topo(self.ax_topo)
         self.recompute()
         self._apply_view()
@@ -629,7 +662,10 @@ class Map:
         _frame_limits'.  The single view's topo carries the spectra's drift
         lines whenever a result places the pixels (plots.draw_drift_lines,
         in the source's colour; _frame_lines); the grid view's cell is
-        titled 'Topo' (_grid_title, the maps' title function).
+        titled 'Topo' (_grid_title, the maps' title function).  The contour
+        slice's memo is dropped (the slice follows the topo drawn,
+        _contour_segments) and the single view's drift-off image is kept
+        (_topo_im: its colour range scales the slice, _topo_level).
         """
         for pm in self._topo_maps.pop(id(ax), []):
             try:
@@ -637,6 +673,7 @@ class Map:
             except Exception:
                 pass
         ax.clear()
+        self._contour_memo = None
         g = self.grid
         fs = 7 if small else 9
         if not self.has_topo:
@@ -660,12 +697,16 @@ class Map:
                 maps.append(plots.PixelMap(ax, img, self.extent, TOPO_CMAP, shift=sh,
                                            zorder=1.0 if p == top else 0.5))
             self._topo_maps[id(ax)] = maps
+            if ax is self.ax_topo:
+                self._topo_im = None
             ax.set_aspect('equal', adjustable='box')
             what = (f"both passes, {top} on top" if len(maps) > 1 else passes[-1]) + self._drift_tag()
         else:
             direction = 'reverse' if self.direction == 'reverse' else 'forward'      # a grid's passes are never averaged
             img = processed_topo(g, direction, self.active_procs) * 1e9
-            plots.draw_topo_frame(ax, g, img, self.scalefactor, cmap=TOPO_CMAP)
+            im = plots.draw_topo_frame(ax, g, img, self.scalefactor, cmap=TOPO_CMAP)
+            if ax is self.ax_topo:
+                self._topo_im = im
             what = direction
         self._frame_limits(ax)
         if small:
@@ -1057,8 +1098,9 @@ class Map:
         _limits and the slice's γ; the colour bar labelled with the
         quantity and its units; the frame limits; the title ("... drift
         corrected (<source>)" with shifts); the γ box set to the slice; then
-        the markers and the curve panel (_redraw_markers).  The topo panel
-        is _draw_topo's.
+        the contour slice on the maps of the view shown
+        (_draw_contour_artists), the markers and the curve panel
+        (_redraw_markers).  The topo panel is _draw_topo's.
         """
         ax = self.ax_map
         ax.clear()
@@ -1088,7 +1130,8 @@ class Map:
         ax.set_xlabel("x (nm, scan frame)")
         ax.set_ylabel("y (nm, scan frame)")
         self.gamma_single.set(self.gammas[self.e_index])
-        # The markers and the curve panel follow the maps (the topo panel is _draw_topo's).
+        # The contour slice, the markers and the curve panel follow the maps (the topo panel is _draw_topo's).
+        self._draw_contour_artists()
         self._redraw_markers()
 
     def draw_grid(self):
@@ -1233,17 +1276,18 @@ class Map:
         self.gamma_single.show(single)
         for ax in (self.ax_topo, self.ax_map, self.cax_map, self.ax_topo_cbar):
             ax.set_visible(single)
-        for ax in [self.grid_topo_ax] + self.grid_axes + self.grid_caxes:
+        for ax in [self.grid_topo_ax, self.grid_topo_cbar] + self.grid_axes + self.grid_caxes:
             ax.set_visible(not single)
         self.btn_view.set_text('Grid view' if single else 'Single view')
         self.fig.canvas.draw_idle()
 
     def toggle_view(self):
-        """'Grid view' / 'Single view': the other view (the grid drawn when switched to), the markers drawn on its panels (_draw_marker_artists)."""
+        """'Grid view' / 'Single view': the other view (the grid drawn when switched to), the markers and the contour slice drawn on its panels (_draw_marker_artists, _draw_contour_artists)."""
         self.view = 'grid' if self.view == 'single' else 'single'
         if self.view == 'grid':
             self.draw_grid()
         self._draw_marker_artists()
+        self._draw_contour_artists()
         self._apply_view()
 
     def step(self, d):
@@ -1475,11 +1519,93 @@ class Map:
         # the curves' too); the curve panel carries none of its own.
         self.ax_curve.set_ylabel('')
 
+    # --- the contour slice (the level line on the topo colour bars, the traces on the maps) ---
+
+    def _topo_level(self):
+        """
+        The contour slice's source: (img, z, shift), the processed topo pass
+        drawn on top in nm (the 'topo pass' radio's, the one the single
+        view's topo shows: the last quad map drawn with a drift source on,
+        the image kept by _draw_topo off), the level z in nm at z_frac of
+        that pass's own colour range as drawn (the quad map's norm, the
+        image's colour limits), and the pass's chained pixel shifts
+        ((ny, nx, 2) in the frame; None without a drift result).  None
+        without a topo page or before the topo is drawn.
+        """
+        if not self.has_topo:
+            return None
+        maps = self._topo_maps.get(id(self.ax_topo)) or []
+        if maps:
+            pm = maps[-1]                                   # the last drawn is on top (_draw_topo)
+            img, shift, lo, hi = pm.img, pm.shift, pm.norm.vmin, pm.norm.vmax
+        elif self._topo_im is not None:
+            img, shift = self._topo_im.get_array(), None
+            lo, hi = self._topo_im.get_clim()
+        else:
+            return None
+        if lo is None or hi is None or not (np.isfinite(lo) and np.isfinite(hi)):
+            return None
+        return img, float(lo + self.z_frac * (hi - lo)), shift
+
+    def _contour_segments(self):
+        """The slice's traces in the frame, (n, 2, 2): contour.iso_segments on the pass on top at the level of _topo_level, placed by contour.to_frame at the pixels as drawn (the extent, the pass's shifts); memoized until the level or the topo changes (_contour_memo); empty without a topo."""
+        if self._contour_memo is None:
+            src = self._topo_level()
+            if src is None:
+                self._contour_memo = np.zeros((0, 2, 2))
+            else:
+                img, z, shift = src
+                self._contour_memo = contour.to_frame(contour.iso_segments(img, z), self.extent, img.shape, shift)
+        return self._contour_memo
+
+    def _contour_panels(self):
+        """The map panels the contour slice is drawn on in the view shown: the single view's map, or every grid map (never a topo panel)."""
+        return list(self.grid_axes) if self.view == 'grid' else [self.ax_map]
+
+    def _draw_contour_artists(self):
+        """The contour slice drawn anew (the old traces removed) on every map panel of the view shown (_contour_panels; plots.draw_contour with the segments of _contour_segments); nothing before the first recompute or without a topo page."""
+        for art in self._contour_artists:
+            try:
+                art.remove()
+            except (ValueError, NotImplementedError):
+                pass
+        self._contour_artists = []
+        if self.maps is None or not self.has_topo:
+            return
+        segs = self._contour_segments()
+        if not len(segs):
+            return
+        for ax in self._contour_panels():
+            h = plots.draw_contour(ax, segs)
+            if h is not None:
+                self._contour_artists.append(h)
+
+    def _draw_level_lines(self):
+        """The contour slice's level line on each topo colour bar (the single view's and the grid view's; a bar spans 0 to 1, the fraction of the colour range): one pickable horizontal line per bar at z_frac, labelled '_zlevel' (_on_pick), drawn once; _set_level moves them."""
+        self._level_lines = []
+        for ax in (self.ax_topo_cbar, self.grid_topo_cbar):
+            h = ax.axhline(self.z_frac, color=plots.CONTOUR_LEVEL_COLOR, lw=1.5, label='_zlevel', picker=6,
+                           zorder=3.0)
+            self._level_lines.append(h)
+
+    def _set_level(self, frac):
+        """The contour slice's level set to `frac` of the colour range (clipped to 0 .. 1): both level lines moved, the traces made anew (the memo dropped) and redrawn on the view shown."""
+        frac = float(np.clip(frac, 0.0, 1.0))
+        if frac == self.z_frac:
+            return
+        self.z_frac = frac
+        for h in self._level_lines:
+            h.set_ydata([frac, frac])
+        self._contour_memo = None
+        self._draw_contour_artists()
+        self.fig.canvas.draw_idle()
+
     # --- dragging ---
 
     def _on_pick(self, event):
         """
-        A press on a marker ('marker_<i>') or a group centre ('_avg_<g>'):
+        A press on a marker ('marker_<i>'), a group centre ('_avg_<g>') or
+        the contour slice's level line ('_zlevel', either topo colour bar):
         it becomes the dragged object.  Markers overlap (each is a pixel's
         diagonal across), so of the ones under the press the one whose
         centre is nearest it is taken; the press's offset from that centre
@@ -1489,6 +1615,12 @@ class Map:
         artist = event.artist
         label = getattr(artist, 'get_label', lambda: '')()
         if not isinstance(label, str):
+            return
+        if label == '_zlevel':
+            # The contour slice's level line: the drag follows the cursor's height on the bar it was picked on.
+            self._active_obj = ('zlevel', artist.axes)
+            self._pick_dist = 0.0
+            self._grab = (0.0, 0.0)
             return
         if label.startswith('marker_'):
             idx = int(label.split('_')[1])
@@ -1513,8 +1645,12 @@ class Map:
         self._grab = (float(mx - c[0]), float(my - c[1]))
 
     def _on_motion(self, event):
-        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): the dragged centre (the cursor less the press's offset from it, _grab) picks the pixel drawn nearest it in that panel (a map at its own energy slice's shift, a topo at the chain's): a marker goes to that pixel; a group's centre moves every member by the same whole-pixel offset, clipped so no member leaves the grid."""
+        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): the dragged centre (the cursor less the press's offset from it, _grab) picks the pixel drawn nearest it in that panel (a map at its own energy slice's shift, a topo at the chain's): a marker goes to that pixel; a group's centre moves every member by the same whole-pixel offset, clipped so no member leaves the grid.  The contour slice's level line follows the cursor's height (the bar's data y, 0 to 1) while the cursor is on the colour bar it was picked on (_set_level)."""
         if self._active_obj is None or event.xdata is None or event.ydata is None:
+            return
+        if self._active_obj[0] == 'zlevel':
+            if event.inaxes is self._active_obj[1]:
+                self._set_level(event.ydata)
             return
         grid_e = next((e for e, ax in enumerate(self.grid_axes) if ax is event.inaxes), None)
         if event.inaxes is self.ax_map:

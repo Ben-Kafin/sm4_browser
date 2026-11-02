@@ -413,6 +413,17 @@ the curve panel take it. One label sits between the map's colour bar and the cur
 the same rule (a composer map with a non-square view shrinks, the spectrum panels of its row
 with it).
 
+The contour slice (WSxM's flooding, as outlines): a cyan level line on the topo colour bar (the
+single view's, and one beside the topo cell in the grid view; the two move together) is dragged by
+a press on it, following the cursor's height on the bar while the button is down, and the
+topography's contour at that height, the perimeters of everything
+above it, is drawn on the map and on every grid map as white 1 pt traces, never as topo pixels and
+never on the topography panel itself. The height is the line's fraction of the drawn topography's
+colour range (the pass on top, on its own range), half the range at open; the traces sit at the
+topography pixels' positions as drawn (with a drift source on, the pass's chained pixel shifts), the
+same on every energy's map, since the surface does not move with the energy while the maps' pixels
+do; a never-acquired pixel bounds no trace. They go to the publication files with the map.
+
 ### Averaging windows (avg1, avg2, ...)
 
 One indexed average of single-point files and marker-group selections (`averaging.py`). The left
@@ -706,8 +717,9 @@ Every drawing of data into axes, so a window only decides what to show: heatmaps
 `RowHeatmap`, `PixelMap`), colour bars, a grid's topography stripes, curves and sweeps, marker
 curves, topographies at absolute positions (`draw_topo_absolute`) or in their own frame
 (`draw_topo_frame`), drift lines and markers, point sweeps, profiles, the section path
-(`draw_section_path`) and a topography's recorded outline (`draw_topo_outline`); the colour
-constants (`MARKER_COLORS`, the drift line colours, `PARTNER_FRAME_COLOR`).
+(`draw_section_path`), a topography's recorded outline (`draw_topo_outline`) and the Map window's
+contour slice (`draw_contour`); the colour constants (`MARKER_COLORS`, the drift line colours,
+`PARTNER_FRAME_COLOR`, the contour slice's `CONTOUR_COLOR` and `CONTOUR_LEVEL_COLOR`).
 
 ### `sm4file.py`
 
@@ -831,12 +843,16 @@ alignment` window. `align.py` is the alignment on arrays alone: the common energ
 (`marker_map`), the common positions, the resampling of rows, columns and profiles and the average
 (`average_stack`).
 
-### `map.py` and `composer.py`
+### `map.py`, `composer.py` and `contour.py`
 
 The Map window (`Map`): the per-energy maps, the grid view and the single view, the colour scales,
-the markers in two dimensions, the drift within a sweep, the sends and `add to plot`.
-`composer.FigureComposer` is the figure composer: the collected panels, the symbols of the spectra
-on every map, the bias arrows, the scale bars, the removal of a panel and `new plot`.
+the markers in two dimensions, the drift within a sweep, the contour slice, the sends and `add to
+plot`. `composer.FigureComposer` is the figure composer: the collected panels, the symbols of the
+spectra on every map, the bias arrows, the scale bars, the removal of a panel and `new plot`.
+`contour.py` is the contour slice's geometry: `iso_segments` (marching squares at one level,
+vectorized over the cells, the segments in pixel coordinates; a cell with a never-acquired corner
+contributes none; the two ambiguous cases split by the mean of the four corners) and `to_frame`
+(the segments at the pixels as drawn, with the pixel shifts read between the pixels).
 
 ### `averaging.py`
 
@@ -911,7 +927,8 @@ location: the three storage layouts of a grid, a point's forward / reverse pairs
 clock, the averaging window's radio and its record), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on
 a large directory), `alignment_windows` (the alignment of a line's stripe with its heatmap on real
 files), `diagnose_file` (one real file, step by step), `zero_crossing` (the raw current's zero
-crossing over saved averages).
+crossing over saved averages), `check_contour` (the contour slice's marching squares and placement
+on known surfaces, numpy only: a plane, a cone, the saddles, never-acquired pixels, the frame).
 
 ## References
 

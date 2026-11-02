@@ -100,6 +100,10 @@ TOPO_CMAP = mcolors.LinearSegmentedColormap.from_list("custom_topo", ["black", "
 # (black, firebrick, yellow) and from each other (the loaded-point colour is the browser's).
 POINT_CURRENT_COLOR = '#39ff14'     # the current single point (its first sweep): lime cross
 POINT_SWEEP_COLOR = '#ff8c00'       # the later sweeps of the current point with drift correction on: orange dots
+# The Map window's contour slice: its traces on the maps (one colour, 1 pt wide, never the topo's pixels) and
+# its level line on the topo colour bars (cyan shows on the ramp's black, firebrick and yellow).
+CONTOUR_COLOR = 'white'
+CONTOUR_LEVEL_COLOR = 'cyan'
 
 
 # ---------------------------------------------------------------------- #
@@ -845,6 +849,21 @@ def draw_drift_lines(ax, lines, markers=True, zorder=3.2, color=None):
     return arts
 
 
+def draw_contour(ax, segments, zorder=1.5):
+    """
+    The Map window's contour slice on a map: `segments` ((n, 2, 2) of (x, y) in the panel's
+    units, contour.to_frame) as one LineCollection in CONTOUR_COLOR, 1 pt wide, at
+    `zorder` (above the map's pixels, under the markers).  Returns the collection, None when
+    there is no segment.
+    """
+    segs = np.asarray(segments, dtype=np.float64)
+    if segs.ndim != 3 or not len(segs):
+        return None
+    lc = LineCollection(segs, colors=CONTOUR_COLOR, linewidths=1.0, zorder=zorder)
+    ax.add_collection(lc)
+    return lc
+
+
 def draw_section_path(ax, points):
     """
     The browser's section path on the scan area: the polyline through
@@ -983,7 +1002,9 @@ def draw_topo_cbar(fig, rect=None, label='topo', cell=None):
     for every window) or at `rect` (figure fraction), showing the TOPO_CMAP
     ramp, low at the bottom, no ticks and no numbers, the word `label` above
     it.  One per window that uses the topo colour map (the browser's scan
-    area, the Line, Map, Feenstra and line-average windows).  Returns the axes.
+    area, the Line, Feenstra and line-average windows; two in the Map window,
+    one per view, each carrying the contour slice's level line).  Returns the
+    axes.
     """
     ax = fig.add_axes(cell=cell) if cell is not None else fig.add_axes(rect)
     ax.set_navigate(False)
