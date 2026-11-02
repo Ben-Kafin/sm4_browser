@@ -121,8 +121,8 @@ class Map:
     Contour slice (both views; WSxM's flooding, as outlines): a horizontal
     level line on each topo colour bar (one level, the two lines move
     together; plots.CONTOUR_LEVEL_COLOR, at half the range at open), dragged
-    by a press on it (the line follows the cursor's height on the bar while
-    the button is down).  Its
+    by a press on it (the line follows the cursor's height while the button
+    is down, wherever the cursor is sideways: the bar is narrow).  Its
     height is a fraction (z_frac) of the drawn topo's colour range: the pass
     on top (the 'topo pass' radio's), on its own range as drawn (each pass
     has its own with a drift source on).  The topo's iso-line at that height
@@ -1600,6 +1600,15 @@ class Map:
         self._draw_contour_artists()
         self.fig.canvas.draw_idle()
 
+    def _ramp_fraction(self, event, ax):
+        """The cursor's height on the topo colour bar `ax` as the fraction of its range, from the event's canvas pixel row and the bar's drawn box (Axes.get_window_extent, both from the bottom): the drag follows the cursor's height even when it leaves the narrow bar sideways.  None without a position."""
+        if event.y is None:
+            return None
+        x0, y0, w, h = ax.get_window_extent().bounds
+        if not h:
+            return None
+        return (float(event.y) - y0) / h
+
     # --- dragging ---
 
     def _on_pick(self, event):
@@ -1645,12 +1654,15 @@ class Map:
         self._grab = (float(mx - c[0]), float(my - c[1]))
 
     def _on_motion(self, event):
-        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): the dragged centre (the cursor less the press's offset from it, _grab) picks the pixel drawn nearest it in that panel (a map at its own energy slice's shift, a topo at the chain's): a marker goes to that pixel; a group's centre moves every member by the same whole-pixel offset, clipped so no member leaves the grid.  The contour slice's level line follows the cursor's height (the bar's data y, 0 to 1) while the cursor is on the colour bar it was picked on (_set_level)."""
-        if self._active_obj is None or event.xdata is None or event.ydata is None:
+        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): the dragged centre (the cursor less the press's offset from it, _grab) picks the pixel drawn nearest it in that panel (a map at its own energy slice's shift, a topo at the chain's): a marker goes to that pixel; a group's centre moves every member by the same whole-pixel offset, clipped so no member leaves the grid.  The contour slice's level line follows the cursor's height on the colour bar it was picked on (_ramp_fraction, _set_level) while the button is down, wherever the cursor is sideways."""
+        if self._active_obj is None:
             return
         if self._active_obj[0] == 'zlevel':
-            if event.inaxes is self._active_obj[1]:
-                self._set_level(event.ydata)
+            frac = self._ramp_fraction(event, self._active_obj[1])
+            if frac is not None:
+                self._set_level(frac)
+            return
+        if event.xdata is None or event.ydata is None:
             return
         grid_e = next((e for e, ax in enumerate(self.grid_axes) if ax is event.inaxes), None)
         if event.inaxes is self.ax_map:

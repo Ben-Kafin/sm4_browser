@@ -415,8 +415,8 @@ with it).
 
 The contour slice (WSxM's flooding, as outlines): a cyan level line on the topo colour bar (the
 single view's, and one beside the topo cell in the grid view; the two move together) is dragged by
-a press on it, following the cursor's height on the bar while the button is down, and the
-topography's contour at that height, the perimeters of everything
+a press on it, following the cursor's height while the button is down even when the cursor leaves
+the narrow bar sideways, and the topography's contour at that height, the perimeters of everything
 above it, is drawn on the map and on every grid map as white 1 pt traces, never as topo pixels and
 never on the topography panel itself. The height is the line's fraction of the drawn topography's
 colour range (the pass on top, on its own range), half the range at open; the traces sit at the
