@@ -378,10 +378,16 @@ they are level. The Feenstra companion draws them the same way.
 ### Map window and the figure composer
 
 The per-energy maps of a grid (`map.py`): `Grid view` toggles between the tiled grid of every
-energy (the embedded topography in the first cell) and one energy beside the embedded topography
+energy (the embedded topography in the first cell with the curve panel under it, the maps to their
+right in order of energy; every cell titled, `Topo` or the map's bias, one size for all, so every
+row of cells has the same height) and one energy beside the embedded topography
 with `< E` / `E >` and the curve panel (`sweeps`, for a file with several sweeps per pixel, under
-`< E` / `E >` at the bottom right). `cmap norm` chooses one colour scale for the whole cube or one
-per map; one `γ` box per energy slice. The markers are the Line window's method in 2D (pixels; the
+`< E` / `E >` at the bottom right); the curve panel is one panel, moved between the two views.
+`cmap norm` chooses one colour scale for the whole cube or one
+per map; one `γ` box per energy slice. The markers
+are drawn on the single view's map and topography and, in the grid view, on the topography cell and
+every energy's map (each map at its own energy's pixel shifts), and
+a marker or a group centre is dragged from any panel it is drawn on. The markers are the Line window's method in 2D (pixels; the
 `avgs` box and the marker box of `Markers` boxes, `Average`, `stack`, `substack`, `add new` / `add existing` per group,
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
 spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
@@ -881,7 +887,10 @@ the parent directory of the package folder (named `sm4_Browser`):
 PYTHONDONTWRITEBYTECODE=1 python -m sm4_Browser.checks.smoke_browser [names]
 ```
 
-`smoke_browser` opens the browser on the standard experiment and runs every check, one line per
+`smoke_browser` opens the browser on the standard experiment (`synth.standard`: two topographies,
+a map grid, a line grid, a single point, a topography; the map grid a finished 64 × 64 scan with 9
+energy slices, the line grid a 64 × 64 map scan stopped after 16 lines, at 401 energy points; the
+Line window checks open the line grid, the rest the map grid) and runs every check, one line per
 check, exiting non-zero on a failure; a name narrows it to the checks containing it. It configures
 Qt's offscreen platform with a screen large enough for every window at twice its design size (the
 built-in screen is 800 × 800). The families: the view (D), markers down to zero (E), the scan

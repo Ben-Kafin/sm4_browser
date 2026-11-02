@@ -271,10 +271,10 @@ class FeenstraWindow:
                  toggle on (else None), the stripe profile (never moved by
                  the drift; the rows' drift lines drawn on it), and the
                  positions of its cells (the pixels' own recorded locations)
-      shift, drift_lines : 'map': with the main window's drift toggle on,
-                 the pixel shifts (n_lines, n_fast, 2; plots.PixelMap) and
-                 the spectra's drift lines in the frame (n, npts, 2
-                 polylines through the sweeps), else None
+      shift    : 'map': with the main window's drift toggle on, the pixel
+                 shifts (n_lines, n_fast, 2; plots.PixelMap), else None (a
+                 map shows the drift by its pixels' positions, never by
+                 drift lines)
       marker_lines : 'line': [(position, colour)] and 'centers': [position]
       marker_points: 'map': [((x, y), colour)] and 'centers': [(x, y)]
       cmap     : the heatmap / map colour map
@@ -488,7 +488,7 @@ class FeenstraWindow:
         """
         What the top panels of one column depend on (not the markers): the
         kind, note and title, the data array's fingerprint, the gamma, the
-        drift (shear, shift, drift lines), the stripe and positions, the
+        drift (shear, shift), the stripe and positions, the
         extent, the colour map, the energy range and the limits.  Equal
         fingerprints on consecutive refreshes skip the rebuild of the
         heatmap / map (refresh).
@@ -496,7 +496,7 @@ class FeenstraWindow:
         return (view['kind'], v.get('note'), v.get('title'), self._sig(v.get('top')), self.gammas[key].value,
                 self._sig(view.get('shear')), self._sig(view.get('shift')), self._sig(view.get('stripe')),
                 self._sig(view.get('pos')), self._sig(view.get('kept')), tuple(view.get('extent') or ()),
-                str(view.get('cmap')), self._sig(view.get('drift_lines')), tuple(view.get('e_range') or ()),
+                str(view.get('cmap')), tuple(view.get('e_range') or ()),
                 tuple(view.get('limits') or ()))
 
     def _draw_top(self, view, v, key, col, kind):
@@ -543,8 +543,6 @@ class FeenstraWindow:
             top.set_aspect('equal', adjustable='box')
             top.set_xlabel("x (nm, scan frame)")
             top.set_ylabel("y (nm, scan frame)")
-            if view.get('drift_lines') is not None:
-                plots.draw_drift_lines(top, view['drift_lines'])
 
     def refresh(self):
         """

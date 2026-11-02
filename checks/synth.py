@@ -369,18 +369,34 @@ def install_files(directory, files):
     install(exp)
 
 
+GRID_N = 64            # the map and line grids' pixels per line and planned lines (64 x 64)
+MAP_NPTS = 9           # the map grid's energy slices: a real map has at most 15, mostly a handful
+LINE_NPTS = 401        # the line grid's energy points: line spectra are taken at high energy resolution
+LINE_LINES = 16        # the line grid's acquired lines: a map scan stopped after this many lines
+
+
 def standard(directory, v=(3e-12, -2e-12), grid_sweeps=('forward',), grid_layout='per_pixel', stripe_b=(1.0, 1.0),
              point_pairs=False):
-    """A small standard experiment: topo, topo, grid, point (20 sweeps in forward / reverse pairs with point_pairs, else 3 forward), topo (drift v in m/s); returns the Experiment."""
+    """
+    A small standard experiment: topo, topo, map grid, line grid, point (20 sweeps in forward /
+    reverse pairs with point_pairs, else 3 forward), topo (drift v in m/s); returns the Experiment.
+    The map grid is a finished GRID_N x GRID_N scan with MAP_NPTS energy slices; the line grid is a
+    GRID_N x GRID_N map scan stopped after LINE_LINES lines (its lines back to back, the rest never
+    acquired) at LINE_NPTS energy points.  Both take grid_sweeps, grid_layout and stripe_b.
+    """
     exp = Experiment(directory, v=v)
     t = T_REF
     exp.topo(t, center=(0.0, 0.0), size_m=24e-9, n=64)
     t += 64 * 64 * 2e-3 * 2 + 30
     exp.topo(t, center=(0.5e-9, 0.0), size_m=24e-9, n=64)
     t += 64 * 64 * 2e-3 * 2 + 30
-    exp.grid(t, center=(0.0, 0.0), n_fast=12, n_lines=12, size_m=8e-9, sweeps=grid_sweeps, layout=grid_layout,
-             stripe_b=stripe_b)
-    t += 12 * 12 * 0.5 * len(grid_sweeps) + 12 * 12 * 2e-3 + 60
+    n, k = GRID_N, len(grid_sweeps)
+    exp.grid(t, center=(0.0, 0.0), n_fast=n, n_lines=n, size_m=8e-9, npts=MAP_NPTS, sweeps=grid_sweeps,
+             layout=grid_layout, stripe_b=stripe_b)
+    t += n * n * 0.5 * k + n * n * 2e-3 + 60
+    exp.grid(t, center=(0.0, -6e-9), n_fast=n, n_lines=n, size_m=8e-9, npts=LINE_NPTS, sweeps=grid_sweeps,
+             layout=grid_layout, stop_after=LINE_LINES * n, stripe_b=stripe_b)
+    t += LINE_LINES * n * 0.5 * k + LINE_LINES * n * 2e-3 + 60
     exp.point(t, xy=(2e-9, 1e-9), n_sweeps=20 if point_pairs else 3, pairs=point_pairs)
     t += 60
     exp.topo(t, center=(0.0, 0.5e-9), size_m=24e-9, n=64)

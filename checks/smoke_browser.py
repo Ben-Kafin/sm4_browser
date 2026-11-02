@@ -9,7 +9,7 @@ configures Qt's offscreen platform itself with a 4200 x 2600 screen (_offscreen_
 QT_QPA_PLATFORM is unset or plain 'offscreen'; any other setting is left alone.  Every argument
 given is a substring: only the checks whose name contains one of them run (e.g. 'K1', 'drift').
 
-Builds the standard experiment (synth.standard: topo, topo, grid, point, topo) in a temporary
+Builds the standard experiment (synth.standard: topo, topo, map grid, line grid, point, topo) in a temporary
 directory, opens the Browser once at scale factor 1 (the event loop is not entered: plt.show
 returns at once), then runs every @check in order, one line 'PASS  <name>' or 'FAIL  <name>' with
 the traceback, and exits non-zero when any failed.  One @check per feature, named by family:
@@ -48,7 +48,7 @@ the traceback, and exits non-zero when any failed.  One @check per feature, name
       'normalize' off; M3 the console strings and the filter box label; M4 the occlusion tested
       as drawn at each file's scale; M5 tracked pairs with the files' signatures, tracked again
       after a change, written when tracked outside the build; M7 the Map window under the stripe
-      matching alone (frame, lines, title, one label per grid cell); M8 RowHeatmap with a short
+      matching alone (frame, lines, title, every grid cell titled); M8 RowHeatmap with a short
       shear; M6 the fit history keeps norm_range and the barrier bound is one rule; M9 qtplot
       (a title's size kept, a decimal is not a file name, a numeric aspect in the datalim
       widening); M10 records and helpers (an old fit family listed once, a member's default row,
@@ -56,7 +56,9 @@ the traceback, and exits non-zero when any failed.  One @check per feature, name
 
 The checks share one browser and tidy up after themselves (windows closed, settings removed), so
 a failed check can leave state behind for the ones after it.  smoke_sweeps.py reuses make_browser,
-goto_kind, open_line and open_map.
+goto_kind, open_line and open_map.  The Line window checks open the line grid (open_line), the rest
+the map grid (the first grid: goto_kind, open_map); a check comparing one grid's state across
+windows opens its Line window on that grid (open_line(b, f): H2, G6).
 """
 import os
 import sys
@@ -213,9 +215,11 @@ def goto_kind(b, kind):
     return b.current
 
 
-def open_line(b):
-    """Open a Line window on the first grid (the browser's 'Line' button) and return it."""
-    goto_kind(b, 'grid')
+def open_line(b, grid=None):
+    """Open a Line window (the browser's 'Line' button) on `grid` (an Sm4File or a path; by default the line grid of synth.standard, the second grid) and return it."""
+    if grid is None:
+        grid = [p for p in b.files if b.kinds[p] == 'grid'][1]
+    b._goto(b.files.index(getattr(grid, 'path', grid)))
     n = len(b.children)
     b._on_line()
     assert len(b.children) == n + 1, "Line window did not open"
@@ -495,7 +499,7 @@ def _stripe_toggle(b, exp):
         d.set_fast_state(f, s, 'off')
     d.clear_stripe_points(f, 'auto')
     assert not b.chk_stripe.value
-    w = open_line(b)
+    w = open_line(b, f)                                         # the Line window on the same grid
     b._on_topo_window()
     tw = b.children[-1]
     assert not w._int_chk_stripe.value and not tw.chk_stripe.value
@@ -617,7 +621,7 @@ def _pass_order_and_line(b, exp):
     assert len(quads) == 2 and np.allclose(quads[-1].shift, m._topo_shift('forward'), equal_nan=True)
     plt.close(m.fig)
     # the Line window opens with the forward row only; its rows sit on their own pixels and carry the within-sweep shear
-    w = open_line(b)
+    w = open_line(b, f)                                         # the Line window on the same grid
     assert w._int_topo_lines == [(w.chunk_index, 'forward')], w._int_topo_lines
     d.set_fast_state(f, 'auto', 'auto')
     w._int_apply_drift_toggle()
@@ -1952,7 +1956,7 @@ def _tracked_pairs(b, exp):
     assert key2 in _json(_store_files(b.directory)[1])['pairs']['content']['pairs']
 
 
-@check("M7 Map window: the stripe matching alone places the pixels, widens the frame and draws the lines, the titles say 'stripe matched'; one energy label per grid cell")
+@check("M7 Map window: the stripe matching alone places the pixels, widens the frame and draws the lines, the titles say 'stripe matched'; every grid cell titled, its energy or 'Topo'")
 def _map_stripe_only(b, exp):
     grid = goto_kind(b, 'grid')
     m = open_map(b)
@@ -1969,14 +1973,16 @@ def _map_stripe_only(b, exp):
     t = m.ax_map._title_full                                 # the panel shows the short title; the details are in the full one
     assert 'stripe matched' in t and 'drift corrected' not in t, t
     assert 'stripe matched' in m.ax_topo._title_full, m.ax_topo._title_full
-    # the grid view keeps one energy label per cell however often it is redrawn
+    # the grid view titles every map with its energy and the topo cell 'Topo' (no text inside a map), however
+    # often it is redrawn
     m.toggle_view()
-    n0 = [len(ax.texts) for ax in m.grid_axes]
-    assert all(n == 1 for n in n0), n0
+    titles = [f"{v:.2f} V" for v in m.V]
+    assert [ax._title_full for ax in m.grid_axes] == titles and all(len(ax.texts) == 0 for ax in m.grid_axes)
     m._refresh_drift()
     m._on_drift_toggle('auto', True)
     m._on_drift_toggle('auto', False)
-    assert [len(ax.texts) for ax in m.grid_axes] == n0, [len(ax.texts) for ax in m.grid_axes]
+    assert [ax._title_full for ax in m.grid_axes] == titles and all(len(ax.texts) == 0 for ax in m.grid_axes)
+    assert m.grid_topo_ax._title_full == 'Topo', m.grid_topo_ax._title_full
     b.drift.set_fast_state(grid, setting, 'off')
     plt.close(m.fig)
     b._goto(0)
@@ -2201,7 +2207,7 @@ def _assert_row(axes, what=''):
     return hs[0]
 
 
-@check("N2 rows: every row of panels at one height, spatial panels keeping their aspect, the rest following (Map single and grid views, its companion, the Topo window, the composer, the drift window); one label between the map's colour bar and the curves")
+@check("N2 rows: every row of panels at one height, spatial panels keeping their aspect, the rest following (Map single and grid views, every grid row at one height, the curve panel under the grid's topo, its companion, the Topo window, the composer, the drift window); one label between the map's colour bar and the curves")
 def _rows(b, exp):
     from sm4_Browser import plots
     m = open_map(b)
@@ -2223,9 +2229,13 @@ def _rows(b, exp):
     for ax in [m.grid_topo_ax] + m.grid_axes + m.grid_caxes:
         rows.setdefault(id(ax._row), ax._row)
     assert len(rows) >= 1 and all(len(r) >= 2 for r in rows.values())
-    for r in rows.values():
-        if any(ax.get_visible() for ax in r):
-            _assert_row([ax for ax in r if ax.get_visible()], 'Map grid view')
+    hs = [_assert_row([ax for ax in r if ax.get_visible()], 'Map grid view') for r in rows.values()
+          if any(ax.get_visible() for ax in r)]
+    # every row at the height of every other, the first (with the topo) too: every cell titled at one size
+    assert max(hs) - min(hs) < 1.5, ('Map grid view rows', hs)
+    # the one curve panel under the topo cell, as wide as its column
+    t, c = m.grid_topo_ax._cell.rect_px(), m.ax_curve._cell.rect_px()
+    assert m.ax_curve.get_visible() and abs(c[0] - t[0]) < 1.0 and abs(c[2] - t[2]) < 1.0 and c[1] >= t[1] + t[3] - 1.0, (t, c)
     m.toggle_view()
     # the companion of the map: the maps and their colour bars at one height
     fw = m.feenstra

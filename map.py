@@ -40,9 +40,11 @@ from sm4_Browser.topo import processed_topo, process_topo, TOPO_CMAP
 class Map:
     """
     Grid file: a toggle ('Grid view' / 'Single view') between (a) a tiled
-    grid of the embedded topography (first cell) and every energy, and (b)
-    one energy beside the file's own embedded topography with energy arrows
-    ('< E', 'E >') and a curve panel.  Maps are the channel (dI/dV, or IETS
+    grid of the embedded topography (first cell, the curve panel under it)
+    and every energy's map to their right, every cell titled ('Topo', the
+    map's energy), and (b) one energy beside the file's own embedded
+    topography with energy arrows ('< E', 'E >') and the curve panel (one
+    panel, moved between the views).  Maps are the channel (dI/dV, or IETS
     by the 'channel' radio) through the pipeline (Sm4File.curves,
     STS.process_arrays: the filter box's Hampel and Savitzky-Golay filters
     on the current, the division by the broadened I/V with 'Feenstra' on),
@@ -67,9 +69,11 @@ class Map:
     of the colour map, plots.heat_norm): one box under each grid map, and the
     single view's box edits the current slice's value.
 
-    Markers (the single view): the Line window's marker method in 2D.  A
+    Markers (both views): the Line window's marker method in 2D.  A
     marker is a grid pixel (line, fast); it is drawn as a small square at the
-    pixel's centre on the map and on the embedded topo.  The 'avgs' box
+    pixel's centre on the map and on the embedded topo, in the grid view on
+    the topo cell and on every energy's map (each map at its own energy's
+    pixel shifts).  The 'avgs' box
     (0 to MAX_GROUPS) is the number of groups; every group has its own row
     in the marker box: its 'Markers' box (0 to 10 markers; a group at 0
     keeps its centre), framed in the group's colour, with 'add new' and
@@ -87,8 +91,8 @@ class Map:
     companion window (feenstra.FeenstraWindow) that opens with it and
     follows it: the map at the current energy in four versions with the
     marker curves under each.  Dragging: a press on a
-    marker (either panel) moves it to the pixel under the cursor; with
-    Average on, a press on a group's centre (a black X on the map) moves the
+    marker (any panel it is drawn on) moves it to the pixel under the cursor; with
+    Average on, a press on a group's centre (a black X on a map) moves the
     whole group by the same pixel offset, clipped so no member leaves the
     grid.  The curve panel shows one spectrum per marker (from the cube: the
     window's filters, flags, Feenstra, and channel), or with Average on one
@@ -159,7 +163,8 @@ class Map:
         # with both toggles off (then with no slow-axis drift).  The embedded topo is drawn as quads with
         # every pixel at its chained position (_draw_topo, plots.PixelMap: nothing is clipped), the frame
         # widens to hold every shifted pixel (_drift_bounds; with a toggle on), and the spectra's drift
-        # lines are drawn on both panels in the auto or the manual colour (with a toggle on).  'drift
+        # lines are drawn on the single view's topo in the auto or the manual colour (with a toggle on;
+        # never on a map, whose pixels' positions show the drift).  'drift
         # window' opens the file's before and after topos for marker pairs (drift.DriftWindow), whose
         # span refreshes the maps at once (Drift.subscribe, below).
         self.drift = drift
@@ -284,8 +289,9 @@ class Map:
         # automatic layout: the one rule for every window (nothing placed by hand).  One Qt layout on the
         # canvas holds the controls and the panels' cells (qtplot.PanelCell); Qt sizes and places them.
         # Top: the pipeline box at the right.  Middle: the panels: the single view's cells (topo, its
-        # ramp, map, its colour bar, curves) or, in their place, the grid view's page (the topo and one
-        # map per energy, each map's γ box under it), with 'add to plot' under the topo, the map and the
+        # ramp, map, its colour bar, curves) or, in their place, the grid view's page (the topo with the
+        # curve panel under it, one map per energy to their right, each map's γ box under it; the one
+        # curve panel moves between the views, _place_curve), with 'add to plot' under the topo, the map and the
         # curve panel in both views and the single view's γ box under its map.  Bottom: the controls
         # in columns, left to right in the order they always had; the sweeps choice under the '< E' /
         # 'E >' buttons at the bottom right.
@@ -302,6 +308,7 @@ class Map:
         self._grid_layout.setVerticalSpacing(1)
         self._grid_page.setVisible(False)
         sg = QtWidgets.QGridLayout()
+        self._single_layout = sg                             # the curve panel's place in the single view (_place_curve)
         sg.setContentsMargins(0, 0, 0, 0)
         sg.setHorizontalSpacing(8)
         sg.setVerticalSpacing(2)
@@ -349,10 +356,11 @@ class Map:
         # One row: the topo and the map keep their aspect (the frame, or the drift's wider box) and set
         # the height; the two colour bars and the curve panel take it (qtplot Figure.align_row).
         fig.align_row(self.ax_topo, self.ax_topo_cbar, self.ax_map, self.cax_map, self.ax_curve)
-        # Grid view axes (built once, on their page until toggled), one γ box under each map.
-        n_cells = self.n_e + 1                      # the topo first, then one map per energy
-        ncols = int(np.ceil(np.sqrt(n_cells)))
-        nrows = int(np.ceil(n_cells / ncols))
+        # Grid view axes (built once, on their page until toggled): the topo in the first column's top
+        # cell with the curve panel under it (the single view's panel, moved there while the grid view is
+        # shown: _place_curve), the maps in the columns to their right in order of energy (grid_shape,
+        # _grid_slot), one γ box under each map.
+        self._grid_cols, self._grid_rows = self.grid_shape(self.n_e)
         gl = self._grid_layout
         cell = fig.cell(min_px=(20, 20))
         gl.addWidget(cell, 0, 0)
@@ -361,7 +369,7 @@ class Map:
         self.grid_topo_ax.set_yticks([])
         self.grid_axes, self.grid_caxes, self.grid_gammas = [], [], []
         for e in range(self.n_e):
-            rr, cc = divmod(e + 1, ncols)
+            rr, cc = self._grid_slot(e)
             cell = fig.cell(min_px=(20, 20))
             ccell = fig.cell(min_px=(4, 20), inner_w=5)
             gl.addWidget(cell, 2 * rr, 2 * cc)
@@ -376,19 +384,18 @@ class Map:
             g.on_change(lambda value, e=e: self._on_gamma_grid(e, value))
             gl.addWidget(g.qt, 2 * rr + 1, 2 * cc, Qt.AlignmentFlag.AlignRight)
             self.grid_gammas.append(g)
-        for cc in range(ncols):
+        for cc in range(self._grid_cols + 1):
             gl.setColumnStretch(2 * cc, 1)
-        for rr in range(nrows):
+        for rr in range(self._grid_rows):
             gl.setRowStretch(2 * rr, 1)
         # Each row of cells is one row: the maps (and the topo) set the height, their colour bars take it.
-        for rr in range(nrows):
+        for rr in range(self._grid_rows):
             members = [self.grid_topo_ax] if rr == 0 else []
             for e in range(self.n_e):
-                if divmod(e + 1, ncols)[0] == rr:
+                if self._grid_slot(e)[0] == rr:
                     members += [self.grid_axes[e], self.grid_caxes[e]]
             fig.align_row(*members)
         self.grid_ims = [None] * self.n_e
-        self.grid_labels = [None] * self.n_e      # the grid view's energy label per cell, made once (_grid_label)
         self.maps = None
         self.fig.canvas.mpl_connect('pick_event', self._on_pick)
         self.fig.canvas.mpl_connect('motion_notify_event', self._on_motion)
@@ -616,7 +623,10 @@ class Map:
         pass the 'topo pass' radio names on top ('average' counts as
         forward: a grid's passes are never averaged); off, the chosen pass
         at the recorded pixels (plots.draw_topo_frame).  The limits are
-        _frame_limits'.
+        _frame_limits'.  The single view's topo carries the spectra's drift
+        lines whenever a result places the pixels (plots.draw_drift_lines,
+        in the source's colour; _frame_lines); the grid view's cell is
+        titled 'Topo' (_grid_title, the maps' title function).
         """
         for pm in self._topo_maps.pop(id(ax), []):
             try:
@@ -656,13 +666,18 @@ class Map:
             what = direction
         self._frame_limits(ax)
         if small:
-            ax.set_title("Topo", fontsize=fs)
+            self._grid_title(ax, "Topo")
             ax.set_xticks([])
             ax.set_yticks([])
         else:
             ax.set_title(f"Topography: {g.name}  [{what}]", fontsize=fs)
             ax.set_xlabel("x (nm, scan frame)")
             ax.set_ylabel("y (nm, scan frame)")
+            # The spectra's drift lines on the single view's topo only (never on a map: the maps show the
+            # drift by their pixels' positions), drawn with the topo, so a marker move never redraws them.
+            lines = self._frame_lines()
+            if lines is not None:
+                plots.draw_drift_lines(ax, lines, color=plots.drift_color(self._drift_source))
 
     def _frame_lines(self):
         """
@@ -984,7 +999,6 @@ class Map:
                 'extent': self.extent,
                 'limits': self._drift_bounds() if self._drift_result() is not None else None,
                 'shift': self._frame_shift(self.e_index),
-                'drift_lines': self._frame_lines(),
                 'marker_points': [(self.marker_xy(px, True), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
                 'centers': [self.group_center_xy(m, g) for g, m in enumerate(self.groups())],
                 'cmap': self.cmap}
@@ -1079,12 +1093,17 @@ class Map:
         every energy's map on the colour scale of _limits with its own γ:
         with pixel shifts a new plots.PixelMap each time (the old one
         removed), else an image made once (plots.draw_heatmap) and updated
-        after (plots.update_heatmap); the energy written inside the map at
-        the first draw; each map's colour bar redrawn.
+        after (plots.update_heatmap); the map titled by its energy at the
+        first draw (_grid_title); each map's colour bar redrawn.  A redrawn topo cell
+        loses its markers with its clear: they are drawn again
+        (_draw_marker_artists) in the grid view.
         """
+        topo_redrawn = self._grid_topo_stale
         if self._grid_topo_stale:
             self._draw_topo(self.grid_topo_ax, small=True)
             self._grid_topo_stale = False
+        if topo_redrawn and self.view == 'grid':
+            self._draw_marker_artists()
         lo, hi = self._limits()
         for e, ax in enumerate(self.grid_axes):
             m = self.maps[e]
@@ -1104,24 +1123,46 @@ class Map:
                 if self.grid_ims[e] is None:
                     self._frame_limits(ax)
                     ax.set_aspect('equal', adjustable='box')
-                    self._grid_label(e, ax)
+                    self._grid_title(ax, f"{self.V[e]:.2f} V")
                 self.grid_ims[e] = pm
             elif self.grid_ims[e] is None:
                 self.grid_ims[e] = plots.draw_heatmap(ax, m, self.extent, self.cmap, gamma=self.gammas[e],
                                                       vmin=lo, vmax=hi, origin='lower', aspect='equal',
                                                       interpolation='none')
                 self._frame_limits(ax)
-                self._grid_label(e, ax)
+                self._grid_title(ax, f"{self.V[e]:.2f} V")
             else:
                 plots.update_heatmap(self.grid_ims[e], m, gamma=self.gammas[e], vmin=lo, vmax=hi)
             plots.draw_colorbar(self.fig, self.grid_ims[e], self.grid_caxes[e], labelsize=5)
 
-    def _grid_label(self, e, ax):
-        """The energy label of grid cell e ('<bias> V', top left), made once and kept across the cell's redraws."""
-        if self.grid_labels[e] is None:
-            self.grid_labels[e] = ax.text(0.03, 0.95, f"{self.V[e]:.2f} V", transform=ax.transAxes, fontsize=6,
-                                          ha='left', va='top', bbox=dict(facecolor='white', alpha=0.75, lw=0, pad=1))
-        return self.grid_labels[e]
+    GRID_TITLE_PT = 7      # the grid view's cell titles: one size, so every row of cells has one title band
+
+    def _grid_title(self, ax, text):
+        """A grid view cell's title ('Topo', or a map's energy '<bias> V'), one size for every cell (GRID_TITLE_PT): every row of cells then has the same title band (the row rule, Figure.align_row) and the same height."""
+        ax.set_title(text, fontsize=self.GRID_TITLE_PT)
+
+    @staticmethod
+    def grid_shape(n_e):
+        """The grid view's (map columns, rows) for n_e maps: about square, ceil(sqrt(n_e)) map columns, with at least two rows so that the curve panel under the topo cell has a row (then ceil(n_e / 2) map columns)."""
+        k = int(np.ceil(np.sqrt(n_e)))
+        r = int(np.ceil(n_e / k))
+        if r < 2:
+            r, k = 2, int(np.ceil(n_e / 2))
+        return k, r
+
+    def _grid_slot(self, e):
+        """The grid view cell (row, column) of energy e's map: in order of energy, row by row, in the map columns right of the topo's column (column 0: the topo, the curve panel under it)."""
+        return e // self._grid_cols, e % self._grid_cols + 1
+
+    def _place_curve(self):
+        """The one curve panel in the view shown: in the single view right of the map's colour bar (the single view's row), in the grid view under the topo cell, as wide as the topo's column and as tall as the rows below it."""
+        cell = self._cell_curve
+        if self.view == 'grid':
+            self._single_layout.removeWidget(cell)
+            self._grid_layout.addWidget(cell, 2, 0, 2 * (self._grid_rows - 1), 1)
+        else:
+            self._grid_layout.removeWidget(cell)
+            self._single_layout.addWidget(cell, 0, 4)
 
     def _on_channel(self, label):
         """The 'channel' radio: the maps are recomputed from the chosen channel; a file without it puts the radio back."""
@@ -1179,13 +1220,14 @@ class Map:
         ax.set_ylim(min(b, t), max(b, t))
 
     def _apply_view(self):
-        """Show the cells, axes and γ boxes of the current view (single or grid), hide the other's; the toggle button names the other view."""
+        """Show the cells, axes and γ boxes of the current view (single or grid), hide the other's; the one curve panel moved into the view shown (_place_curve); the toggle button names the other view."""
         single = self.view == 'single'
+        self._place_curve()
         for cell in self._single_cells:
-            cell.setVisible(single)
+            cell.setVisible(single or cell is self._cell_curve)
         self._grid_page.setVisible(not single)
         self.gamma_single.show(single)
-        for ax in (self.ax_topo, self.ax_map, self.cax_map, self.ax_curve, self.ax_topo_cbar):
+        for ax in (self.ax_topo, self.ax_map, self.cax_map, self.ax_topo_cbar):
             ax.set_visible(single)
         for ax in [self.grid_topo_ax] + self.grid_axes + self.grid_caxes:
             ax.set_visible(not single)
@@ -1193,10 +1235,11 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def toggle_view(self):
-        """'Grid view' / 'Single view': the other view (the grid drawn when switched to)."""
+        """'Grid view' / 'Single view': the other view (the grid drawn when switched to), the markers drawn on its panels (_draw_marker_artists)."""
         self.view = 'grid' if self.view == 'single' else 'single'
         if self.view == 'grid':
             self.draw_grid()
+        self._draw_marker_artists()
         self._apply_view()
 
     def step(self, d):
@@ -1278,17 +1321,17 @@ class Map:
         self.group_ctr = ctr
         return ctr
 
-    def group_center_xy(self, members, g=None, on_map=True):
-        """A group's centre in the frame (nm) as drawn: the mean of its markers' drawn positions (marker_xy, on the map at the shown energy or on the topo), or pixel_xy of its kept centre without markers."""
+    def group_center_xy(self, members, g=None, on_map=True, e=None):
+        """A group's centre in the frame (nm) as drawn: the mean of its markers' drawn positions (marker_xy, on a map at energy slice e, the shown energy when e is None, or on the topo), or pixel_xy of its kept centre without markers."""
         if members:
-            pts = np.array([self.marker_xy(self.marker_px[i], on_map) for i in members], dtype=np.float64)
+            pts = np.array([self.marker_xy(self.marker_px[i], on_map, e) for i in members], dtype=np.float64)
             return (float(pts[:, 0].mean()), float(pts[:, 1].mean()))
         return self.pixel_xy(self.group_center(members, g))
 
-    def _marker_shift(self, on_map=True):
-        """Every pixel's shift as drawn, (n_lines, n_fast, 2) in the frame (nm): on the map the shift of the shown energy (_frame_shift), on the topo the chained shift of the sweep's start; None without a result."""
+    def _marker_shift(self, on_map=True, e=None):
+        """Every pixel's shift as drawn, (n_lines, n_fast, 2) in the frame (nm): on a map the shift of energy slice e (_frame_shift; the shown energy when e is None), on the topo the chained shift of the sweep's start; None without a result."""
         if on_map:
-            return self._frame_shift(self.e_index)
+            return self._frame_shift(self.e_index if e is None else e)
         chain = self._chain_shift()
         if chain is None:
             return None
@@ -1299,19 +1342,19 @@ class Map:
         s[:m] = chain[:m]
         return self._to_frame_shift(s).reshape(g.n_lines, g.n_fast, 2)
 
-    def marker_xy(self, px, on_map=True):
-        """Where grid pixel (line, fast) is drawn (nm): its centre plus its shift as drawn (_marker_shift), so that a marker sits on its pixel; the centre alone without a result."""
+    def marker_xy(self, px, on_map=True, e=None):
+        """Where grid pixel (line, fast) is drawn (nm): its centre plus its shift as drawn (_marker_shift: on a map at energy slice e, the shown energy when e is None), so that a marker sits on its pixel; the centre alone without a result."""
         x, y = self.pixel_xy(px)
-        sh = self._marker_shift(on_map)
+        sh = self._marker_shift(on_map, e)
         if sh is not None:
             s = sh[int(px[0]), int(px[1])]
             if np.all(np.isfinite(s)):
                 return (float(x + s[0]), float(y + s[1]))
         return (float(x), float(y))
 
-    def xy_pixel_drawn(self, x, y, on_map=True):
-        """The grid pixel drawn nearest a point of the frame (every pixel at its shift as drawn, _marker_shift); xy_pixel without a result."""
-        sh = self._marker_shift(on_map)
+    def xy_pixel_drawn(self, x, y, on_map=True, e=None):
+        """The grid pixel drawn nearest a point of the frame (every pixel at its shift as drawn, _marker_shift: on a map at energy slice e, the shown energy when e is None); xy_pixel without a result."""
+        sh = self._marker_shift(on_map, e)
         if sh is None:
             return self.xy_pixel(x, y)
         l, r, b, t = self.extent
@@ -1341,17 +1384,32 @@ class Map:
         cx, cy = self.group_center_xy(members, g)
         return f"avg {g + 1}: ({cx:.2f}, {cy:.2f}) nm"
 
-    def _redraw_markers(self):
+    def _marker_panels(self):
         """
-        Redraw the marker artists on the map and the topo panel, then the
-        curve panel, the slider stack and the companion: with a drift
-        toggle on the spectra's drift lines (plots.draw_drift_lines, in the
-        source's colour), every marker as a hollow square in its colour,
-        and with Average on every non-empty group's centre as a black X.
-        Picking: on the map with Average on the centres are picked (the
-        markers are not, so a group moves as one); elsewhere the markers
-        are picked and the centres never (a Line2D without a picker is
-        unpickable).  Nothing is drawn before the first recompute.
+        The panels the markers are drawn on in the view shown, as (axes,
+        on_map, e), e the energy slice of a map (None on a topo): the single
+        view's map at the shown energy and its topo; the grid view's topo
+        cell and every energy's map.  A file without a topo page has no
+        topo panel.
+        """
+        topo = self.grid_topo_ax if self.view == 'grid' else self.ax_topo
+        panels = [(topo, False, None)] if self.has_topo else []
+        if self.view == 'grid':
+            return panels + [(ax, True, e) for e, ax in enumerate(self.grid_axes)]
+        return [(self.ax_map, True, self.e_index)] + panels
+
+    def _draw_marker_artists(self):
+        """
+        The marker artists drawn anew (the old ones removed) on every panel
+        of the view shown (_marker_panels): every marker as a hollow square
+        in its colour on its pixel as drawn in that panel (marker_xy: a map at its own
+        energy slice's shift, a topo at the chain's), and with Average on
+        every non-empty group's centre as a black X at the mean of its
+        members' drawn positions.  Picking: on a map with Average on the
+        centres are picked (the markers are not, so a group moves as one);
+        elsewhere the markers are picked and the centres never (a Line2D
+        without a picker is unpickable).  Nothing is drawn before the first
+        recompute (returns None); else returns the groups.
         """
         for art in self._marker_artists:
             try:
@@ -1360,21 +1418,13 @@ class Map:
                 pass
         self._marker_artists = []
         if self.maps is None:
-            return
+            return None
         self._sync_centres()
         groups = self.groups()
-        lines = self._frame_lines()
-        for ax in (self.ax_map, self.ax_topo):
-            if ax is self.ax_topo and not self.has_topo:
-                continue
-            if lines is not None:
-                self._marker_artists.extend(plots.draw_drift_lines(ax, lines, color=plots.drift_color(self._drift_source)))
-            on_map = ax is self.ax_map
+        for ax, on_map, e in self._marker_panels():
             marker_pick = {} if (self.avg_on and on_map) else {'picker': 6}
-            # Every marker on its pixel as drawn (marker_xy: the map's shift at the shown energy, the
-            # topo's chained shift), the centres at the mean of their members' drawn positions.
             for i, px in enumerate(self.marker_px):
-                x, y = self.marker_xy(px, on_map)
+                x, y = self.marker_xy(px, on_map, e)
                 h, = ax.plot([x], [y], marker='s', ms=9, mfc='none', mec=self.marker_color(i), mew=1.8,
                              ls='none', label=f'marker_{i}', **marker_pick)
                 self._marker_artists.append(h)
@@ -1383,10 +1433,21 @@ class Map:
                 for g, members in enumerate(groups):
                     if not members:
                         continue                         # a group without markers has no centre mark
-                    x, y = self.group_center_xy(members, g, on_map)
+                    x, y = self.group_center_xy(members, g, on_map, e)
                     h, = ax.plot([x], [y], marker='X', ms=10, color='black', ls='none',
                                  label=f'_avg_{g}', **avg_pick)
                     self._marker_artists.append(h)
+        return groups
+
+    def _redraw_markers(self):
+        """
+        Redraw the marker artists on the panels of the view shown
+        (_draw_marker_artists), then the curve panel, the slider stack and
+        the companion.  Nothing is drawn before the first recompute.
+        """
+        groups = self._draw_marker_artists()
+        if groups is None:
+            return
         self._draw_curves(groups)
         self._refresh_group_sliders()
         self.fig.canvas.draw_idle()
@@ -1420,13 +1481,20 @@ class Map:
                 self._active_obj = ('avg', g)
 
     def _on_motion(self, event):
-        """Drag (on the map or the topo): a marker to the pixel under the cursor; a group's centre by the same whole-pixel offset for every member, clipped so no member leaves the grid."""
+        """Drag (on the single view's map or topo, or the grid view's topo cell or any energy's map): a marker to the pixel drawn under the cursor in that panel (a map at its own energy slice's shift, a topo at the chain's); a group's centre by the same whole-pixel offset for every member, clipped so no member leaves the grid."""
         if self._active_obj is None or event.xdata is None or event.ydata is None:
             return
-        if event.inaxes not in (self.ax_map, self.ax_topo):
+        grid_e = next((e for e, ax in enumerate(self.grid_axes) if ax is event.inaxes), None)
+        if event.inaxes is self.ax_map:
+            on_map, e = True, None
+        elif grid_e is not None:
+            on_map, e = True, grid_e
+        elif event.inaxes is self.ax_topo or event.inaxes is self.grid_topo_ax:
+            on_map, e = False, None
+        else:
             return
         kind, idx = self._active_obj
-        target = self.xy_pixel_drawn(event.xdata, event.ydata, event.inaxes is self.ax_map)   # the pixel drawn under the cursor
+        target = self.xy_pixel_drawn(event.xdata, event.ydata, on_map, e)   # the pixel drawn under the cursor
         if kind == 'marker':
             if self.marker_px[idx] == target:
                 return
