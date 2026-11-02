@@ -185,7 +185,27 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
 1. the filters (`filters.py`): Hampel (spikes), then Savitzky-Golay (smoothing), each with one
    toggle for the lock-in channel's columns (`dI/dV`) and one for the recorded current I(V), the
    same settings for both targets, every toggle off by default;
-2. the calibration of the lock-in channel against that current (`calibration.py`): per sweep the
+2. with the pipeline box's `denoise` row on (off at open; dI/dV only, with a current present), the
+   denoise step (`gap.py`): the tip-sample spacing of a sweep fluctuates from sample to sample and
+   multiplies the current and the lock-in output of a sample by the same factor g. Feenstra's
+   ratio (dI/dV)/(I/V) is free of g and is, with the current's value at 0 V subtracted, the
+   logarithmic derivative d ln|I|/d ln|V|; integrated in ln|V| from the window's edge toward 0 V
+   on each side it gives back the current the sweep would have had with g = 1 at every sample, and
+   the recorded current over it is g, point by point. Both the dI/dV page and the current of the
+   sweep are divided by g, so the calibration below regresses the denoised current on the integral
+   of the denoised page, with its gate and locks as set, and the Feenstra division and the
+   normalization see the denoised pair too. The step's own regression (the calibration as set, for
+   a and b only) forms the ratio; the band where |I - I(0 V)| is below 10 % of the sweep's maximum,
+   where the ratio is not conditioned, keeps g = 1 and stays as recorded; nothing is fitted to the
+   dI/dV shape and nothing is smoothed, so the features keep their intensities, which the Feenstra
+   division does not. What g does not contain, the per-sweep level (the setpoint scatter) and the
+   lock-in's own additive noise, is left to the area normalization and to averaging. A window
+   that does not reach 0 V has no 0 V value to subtract: its current keeps its own offset and g is
+   only as good as that offset is small. With the Vbias lock on, a denoised forward sweep's pin is
+   the setpoint current over g at the setpoint sample. One console line per file gives the median
+   per-sweep rms of g and how many samples stayed as recorded; a regression the step cannot
+   determine applies nothing, said once;
+3. the calibration of the lock-in channel against that current (`calibration.py`): per sweep the
    recorded current is I(V) = a·X(V) + b·V + c, X the integral of the lock-in output, and a, b, c
    are that sweep's own least squares; the calibrated dI/dV is a·LIA + b. The gain the modulation
    amplitude would give, 1/V_mod (4/V_mod² for the second harmonic), is printed beside the fitted
@@ -207,19 +227,23 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
    With one lock the constant c follows from the pin; with both, b and c follow from a. The gate's
    refits keep the pins. `calibrate_iets` does the same for the second-harmonic channel, with
    I = a·Z + b·V²/2 + c·V + d (Z the double integral), the same locks and the gate on a and b;
-3. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
+4. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
    current (`feenstra.py`): Feenstra's normalized conductance (dI/dV)/(I/V), with `0Vsub` the
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
    exponential weighting of the given width (V), else the plain I/V; dI/dV only, never IETS;
-4. the unit-area normalization (`normalization.py`), over the whole energy axis or over the Line
+5. the unit-area normalization (`normalization.py`), over the whole energy axis or over the Line
    and line-average windows' energy crop (`crop`).
 
 The browser's spectra panels always show the Feenstra set with no toggle; every other window has
-its own `Feenstra` toggle and its Feenstra companion window. `calibrate` and `normalize` are the two
-flags of each window's pipeline box, both off at open in every window, with the `gate`, `0-lock` and
+its own `Feenstra` toggle and its Feenstra companion window. `denoise`, `calibrate` and `normalize`
+are the three flags of each window's pipeline box, `denoise` first and unindented, independent of
+`calibrate`, all off at open in every window, with the `gate`, `0-lock` and
 `Vbias lock` rows indented under `calibrate` (in the figure windows the `H` and `SG` boxes sit beside
-the gate row; in the browser they sit on rows of their own under it). A saved record restores the
-flags, the gate and the locks it was saved with; an older record opens with the locks off. A spectrum
+the gate row; in the browser they sit on rows of their own under it). The `denoise` state travels
+with the gate and the locks (`calibration.GateSettings`), so it reaches every pipeline call and
+every record they reach. A saved record restores the
+flags, the gate, the locks and `denoise` it was saved with; an older record opens with the locks and
+`denoise` off. A spectrum
 whose column is all zeros was never acquired and takes part in nothing.
 
 ### Drift
@@ -690,16 +714,19 @@ computed store (`header_cache`) and the family of cache files of a data file (`c
 
 The dI/dV and IETS channels of one file with its I(V) page (`STS`): the curves as recorded, their
 units (`curve_units`), and the pipeline driver `process_arrays`, which runs the filters, the
-calibration, the Feenstra division and the normalization in that order on any set of columns.
-`AlignmentError` is raised when a file's channels do not share one energy axis.
+denoise step, the calibration, the Feenstra division and the normalization in that order on any
+set of columns. `AlignmentError` is raised when a file's channels do not share one energy axis.
 
-### `filters.py`, `calibration.py`, `feenstra.py`, `normalization.py`
+### `filters.py`, `gap.py`, `calibration.py`, `feenstra.py`, `normalization.py`
 
-The four pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
+The five pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
+`gap.denoise` is the denoise step (`gap_factor` the per-point gap factor from the plain 0-sub
+Feenstra ratio and the current, `GAP_BAND` the band left as recorded, `setpoint_divided` the Vbias
+lock's pin currents of denoised columns).
 `calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
 the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;
-`GateSettings` holds the gate and the two locks; `_pinned_solve` is the least squares through the
+`GateSettings` holds the gate, the two locks and the denoise flag; `_pinned_solve` is the least squares through the
 pins; `anchor_index` finds the sample at the setpoint bias and refuses a sweep without one;
 `gate_sweeps` is the gate; `gain_from_modulation` the check; `gate_record` / `gate_from_record`
 the record keys), `calibrate_iets` the second-harmonic channel (`IetsColumnFit`). `sts.STS.sweep_pins`

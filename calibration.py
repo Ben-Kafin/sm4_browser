@@ -22,6 +22,11 @@ at the setpoint-bias sample to the setpoint current, and a reverse
 sweep, which has no setpoint current, at its own first acquired sample
 to the recorded current there.  With one pin the constant follows from
 the pin; with both, the offset and the constant follow from the gain.
+GateSettings also carries the pipeline box's 'denoise' row (gap.denoise,
+the pipeline's step before the calibration: the per-point gap factor
+divided out of the dI/dV page and the current); the regression here does
+not read it, and with the Vbias lock on a denoised forward sweep's pin
+current arrives as I_setpoint / g per column.
 
 The gate (gate_sweeps; GateSettings, the window's 'gate' row with its
 'H' and 'SG' boxes): one sweep with a disturbed current must not break
@@ -84,13 +89,17 @@ class GateSettings(NamedTuple):
     """
     The gate and the locks as a window sets them: the gate on / off, its Hampel (window, n_sigma)
     and Savitzky-Golay (length, order); the '0-lock' (lock0) and the 'Vbias lock' (lockv), each on
-    its own (both off at open; see calibrate).
+    its own (both off at open; see calibrate); and the pipeline box's 'denoise' row (denoise, off at
+    open), which rides in this object because it reaches every pipeline call and every window record
+    with the gate and the locks.  The denoise step itself is gap.denoise, run by the pipeline before
+    the calibration; calibrate does not read the flag.
     """
     on: bool = True
     hampel: tuple = GATE_HAMPEL
     sgolay: tuple = GATE_SGOLAY
     lock0: bool = False
     lockv: bool = False
+    denoise: bool = False
 
     @property
     def text(self):
@@ -110,9 +119,9 @@ GATE_DEFAULT = GateSettings()
 def gate_settings(gate):
     """
     The GateSettings of `gate`: None (the defaults), a GateSettings, a dict
-    with 'on', 'hampel', 'sgolay', 'lock0', 'lockv' (missing keys the
-    defaults; the locks off), or a bool (the gate on / off at the defaults,
-    the locks off).  Validated: the Hampel window a whole number
+    with 'on', 'hampel', 'sgolay', 'lock0', 'lockv', 'denoise' (missing keys the
+    defaults; the locks and denoise off), or a bool (the gate on / off at the defaults,
+    the locks and denoise off).  Validated: the Hampel window a whole number
     of at least 1 and n_sigma positive; the Savitzky-Golay length an odd
     whole number greater than the order, the order a whole number of at
     least 0.  ValueError otherwise, naming the box.
@@ -126,7 +135,7 @@ def gate_settings(gate):
     elif isinstance(gate, dict):
         g = GateSettings(on=bool(gate.get('on', True)), hampel=tuple(gate.get('hampel', GATE_HAMPEL)),
                          sgolay=tuple(gate.get('sgolay', GATE_SGOLAY)), lock0=bool(gate.get('lock0', False)),
-                         lockv=bool(gate.get('lockv', False)))
+                         lockv=bool(gate.get('lockv', False)), denoise=bool(gate.get('denoise', False)))
     else:
         raise ValueError(f"gate settings must be None, a bool, a dict or GateSettings; got {gate!r}.")
     try:
@@ -139,7 +148,7 @@ def gate_settings(gate):
         raise ValueError(f"gate 'H' box: the window must be a whole number of at least 1 and n_sigma positive (got {hw:g},{hs:g}).")
     if sl != int(sl) or so != int(so) or so < 0 or sl <= so or int(sl) % 2 == 0:
         raise ValueError(f"gate 'SG' box: the length must be an odd whole number greater than the order, the order at least 0 (got {sl:g},{so:g}).")
-    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)), bool(g.lock0), bool(g.lockv))
+    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)), bool(g.lock0), bool(g.lockv), bool(g.denoise))
 
 
 class Gate(NamedTuple):
@@ -516,14 +525,18 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     V_bias, I_setpoint : float or None
         The setpoint (RHK_Bias in V, RHK_Current in A): the Vbias lock's
         pin of a forward sweep; a forward sweep without them, or without a
-        sample at V_bias, is refused while that lock is on.
+        sample at V_bias, is refused while that lock is on.  I_setpoint
+        may also be an array of one value per column (the pipeline's
+        denoise step passes I_setpoint / g at the setpoint sample,
+        gap.setpoint_divided); a scalar applies to every column.
     ref
         A sweep view's forward-sweep reference, accepted for the callers
         and not used: every sweep is regressed on its own data.
     gate : GateSettings, dict, bool or None
         The gate and the locks as the window sets them (gate_settings);
         None the defaults (the gate on, Hampel 3,3, Savitzky-Golay 9,2;
-        the locks off).
+        the locks off).  Its `denoise` flag is the pipeline's and is not
+        read here.
     sweeps : (direction, first) or None
         Per column its sweep direction (+1 forward, -1 reverse, 0 an
         average of both) and the index of its first acquired sample in the
@@ -562,13 +575,18 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     n_curves = curves.shape[1]
     settings = gate_settings(gate)
     direction, first = _sweep_arrays(sweeps, n_curves)
+    # The setpoint current per column: the scalar for every column, or the array's entry (the denoise step's).
+    I_set = [I_setpoint] * n_curves if np.ndim(I_setpoint) == 0 else \
+        [float(v) for v in np.asarray(I_setpoint, dtype=np.float64).reshape(-1)]
+    if len(I_set) != n_curves:
+        raise ValueError(f"I_setpoint holds {len(I_set)} values for {n_curves} columns.")
     Xs, Is, Rs, pins, own, ses = [], [], [], [], [], []
     for j in range(n_curves):
         # X(V) = cumulative integral of the LIA from the lowest-energy sample.
         X = cumulative_trapezoid(curves[sort_idx, j], e_sorted, initial=0)
         I = iv_data[sort_idx, j]
         R = np.column_stack([X, e_sorted, one])
-        pj = _pins(settings, e_sorted, sort_idx, I, direction[j], first[j], V_bias, I_setpoint)
+        pj = _pins(settings, e_sorted, sort_idx, I, direction[j], first[j], V_bias, I_set[j])
         sol, se, _ = _pinned_solve(R, I, pj, f"column {j}")
         Xs.append(X)
         Is.append(I)
@@ -724,21 +742,21 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
 
 
 def gate_from_record(rec):
-    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order], 'lock0', 'lockv'); a record without them (older) gives the defaults, the locks off."""
+    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order], 'lock0', 'lockv', 'denoise'); a record without them (older) gives the defaults, the locks and denoise off."""
     try:
         return gate_settings({'on': rec.get('gate', True), 'hampel': rec.get('gate_hampel', GATE_HAMPEL),
                               'sgolay': rec.get('gate_sgolay', GATE_SGOLAY), 'lock0': rec.get('lock0', False),
-                              'lockv': rec.get('lockv', False)})
+                              'lockv': rec.get('lockv', False), 'denoise': rec.get('denoise', False)})
     except ValueError as exc:
         print(f"record: the gate settings are not usable ({exc}); the defaults are used.")
         return GATE_DEFAULT
 
 
 def gate_record(settings):
-    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv'} (gate_from_record reads them)."""
+    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv', 'denoise'} (gate_from_record reads them)."""
     return {'gate': bool(settings.on), 'gate_hampel': [settings.hampel[0], settings.hampel[1]],
             'gate_sgolay': [settings.sgolay[0], settings.sgolay[1]], 'lock0': bool(settings.lock0),
-            'lockv': bool(settings.lockv)}
+            'lockv': bool(settings.lockv), 'denoise': bool(settings.denoise)}
 
 
 def gate_text(fits, cols=None):
