@@ -3028,7 +3028,7 @@ class Line:
         average locations sit on the stripe, highest at the top; offset
         STACK_OFFSET_FRAC of the largest curve range per step inside a block
         and one full range between blocks.  The topo processor box holds
-        'Slope Sub' and 'Δz sub' (one active at most, Δz sub on at open; a
+        'Slope Sub' and 'Δz sub' (one active at most, Slope Sub on at open; a
         click on the active one turns it off).  'add new' and 'add existing'
         beside every 'Markers' box add that group to the averages as the
         browser's buttons add a single point: a Selection of the group's
@@ -3205,7 +3205,7 @@ class Line:
         except Exception as e:
             print("Failed to extract topography:", e)
             return
-        # Topo processing registry (one active at a time, Δz sub at open).
+        # Topo processing registry (one active at a time, Slope Sub at open).
         self._int_topo_active = topo.processor_defaults()
 
         # --- Marker state: one group at the start, the given positions, or two markers one ---

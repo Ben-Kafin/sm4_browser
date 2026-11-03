@@ -85,15 +85,15 @@ def delta_z_subtract_image(img):
     return out
 
 
-# The topography processors: one active at a time (the toggles enforce it), Δz sub on by default.
+# The topography processors: one active at a time (the toggles enforce it), Slope Sub on by default.
 TOPO_PROCESSORS = [
-    ("Slope Sub", slope_subtract_image, False),
-    ("Δz sub", delta_z_subtract_image, True),
+    ("Slope Sub", slope_subtract_image, True),
+    ("Δz sub", delta_z_subtract_image, False),
 ]
 # The profile forms of the same processors (the Line window's stripe rows), in the same order.
 PROFILE_PROCESSORS = [
-    ("Slope Sub", slope_subtract_profile, False),
-    ("Δz sub", delta_z_subtract_profile, True),
+    ("Slope Sub", slope_subtract_profile, True),
+    ("Δz sub", delta_z_subtract_profile, False),
 ]
 
 TOPO_CMAP = plots.TOPO_CMAP                      # the topography colour map (plots.py)
