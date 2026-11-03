@@ -20,9 +20,14 @@ sample whose current is known.  The 0-lock pins it at the sample nearest
 0 V to the recorded current there; the Vbias lock pins a forward sweep
 at the setpoint-bias sample to the setpoint current, and a reverse
 sweep, which has no setpoint current, at its own first acquired sample
-to the recorded current there.  With one pin the constant follows from
-the pin; with both, the offset and the constant follow from the gain.
-GateSettings also carries the pipeline box's 'denoise' row (gap.denoise,
+to the recorded current there.  A pin holds through the integrated
+signal and the constant only, never through the bias term: the bias axis
+enters every fit as recorded and is never referenced to a pin's voltage.
+With one pin the constant follows from the pin, c = I_p − a · X_p, and
+a, b are the least squares of I − I_p against (X − X_p, V); with both
+pins the gain and the constant follow from the two pinned currents,
+a = (I_1 − I_0) / (X_1 − X_0), c = I_0 − a · X_0, and b is the least
+squares of what is left against V.  GateSettings also carries the pipeline box's 'denoise' row (gap.denoise,
 the pipeline's step before the calibration: the per-point gap factor
 divided out of the dI/dV page and the current); the regression here does
 not read it, and with the Vbias lock on a denoised forward sweep's pin
@@ -47,8 +52,10 @@ IETS alike.
 The IETS (second-harmonic) channel is the double-derivative
 counterpart: I(V) = a · Z(V) + b · V² / 2 + c · V + d with Z the double
 integral of the second-harmonic signal, four parameters per sweep, the
-calibrated d2I/dV2 a · S + b, the same locks (one pin removes d, two
-remove c and d) and the gate on a and b.  calibrate and calibrate_iets
+calibrated d2I/dV2 a · S + b, the same locks under the same rule (a pin
+holds through Z and the constant d only: one pin fixes d = I_p − a · Z_p,
+two fix a and d from the two pinned currents; V² / 2 and V enter as
+recorded) and the gate on a and b.  calibrate and calibrate_iets
 return (calibrated, fits), every fit entry carrying the parameters,
 their standard errors, X / Z, the model and the residual, the sweep's
 own pair beside the applied one, the stage that replaced it, the trend's
@@ -316,57 +323,77 @@ def _pins(settings, e_sorted, sort_idx, I, direction, first, V_bias, I_setpoint)
     return pins
 
 
-def _pinned_solve(R, I, pins, what):
+def _pinned_solve(R, I, pins, what, integral=True):
     """
-    The least squares of I against the columns of R (npts, k) with the fit
-    forced through every pin (index p, current I_p): with m pins the last m
-    parameters follow from the others through the pins, and the rest are
-    the least squares of what is left.  One pin on (X, V, 1):
-    I − I_p = a (X − X_p) + b (V − V_p), c from the pin; two pins: b and c
-    follow from a, one-parameter least squares in a.  Returns (parameters
-    (k,), standard errors (k,; NaN for the parameters the pins fix),
-    residual of the free fit).  ValueError when the pins leave the
-    parameters undetermined.
+    The least squares of I against the columns of R (npts, k) with the
+    pins (index p, current I_p) holding through the integrated signal and
+    the constant only, never through the bias terms: the bias axis enters
+    the fit as recorded, and nothing is referenced to a pin's voltage.
+    With `integral` (R's first column the integrated signal, X or Z, its
+    last the constant, the bias terms between): one pin fixes the
+    constant, c = I_p − a X_p, and the rest is the least squares of
+    I − I_p against (X − X_p, the bias terms); two pins fix the gain and
+    the constant from the two pinned currents, a = (I_1 − I_0) /
+    (X_1 − X_0) and c = I_0 − a X_0, and the bias terms' parameters are
+    the least squares of what is left.  Without `integral` (the reduced
+    problems of _pinned_rest, the gain held) one pin fixes the constant
+    alone.  Returns (parameters (k,), standard errors (k,; NaN for the
+    parameters the pins fix), residual of the free fit).  ValueError when
+    the pins do not determine their parameters (two pins at one X) or
+    exceed what the rule can hold.
     """
     k = R.shape[1]
     m = len(pins)
     if m == 0:
         return _solve(R, I, what)
+    if m == 1:
+        S = [k - 1]
+    elif m == 2 and integral and k >= 3:
+        S = [0, k - 1]
+    else:
+        raise ValueError(f"{what}: {m} pins exceed what the pin rule can hold.")
+    F = [i for i in range(k) if i not in S]
     P = np.array([p for p, _, _ in pins], dtype=int)
     Ip = np.array([v for _, v, _ in pins], dtype=np.float64)
-    M = R[P, k - m:]
+    # The pin rows: the integrated signal (when R carries it) and the constant; the bias terms zeroed.
+    use = [0, k - 1] if integral and k >= 2 else [k - 1]
+    Rp = np.zeros((m, k))
+    Rp[:, use] = R[P][:, use]
+    M = Rp[:, S]
     if not np.isfinite(np.linalg.cond(M)) or abs(np.linalg.det(M)) == 0.0:
         raise ValueError(f"{what}: the pins do not determine the parameters.")
     Minv = np.linalg.inv(M)
-    A = R[P, :k - m]
+    A = Rp[:, F]
     theta = np.empty(k)
     se = np.full(k, np.nan)
-    if k - m > 0:
-        R_eff = R[:, :k - m] - R[:, k - m:] @ Minv @ A
-        y_eff = I - R[:, k - m:] @ (Minv @ Ip)
+    if F:
+        R_eff = R[:, F] - R[:, S] @ Minv @ A
+        y_eff = I - R[:, S] @ (Minv @ Ip)
         free, se_free, residual = _solve(R_eff, y_eff, what)
-        theta[:k - m] = free
-        se[:k - m] = se_free
+        theta[F] = free
+        se[F] = se_free
     else:
         free = np.zeros(0)
-        residual = I - R @ np.concatenate([free, Minv @ Ip])
-    theta[k - m:] = Minv @ (Ip - A @ free)
+        residual = I - R[:, S] @ (Minv @ Ip)
+    theta[S] = Minv @ (Ip - A @ free)
     return theta, se, residual
 
 
 def _pinned_rest(R, I, pins, held, what):
     """
     The parameters after the `held` ones (the first len(held) of R's
-    columns, fixed) by the least squares keeping the pins (_pinned_solve on
-    what the held ones leave); with more pins than free parameters the
-    first pins are kept (the Vbias pin before the 0-lock pin).
+    columns, fixed: the gain, or the gain and the offset) by the least
+    squares under the pin rule: with the gain held a pin can fix the
+    constant alone, so the first pin is kept (the Vbias pin before the
+    0-lock pin), its current referenced to the held gain's part of the
+    integrated signal, I_p − a X_p, and never to a bias term.
     """
     held = np.asarray(held, dtype=np.float64)
     h = held.size
     y = I - R[:, :h] @ held
-    keep = pins[:R.shape[1] - h]
-    shifted = [(p, v - float(R[p, :h] @ held), n) for p, v, n in keep]
-    theta, _, _ = _pinned_solve(R[:, h:], y, shifted, what)
+    keep = pins[:1]
+    shifted = [(p, v - float(R[p, 0] * held[0]), n) for p, v, n in keep]
+    theta, _, _ = _pinned_solve(R[:, h:], y, shifted, what, integral=False)
     return theta
 
 
@@ -485,26 +512,31 @@ def calibrate(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, ref=N
     (a_mod) as the check beside a_j; it is not used.
 
     The locks (GateSettings.lock0, lockv; each on its own, any
-    combination with the gate): a pin is a sample the fit must pass
-    through at a known current.  '0-lock': the sample nearest 0 V
-    (whichever is closest, not exactly 0) at the recorded (filtered)
-    current there.  'Vbias lock': a forward sweep (the one that left the
-    setpoint) at the setpoint-bias sample (anchor_index, within
-    ANCHOR_TOL of the energy step) at I_setpoint; a reverse sweep, which
-    has no setpoint current, at its own first acquired sample at the
-    recorded current there; a column averaging sweeps of both directions
-    takes no Vbias pin.  One pin p: I − I_p = a (X − X_p) + b (V − V_p),
-    the least squares of a and b, c from the pin (the exact-pin form of
-    the far-anchor regression); two pins: b and c follow from a, a
-    one-parameter least squares in a (_pinned_solve).
+    combination with the gate): a pin is a sample whose current is known.
+    '0-lock': the sample nearest 0 V (whichever is closest, not exactly 0)
+    at the recorded (filtered) current there.  'Vbias lock': a forward
+    sweep (the one that left the setpoint) at the setpoint-bias sample
+    (anchor_index, within ANCHOR_TOL of the energy step) at I_setpoint; a
+    reverse sweep, which has no setpoint current, at its own first
+    acquired sample at the recorded current there; a column averaging
+    sweeps of both directions takes no Vbias pin.  A pin holds through
+    the integrated LIA and the constant only; the bias axis is never
+    referenced to a pin's voltage.  One pin p: c = I_p − a X_p, and a, b
+    are the least squares of I − I_p against (X − X_p, V), which is the
+    original line tool's calibrate_didv_curves when the pin is the 0-lock
+    (X and ΔI referenced to the sample nearest 0 V, V as recorded).  Two
+    pins: a = (I_1 − I_0) / (X_1 − X_0) and c from the two pinned
+    currents, b the least squares of what is left against V
+    (_pinned_solve).
 
     The gate (gate_sweeps, the module docstring) then runs on the per-sweep
     a and b in the columns' order: a sweep that takes the trend's a has b
-    and c refitted keeping the pins; one that takes the trend's pair has c
-    from the Vbias pin when that lock is on, else from the 0-lock pin, else
-    the mean of what is left.  A replaced sweep's calibrated curve uses the
-    pair it took.  The calibrated dI/dV is a_j · LIA_j(V) + b_j with the
-    applied pair.
+    and c refitted keeping the first pin (the Vbias pin when that lock is
+    on, else the 0-lock pin: c = I_p − a X_p, b the least squares on V);
+    one that takes the trend's pair has c from that pin, else the mean of
+    what is left.  A replaced sweep's calibrated curve uses the pair it
+    took.  The calibrated dI/dV is a_j · LIA_j(V) + b_j with the applied
+    pair.
 
     Parameters
     ----------
@@ -648,11 +680,16 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
     dI/dV level) and d of the second (the current level).  For each
     spectrum j the least squares in (a, b, c, d) over every point of the
     sweep, the 4 by 4 normal equations on the regressors (Z, V²/2, V, 1).
-    The locks pin it as they pin calibrate's fit (the same pins): one pin
-    removes d, two remove c and d (_pinned_solve).  The gate (gate_sweeps)
-    then runs on a and b as on dI/dV: a sweep that takes the trend's a has
-    b, c and d refitted keeping the pins; one that takes the trend's pair
-    has c and d refitted keeping the pins (the Vbias pin first).  The
+    The locks pin it as they pin calibrate's fit (the same pins, the same
+    rule: a pin holds through Z and the constant d only, V² / 2 and V as
+    recorded): one pin fixes d = I_p − a Z_p and a, b, c are the least
+    squares of I − I_p against (Z − Z_p, V² / 2, V); two pins fix a and d
+    from the two pinned currents, b and c the least squares of what is
+    left (_pinned_solve).  The gate (gate_sweeps) then runs on a and b as
+    on dI/dV: a sweep that takes the trend's a has b, c and d refitted
+    keeping the first pin (the Vbias pin before the 0-lock pin: d from it,
+    b and c the least squares); one that takes the trend's pair has c and
+    d refitted the same way.  The
     calibrated curve is a_j · S_j(V) + b_j with the applied pair (in the
     Current page's units per V²), in the original energy ordering.  The
     gain the modulation amplitude would give, 4 / V_mod², is carried as

@@ -215,18 +215,26 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
      the two sweeps touching it beyond the file's robust scale takes the trend's value (the
      sweeps' values through a Hampel filter, `H` window,nσ, then a Savitzky-Golay smoothing,
      `SG` length,order), so one disturbed current cannot break the calibration;
-   - `0-lock` (off at open): every fit passes through the recorded current at the sample nearest
-     0 V;
-   - `Vbias lock` (off at open): a forward sweep's fit passes through the setpoint current
-     RHK_Current at the setpoint-bias sample RHK_Bias, where the feedback loop was opened; a
-     reverse sweep, which has no setpoint current, passes through the recorded current at its own
-     first sample; a column averaging a pixel's forward and reverse sweeps (the `all sweeps` view)
-     takes no Vbias pin. While it is on, a forward sweep without a sample at the setpoint bias, or
-     a file without the setpoint, is not calibrated, said once on the console.
+   - `0-lock` (off at open): the fit is pinned at the sample nearest 0 V to the recorded current
+     there;
+   - `Vbias lock` (off at open): a forward sweep's fit is pinned at the setpoint-bias sample
+     RHK_Bias, where the feedback loop was opened, to the setpoint current RHK_Current; a reverse
+     sweep, which has no setpoint current, at its own first sample to the recorded current there;
+     a column averaging a pixel's forward and reverse sweeps (the `all sweeps` view) takes no Vbias
+     pin. While it is on, a forward sweep without a sample at the setpoint bias, or a file without
+     the setpoint, is not calibrated, said once on the console.
 
-   With one lock the constant c follows from the pin; with both, b and c follow from a. The gate's
-   refits keep the pins. `calibrate_iets` does the same for the second-harmonic channel, with
-   I = a·Z + b·V²/2 + c·V + d (Z the double integral), the same locks and the gate on a and b;
+   A pin holds through the integrated signal and the constant only, never through the bias term:
+   the bias axis enters every fit as recorded and is never referenced to a pin's voltage. With one
+   lock the constant follows from the pin, c = I_p − a·X_p, and a, b are the least squares of
+   I − I_p against (X − X_p, V), which with the `0-lock` is the original line tool's calibration
+   (X and ΔI referenced to the sample nearest 0 V, V as recorded). With both locks the gain and the
+   constant follow from the two pinned currents, a = (I_set − I_0)/(X_set − X_0), c = I_0 − a·X_0,
+   and b is the least squares of what is left against V. The gate's refits keep the first pin (the
+   Vbias pin before the 0-lock pin) for c under the same rule. `calibrate_iets` does the same for
+   the second-harmonic channel, with I = a·Z + b·V²/2 + c·V + d (Z the double integral): a pin
+   holds through Z and d only, one pin fixes d, two fix a and d; the same locks and the gate on a
+   and b;
 4. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
    current (`feenstra.py`): Feenstra's normalized conductance (dI/dV)/(I/V), with `0Vsub` the
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
