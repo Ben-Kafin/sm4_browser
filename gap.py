@@ -62,8 +62,8 @@ GAP_MIN_POINTS = 3
 class DenoiseStep(NamedTuple):
     """
     The step's own pieces for the columns it ran on, every array (npts, N) in the original energy
-    order (denoise returns it; sts.STS.stages keeps it as Stages.step, so the denoise steps tool
-    draws the step without running any of it again): cal, the page a · LIA + b of the step's
+    order (denoise returns it; sts.STS.stages keeps it as Stages.step, so a tool can draw the step
+    without running any of it again): cal, the page a · LIA + b of the step's
     regression (calibration.calibrate on the filtered pair with the window's gate and locks; the
     fit forms this page and the ratio only, it is never the calibration the windows show); fits,
     that regression's ColumnFit list (a, b, c, the pins, the gate's replacement), one per column;

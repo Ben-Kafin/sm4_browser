@@ -797,8 +797,8 @@ divided by g and its own pieces as a `DenoiseStep` (`cal`, the page of its regre
 filtered pair with the gate and locks, which forms the ratio only and is never the calibration
 the windows show; `fits`; `Fcal`, the ratio it integrates; `Isub0`, the filtered current with its
 value at 0 V subtracted; `I_rebuilt`, the current rebuilt from `Fcal`; `g`; `kept`), which
-`sts.STS.stages` keeps as `Stages.step`, so the denoise steps tool draws the step without running
-any of it again.
+`sts.STS.stages` keeps as `Stages.step`, so a tool can draw the step without running any of it
+again.
 `calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
 the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;
 `GateSettings` holds the gate, the two locks and the denoise flag; `_pinned_solve` is the least squares through the
@@ -1013,12 +1013,13 @@ statistics on one `.sm4`, off against on), `diagnose_file` (one `.sm4` step by s
 and a stack where it hangs), `zero_crossing` (the 0 V crossing of the raw current over the saved
 averages), `alignment_windows` (the stripe against the heatmap under two placements, side by
 side, on real files), `perf_layer` (timings of the scan layer on a large synthetic directory),
-`background_processes` (the scan layer's worker processes and disk cache) and `denoise_steps` (the
-denoise step of one file, one sweep at a time, every intermediate drawn from `sts.STS.stages` so
-that each panel is a field of the engine: the inputs and the premise, the ratio and the
-reconstruction of the current, g and the denoised pair, the after-premise, the Feenstra invariance
-and the pipeline output with two consistency numbers, each expected 0; `< sweep` / `sweep >`, the
-filter box and the pipeline box). `calibration.py`'s own `__main__` window stays where it is.
+`background_processes` (the scan layer's worker processes and disk cache) and `rebuild_panels` (the
+two ways of rebuilding the current and reading g on one sweep, the integrated calibrated LIA route
+against the Feenstra ratio route, five panels saved to a `.png`: the three currents, the current
+residual with g − 1, the LIA page and LIA / g, the LIA residual with g − 1, and both g's over the
+recorded LIA, the current and the ratio; on the built-in synthetic sweep, one column of a saved
+`.npz` set or one sweep of an `.sm4`, with the Vbias lock or plain least squares).
+`calibration.py`'s own `__main__` window stays where it is.
 
 ## References
 
