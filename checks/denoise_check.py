@@ -9,11 +9,15 @@ filters, no Feenstra division, no normalization), on the acquired columns of the
   even columns over the rms of the mean, after each column is scaled to unit mean |value| (the
   per-sweep level taken out, as the area normalization does);
 - the shape: the median and the spread of the ratio of the denoised mean to the plain mean;
-- g itself: the median per-sweep rms of g - 1 and the band left as recorded;
+- g itself: the median per-sweep rms of g - 1 and the points left as recorded (the step's own
+  console line: the point at 0 V, and any point without a finite ratio);
 
-all over the samples outside the band.  The expected result (2026-11-02, the synthetic set and
-eight real files): the roughness down by 1.3 to 2.2x on real files (20x on the synthetic), the
-mean's noise down 20 to 45 %, the shape within 0.5 % of the plain mean.
+all over every point whose ratio is finite (the plain 0-sub Feenstra ratio of the calibrated page,
+formed as the step forms it; in practice every point but 0 V).  The expected result (2026-11-02,
+the synthetic set and eight real files, measured over the samples outside the band the step then
+kept as recorded; to be re-measured over this mask): the roughness down by 1.3 to 2.2x on real
+files (20x on the synthetic), the mean's noise down 20 to 45 %, the shape within 0.5 % of the
+plain mean.
 
 Spyder: set `path` below and press F5, or python -m sm4_Browser.checks.denoise_check <path>.
 A .npz of the synthetic set (checks/synthetic_iets) is accepted beside an .sm4.
@@ -53,12 +57,23 @@ def run(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name, denoi
     return c[order, :][:, acquired]
 
 
-def band_mask(energy, iv, acquired):
-    """The samples outside every acquired column's band (gap.GAP_BAND of its maximum |I - I(0 V)|), energies ascending."""
+def finite_mask(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps):
+    """
+    Every point whose ratio is finite in every acquired column (the plain 0-sub Feenstra ratio of
+    the calibrated page, formed as gap.denoise forms it: the calibration with the check's gate, the
+    current with its value at 0 V subtracted, feenstra.divide_by_iv with broadening 0; in practice
+    every point but 0 V), energies ascending.
+    """
+    gate = calibration.GateSettings(denoise=True)
+    lia_a = np.asarray(lia, dtype=np.float64)[:, acquired]
+    iv_a = np.asarray(iv, dtype=np.float64)[:, acquired]
+    sw = None if sweeps is None else tuple(np.asarray(a)[acquired] for a in sweeps)
+    cal, _ = calibration.calibrate(energy, lia_a, iv_a, vmod, V_bias=V_bias, I_setpoint=I_setpoint, gate=gate,
+                                   sweeps=sw)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = feenstra.divide_by_iv(energy, cal, iv_a, 0.0, True, None, None)
     order = np.argsort(energy)
-    iv0 = feenstra.iv_corrected(energy, np.asarray(iv, dtype=np.float64)[:, acquired], zero_sub=True)[order, :]
-    small = np.abs(iv0) < gap.GAP_BAND * np.max(np.abs(iv0), axis=0, keepdims=True)
-    return ~np.any(small, axis=1)
+    return np.all(np.isfinite(ratio[order, :]), axis=1)
 
 
 def roughness(c, mask):
@@ -82,9 +97,9 @@ def check(path):
         return
     off = run(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name, False)
     on = run(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name, True)
-    mask = band_mask(energy, iv, acquired)
+    mask = finite_mask(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps)
     q = on.mean(1)[mask] / off.mean(1)[mask]
-    print(f"{name}: {int(acquired.sum())} acquired columns, {len(energy)} samples, {int((~mask).sum())} in the band")
+    print(f"{name}: {int(acquired.sum())} acquired columns, {len(energy)} points, {int((~mask).sum())} without a finite ratio")
     print(f"  single-sweep roughness: off {roughness(off, mask):.4f}, on {roughness(on, mask):.4f}")
     print(f"  odd/even noise of the mean (per-sweep level taken out): off {odd_even(off, mask):.4f}, on {odd_even(on, mask):.4f}")
     print(f"  shape, denoised mean over plain mean: median {np.median(q):.3f}, spread {np.std(q):.3f}")

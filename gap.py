@@ -24,18 +24,26 @@ The step, per sweep (denoise):
    and g is only as good as that offset is small);
 3. F = the plain 0-sub Feenstra ratio of the calibrated page
    (feenstra.divide_by_iv with broadening 0);
-4. the band |I0| < GAP_BAND x the sweep's maximum |I0|, where the ratio is
-   not conditioned: g = 1 there, those samples stay as recorded;
-5. on each side of 0 V with at least GAP_MIN_POINTS samples outside the
-   band: ln I_rec = the cumulative trapezoid of F / V from the window's
-   edge toward 0 V, shifted so that the mean of ln|I0| - ln I_rec over
-   that side is 0 (g has mean 1 on each side), g = |I0| / I_rec;
-6. the page and the current of the sweep divided by g.
+4. on each side of 0 V (the point at 0 V belongs to neither) with at
+   least GAP_MIN_POINTS points whose ratio is finite: ln I_rebuilt = the
+   cumulative trapezoid of F against ln|V| from the window's edge toward
+   0 V, shifted so that the mean of ln|I0| - ln I_rebuilt over that side is 0
+   (g has mean 1 on each side), g = |I0| / I_rebuilt at every point of
+   the side;
+5. the page and the current of the sweep divided by g.
+
+Every point with a finite ratio gets its own g: there is no band around
+0 V (removed 2026-11-03; the band of 10 % of the sweep's maximum |I0|
+skipped 32 of 141 points on a metal-like sweep whose current is small
+near 0 V only because V is, while the current channel's own point-to-
+point noise there was 0.02 pA against a 0.15 pA imprint of g).  The
+points left at g = 1 are the point at 0 V itself, a point whose ratio
+is not finite, and the points of a side with fewer than GAP_MIN_POINTS.
 
 The dI/dV channel only; the per-sweep level (the setpoint scatter) and
 the lock-in's own additive noise are not g and are left to the area
 normalization and to averaging.  With the Vbias lock on, the setpoint
-pin of a denoised forward sweep is I_setpoint / g at the setpoint sample
+pin of a denoised forward sweep is I_setpoint / g at the setpoint point
 (setpoint_divided; the 0-lock pin and a reverse sweep's pin read the
 denoised current themselves).  Decided 2026-11-02.
 """
@@ -45,10 +53,8 @@ from scipy.integrate import cumulative_trapezoid
 from sm4_Browser import calibration, feenstra
 
 
-# The band around the current's zero where the Feenstra ratio is not conditioned: samples whose
-# |I - I(0 V)| is below this fraction of the sweep's maximum keep g = 1 (left as recorded).
-GAP_BAND = 0.10
-# A side of 0 V needs at least this many samples outside the band for its integral.
+# A side of 0 V needs at least this many points with a finite ratio for its integral (a guard for
+# a window that barely crosses 0 V, not a threshold on the data).
 GAP_MIN_POINTS = 3
 
 
@@ -57,37 +63,44 @@ def gap_factor(energy, ratio, iv0):
     The per-point gap factor of every column: `ratio` the plain 0-sub
     Feenstra ratio (dI/dV)/(I0/V) of the calibrated page and `iv0` the
     current with its value at 0 V subtracted, both (npts, N) in the
-    original energy order.  Per column: the band |I0| < GAP_BAND x
-    max|I0| takes g = 1; on each side of 0 V (the sample at 0 V itself
-    belongs to neither) with at least GAP_MIN_POINTS samples outside the
-    band and with a finite ratio, ln I_rec is the cumulative trapezoid of
-    ratio / V from the window's edge toward 0 V, shifted so that
-    mean(ln|I0| - ln I_rec) = 0 over those samples, and g = |I0| / I_rec
-    there.  Returns (g (npts, N), the number of samples left at g = 1 per
-    column (N,)), g in the original energy order.
+    original energy order.  Per column: on each side of 0 V (the point at
+    0 V itself belongs to neither) with at least GAP_MIN_POINTS points
+    whose ratio is finite, ln I_rebuilt is the cumulative trapezoid of
+    the ratio against ln|V| from the window's edge toward 0 V, shifted so that
+    mean(ln|I0| - ln I_rebuilt) = 0 over those points, and
+    g = |I0| / I_rebuilt at every one of them.  Returns (g (npts, N), the
+    number of points left at g = 1 per column (N,): the point at 0 V, a
+    point whose ratio is not finite, a side with too few points), g in
+    the original energy order.
     """
     energy = np.asarray(energy, dtype=np.float64)
     ratio = np.asarray(ratio, dtype=np.float64)
     iv0 = np.asarray(iv0, dtype=np.float64)
     order = np.argsort(energy)
     e = energy[order]
+    # The point at 0 V as the file records it: the axis is built from float32 fields, so the nominal
+    # 0 V point can sit at a few 1e-8 V; any |V| below a thousandth of the spacing is that point.
+    step = np.median(np.abs(np.diff(e))) if e.size > 1 else 1.0
+    zero = np.abs(e) < 1e-3 * step
     g = np.ones_like(iv0)
     kept = np.zeros(iv0.shape[1], dtype=int)
     for j in range(iv0.shape[1]):
         i0 = iv0[order, j]
         f = ratio[order, j]
-        top = np.max(np.abs(i0)) if i0.size else 0.0
-        usable = (np.abs(i0) >= GAP_BAND * top) & np.isfinite(f) & (top > 0)
+        usable = np.isfinite(f) & (i0 != 0.0)
         gj = np.ones_like(i0)
-        for side in (e < 0.0, e > 0.0):
+        for side in ((e < 0.0) & ~zero, (e > 0.0) & ~zero):
             pts = np.flatnonzero(side & usable)
             if pts.size < GAP_MIN_POINTS:
                 continue
             # From the window's edge toward 0 V: ascending energies on the negative side, descending
-            # on the positive side; d ln|I0| = F dV / V on both.
+            # on the positive side; d ln|I0| = F d ln|V| on both.  The trapezoid is taken against
+            # ln|V|, not V: it is then exact wherever the current is a power law of V between two
+            # points, which it nearly is near 0 V, where F / V against V overestimated the change
+            # of ln|I0| by 6 % per step on a 25 mV axis (the current doubles between the last points).
             run = pts if e[pts[0]] < 0.0 else pts[::-1]
             v = e[run]
-            ln_rec = cumulative_trapezoid(f[run] / v, v, initial=0.0)
+            ln_rec = cumulative_trapezoid(f[run], np.log(np.abs(v)), initial=0.0)
             ln_rec = ln_rec - np.mean(ln_rec - np.log(np.abs(i0[run])))
             gj[run] = np.abs(i0[run]) / np.exp(ln_rec)
         g[order, j] = gj
@@ -105,7 +118,7 @@ def denoise(energy, lia, iv, vmod=None, V_bias=None, I_setpoint=None, gate=None,
     and is otherwise discarded).  Returns (lia / g, iv / g, g, note):
     the two pages divided by the per-point gap factor, g itself (npts, N)
     and the console line (the median and range of the per-sweep rms of
-    g - 1, and how many samples per sweep stayed as recorded).  A
+    g - 1, and how many points per sweep stayed as recorded).  A
     ValueError of the regression (a column it cannot determine, a lock it
     cannot pin) is left to the caller, which then applies nothing.
     """
@@ -121,8 +134,8 @@ def denoise(energy, lia, iv, vmod=None, V_bias=None, I_setpoint=None, gate=None,
     npts = g.shape[0]
     if kept.size:
         note = (f"denoise: per-sweep gap factor rms median {np.median(rms) * 100:.1f} % "
-                f"(from {rms.min() * 100:.1f} to {rms.max() * 100:.1f} %); {kept.min()} to {kept.max()} of {npts} samples "
-                f"per sweep left as recorded (|I - I(0 V)| below {GAP_BAND * 100:.0f} % of the sweep's maximum)")
+                f"(from {rms.min() * 100:.1f} to {rms.max() * 100:.1f} %); {kept.min()} to {kept.max()} of {npts} points "
+                f"per sweep left as recorded (the point at 0 V, and any point without a finite ratio)")
     else:
         note = "denoise: no acquired columns"
     return lia / g, iv / g, g, note

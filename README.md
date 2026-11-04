@@ -195,11 +195,13 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
    sweep are divided by g, so the calibration below regresses the denoised current on the integral
    of the denoised page, with its gate and locks as set, and the Feenstra division and the
    normalization see the denoised pair too. The step's own regression (the calibration as set, for
-   a and b only) forms the ratio; the band where |I - I(0 V)| is below 10 % of the sweep's maximum,
-   where the ratio is not conditioned, keeps g = 1 and stays as recorded; nothing is fitted to the
-   dI/dV shape and nothing is smoothed, so the features keep their intensities, which the Feenstra
-   division does not. What g does not contain, the per-sweep level (the setpoint scatter) and the
-   lock-in's own additive noise, is left to the area normalization and to averaging. A window
+   a and b only) forms the ratio; every point with a finite ratio gets its own g, with no band
+   around 0 V (the points left at g = 1, as recorded, are the point at 0 V itself, which belongs to
+   neither side, a point whose ratio is not finite, and the points of a side with fewer than three
+   points); nothing is fitted to the dI/dV shape and nothing is smoothed, so the features keep
+   their intensities, which the Feenstra division does not. What g does not contain, the per-sweep
+   level (the setpoint scatter) and the lock-in's own additive noise, is left to the area
+   normalization and to averaging. A window
    that does not reach 0 V has no 0 V value to subtract: its current keeps its own offset and g is
    only as good as that offset is small. With the Vbias lock on, a denoised forward sweep's pin is
    the setpoint current over g at the setpoint sample. One console line per file gives the median
@@ -748,7 +750,7 @@ set of columns. `AlignmentError` is raised when a file's channels do not share o
 The five pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
 `gap.denoise` is the denoise step (`gap_factor` the per-point gap factor from the plain 0-sub
-Feenstra ratio and the current, `GAP_BAND` the band left as recorded, `setpoint_divided` the Vbias
+Feenstra ratio and the current at every point whose ratio is finite, `setpoint_divided` the Vbias
 lock's pin currents of denoised columns).
 `calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
 the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;

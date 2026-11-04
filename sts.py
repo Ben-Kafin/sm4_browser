@@ -1016,10 +1016,9 @@ class STS:
         channel with a current present: its own regression as `gate` sets
         it for a and b only, the plain 0-sub Feenstra ratio of the
         calibrated page integrated in ln|V| back to a current, the
-        recorded current over it the per-point gap factor g, the band
-        |I - I(0 V)| below gap.GAP_BAND of the sweep's maximum left at g =
-        1, and the acquired columns of the channel and of the current
-        divided by g, so that every step below works on the denoised pair;
+        recorded current over it the per-point gap factor g, and the
+        acquired columns of the channel and of the current divided by g,
+        so that every step below works on the denoised pair;
         with the Vbias lock on, the setpoint pin of a forward sweep becomes
         I_setpoint / g at the setpoint sample, gap.setpoint_divided; a
         regression the step cannot determine applies nothing, said once on
