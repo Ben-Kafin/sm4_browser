@@ -48,8 +48,9 @@ Layout (automatic layout: the one rule for every window; nothing is placed by
 hand): a window's panels and controls sit in one Qt layout installed on its
 canvas (Figure.set_layout).  A panel is a cell of that layout (Figure.cell,
 a PanelCell): its axes takes the cell's rectangle less its tick axes and
-title (Axes(cell=...)); a row of panels keeps one height (Figure.align_row)
-and a spatial panel its x:y ratio (set_aspect / set_box_aspect); a figure
+title (Axes(cell=...)); a row of panels keeps one height (Figure.align_row),
+a column of panels one width (Figure.align_column), and a spatial panel its
+x:y ratio (set_aspect / set_box_aspect); a figure
 text may sit in a cell (text(..., cell=)).  The controls (controls.py) are
 Qt widgets in the same layout.  The matplotlib-style calls (add_subplot,
 subplots) put their axes in an automatic grid of cells (Figure.layout_root);
@@ -2688,8 +2689,8 @@ class SecondaryAxis:
 # inside the cell's rectangle.  Qt's layout sizes and places the controls and the cells together,
 # so a control meant to sit under a panel sits under it, nothing overlaps, and no position is
 # picked by hand.  A panel keeps its own rules inside its cell: a spatial panel keeps its x:y ratio
-# (an adjustable-'box' aspect shrinks the box about the cell's centre) and a row of panels keeps
-# one height (Figure.align_row).
+# (an adjustable-'box' aspect shrinks the box about the cell's centre), a row of panels keeps
+# one height (Figure.align_row) and a column of panels one width (Figure.align_column).
 
 class PanelCell(QtWidgets.QWidget):
     """
@@ -3029,12 +3030,26 @@ class Axes:
     def _px_rect(self):
         """
         The box as drawn, (x0, y0, w, h) in canvas pixels from the top left: the figure-fraction
-        rectangle, at the height of its row when it is in one (Figure.align_row: the smallest height
-        a locked aspect among the row's visible panels asks for), else shrunk for its own
-        adjustable-'box' aspect; a locked aspect then sets the width; the box stays centred on its
-        cell; then moved clear of keep_clear_of's other axes.
+        rectangle, at the left and right edges of its column when it is in one (Figure.align_column:
+        the band every visible panel of the column has room for), at the height of its row when it
+        is in one (Figure.align_row: the smallest height a locked aspect among the row's visible
+        panels asks for), else shrunk for its own adjustable-'box' aspect; a locked aspect then sets
+        the width; the box stays centred on its cell; then moved clear of keep_clear_of's other axes.
         """
         x0, y0, w, h = self._cell_px()
+        col = getattr(self, '_column', None)
+        if col is not None and self._cell is not None:
+            members = [m for m in col if m._visible and m.figure is self.figure and m._cell is not None]
+            if members:
+                # A column of panels in layout cells: every box in the band all of them have room for
+                # (right of the widest y tick axis with its label, left of the widest set of right-hand
+                # axes), so the boxes share one left and one right edge (the column rule; linked x axes
+                # then show the same range).
+                bands = [m._cell_px() for m in members]
+                left = max(b[0] for b in bands)
+                right = min(b[0] + b[2] for b in bands)
+                if right > left:
+                    x0, w = left, right - left
         row = getattr(self, '_row', None)
         if row is not None:
             members = [m for m in row if m._visible and m.figure is self.figure]
@@ -3203,6 +3218,21 @@ class Axes:
                         m._place()
             finally:
                 self.figure._row_placing = False
+        col = getattr(self, '_column', None)
+        if col is not None and self._cell is not None and not getattr(self.figure, '_column_placing', False):
+            # The column's band depends on every member's room: a member placed with an older band is
+            # placed again at once (the boxes of a column share one left and one right edge).
+            self.figure._column_placing = True
+            try:
+                for m in col:
+                    if m is self or m._cell is None or not m._visible or m.figure is not self.figure:
+                        continue
+                    mx, my, mw, mh = m._px_rect()
+                    if getattr(m, '_placed_rect', None) != (round(mx, 2), round(my, 2), round(max(mw, 1.0), 2),
+                                                            round(max(mh, 1.0), 2)):
+                        m._place()
+            finally:
+                self.figure._column_placing = False
         if self.vb.state['aspectLocked'] and getattr(self, '_target_x', None) is not None \
                 and getattr(self, '_target_y', None) is not None and not self.figure.canvas.toolbar.mode:
             self._apply_targets()
@@ -3328,6 +3358,15 @@ class Axes:
                 pass
             self._row = None
             for m in row:
+                m._request_place()
+        col = getattr(self, '_column', None)
+        if col is not None:                        # the column goes on without this axes
+            try:
+                col.remove(self)
+            except ValueError:
+                pass
+            self._column = None
+            for m in col:
                 m._request_place()
         for ins in list(self._insets):
             ins.remove()
@@ -5431,6 +5470,25 @@ class Figure:
         for ax in row:
             ax._request_place()
         return row
+
+    def align_column(self, *axes):
+        """
+        One column of panels: every axes given takes the same left and right edge, those of the band
+        all of the column's visible panels have room for (right of the widest y tick axis with its
+        label, left of the widest set of right-hand axes; Axes._px_rect), so their boxes share one
+        width and their x axes line up whatever each panel carries beside it.  A change of one
+        member's room re-places them all; an axes belongs to one column, and a removed axes leaves
+        its column.  Returns the column (a list).
+        """
+        col = [ax for ax in axes if ax is not None]
+        for ax in col:
+            old = getattr(ax, '_column', None)
+            if old is not None and ax in old:
+                old.remove(ax)
+            ax._column = col
+        for ax in col:
+            ax._request_place()
+        return col
 
     # --- output, closing ---
 

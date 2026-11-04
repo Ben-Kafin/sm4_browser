@@ -28,6 +28,10 @@ import numpy as np
 
 from sm4_Browser import qtplot as q
 
+# The space in the file between two right-hand axes of one panel (points): each further axis starts
+# this far right of where the one before it ends (_side_right_edge).
+SIDE_GAP_PT = 4.0
+
 
 def available():
     """True when matplotlib can be imported (the publication formats need it)."""
@@ -134,8 +138,8 @@ def _axes(mfig, ax):
     One qtplot axes as a matplotlib axes in `mfig`: its artists (_artist), the quad meshes drawn
     straight into its view, the limits as shown (inverted axes included), the aspect, the labels
     (short_label, as on screen), tick sizes and hidden ticks, the grid, frame and axis state, the
-    title, a secondary y axis, and the legend as on screen.  Text sizes are the points set on the
-    qtplot axes.
+    title, the secondary y axes (side by side at the right, none over another: _side_right_edge),
+    and the legend as on screen.  Text sizes are the points set on the qtplot axes.
     """
     m = mfig.add_axes(_pos(ax))
     m.set_facecolor('white')
@@ -188,12 +192,19 @@ def _axes(mfig, ax):
         m.set_frame_on(False)
     if ax._title is not None and ax._title.get_text():
         m.set_title(ax._title.get_text(), fontsize=ax._title._size)
-    for side in ax._side_axes:
-        mode = getattr(side, '_mode', None)
-        if mode is not None and mode[0] == 'func':
-            sec = m.secondary_yaxis('right', functions=(mode[1], mode[2]))
-            if side.labelText:
-                sec.set_ylabel(q.short_label(side.labelText), fontsize=side._label_pt)
+    # The secondary y axes (qtplot's right-hand axes in 'func' mode) side by side at the right, in
+    # their on-screen order: the first at the axes' right edge, each further one SIDE_GAP_PT right
+    # of where the one before it ends in the file, its tick marks, tick values, offset text and
+    # label included, as matplotlib draws them at the file's fonts and sizes (_side_right_edge), so
+    # that no text of one lies over another.
+    sides = [s for s in ax._side_axes if getattr(s, '_mode', None) is not None and s._mode[0] == 'func']
+    loc = 1.0
+    for i, side in enumerate(sides):
+        sec = m.secondary_yaxis(loc, functions=(side._mode[1], side._mode[2]))
+        if side.labelText:
+            sec.set_ylabel(q.short_label(side.labelText), fontsize=side._label_pt)
+        if i + 1 < len(sides):
+            loc = _side_right_edge(mfig, m, sec, loc)
     # legend as on screen
     if ax._legend is not None and getattr(ax, '_legend_args', None) is not None:
         args, kw = ax._legend_args
@@ -209,6 +220,31 @@ def _axes(mfig, ax):
         else:
             m.legend(**lk)
     return m
+
+
+def _side_right_edge(mfig, m, sec, loc):
+    """
+    The place, in the axes fraction of `m`, for the next right-hand axis after `sec` (a secondary y
+    axis of `m` at `loc`): where `sec` ends on the right plus SIDE_GAP_PT.  The figure built so far
+    is drawn once without output (matplotlib's Agg canvas) so that the axis's ticks, values and
+    label sit where the file will have them; `sec` ends at the furthest right of its tick marks
+    (its spine plus the tick length) and of its tick values, offset text and label
+    (Axis.get_tightbbox, which leaves the tick marks out, hence the two).
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    canvas = FigureCanvasAgg(mfig)
+    canvas.draw()
+    r = canvas.get_renderer()
+    box = m.get_window_extent(r)
+    px_per_pt = mfig.dpi / 72.0
+    right = box.x0 + loc * box.width
+    ticks = [t for t in sec.yaxis.get_major_ticks() if t.tick2line.get_visible()]
+    if ticks:
+        right += max(t.tick2line.get_markersize() for t in ticks) * px_per_pt
+    tb = sec.yaxis.get_tightbbox(r)
+    if tb is not None:
+        right = max(right, tb.x1)
+    return (right + SIDE_GAP_PT * px_per_pt - box.x0) / box.width
 
 
 def _line_kw(st, label, zorder):

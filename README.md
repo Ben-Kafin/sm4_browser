@@ -727,8 +727,10 @@ fill an automatic grid of cells, `Figure.layout_root`; the text fit, `fits_contr
 the design size, `Figure.at_design_size`), the row rule
 (`Figure.align_row`: the panels of one row take one height, the one a locked aspect among them
 asks for, spatial panels keeping their aspect and colour bars, ramps and curve panels stretching
-or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row)
-and the tick rule (`_Axis`: a tick is a value of the panel's range, labelled from that value, and
+or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row),
+the column rule (`Figure.align_column`: the panels of one column take one left and one right edge,
+the band all of them have room for beside their y tick axes and right-hand axes, so their boxes
+share one width and their x axes line up) and the tick rule (`_Axis`: a tick is a value of the panel's range, labelled from that value, and
 its mark and label are drawn where the panel's view box maps the value, read when the axis is
 painted and drawn straight into the painter, with no cached drawing, so the ticks sit on the data
 on every monitor whatever its display scaling; pyqtgraph's own axis replays a `QPicture`, which Qt
@@ -1028,14 +1030,21 @@ and a stack where it hangs), `zero_crossing` (the 0 V crossing of the raw curren
 averages), `alignment_windows` (the stripe against the heatmap under two placements, side by
 side, on real files), `perf_layer` (timings of the scan layer on a large synthetic directory),
 `background_processes` (the scan layer's worker processes and disk cache) and `rebuild_panels` (the
-denoise step's rebuild of the current and its g on one sweep, every piece read from
-`sts.STS.stages` with the denoise row on, `stages.step`, nothing of the step computed in the tool;
-five panels saved to a `.png`: the recorded current and the rebuilt current, the current residual
-with g − 1, the LIA page and LIA / g, the LIA residual with g − 1, and g over the LIA page, the
-current and the ratio the step integrates, with g before the soft edge dotted beside it and the
-soft edge's curve printed bin by bin; on the built-in synthetic sweep, one column of a saved `.npz`
-set or one sweep of an `.sm4`, with the 0-lock, the Vbias lock or no lock, the soft edge on or
-off). `calibration.py`'s own
+denoise step's rebuild of the current and its g, one sweep at a time in a window of the package's
+own drawing layer, every piece read from `sts.STS.stages` with the denoise step on, `stages.step`,
+nothing of the step computed in the tool; five panels: the recorded current and the rebuilt
+current with the step's regression drawn in the panel (the column, the gate and the locks, a, b,
+c, the soft edge's jitter), the current residual with g − 1, the LIA page and LIA / g, the LIA
+residual with g − 1, and the LIA page on its own axis with, on right-hand axes, the Feenstra
+ratio as the windows show it with `Feenstra` on and calibrate, normalize, denoise and the filters
+off (`sts.STS.view`), the current and g (g before the soft edge dotted beside it) and a vertical
+line at every turning point of g; under them '< sweep' / 'sweep >' step through the
+acquired columns, and the calibrate rows of the pipeline box (`gate` with its `H` and `SG` boxes,
+`0-lock`, `Vbias lock`) set the step's regression and run the engine again; the toolbar's Save
+writes the figure (EPS among the formats, at the window's design size); the five panels share one
+box width (`Figure.align_column`) and one x range, the sweep's bias range with 3 % on each side; the soft edge's curve
+printed bin by bin; on the built-in synthetic set, a saved `.npz` set or an `.sm4`, the sweep it
+opens on and the soft edge set in its `__main__` block, the gate and the locks only by the rows). `calibration.py`'s own
 `__main__` window stays where it is.
 
 ## References
