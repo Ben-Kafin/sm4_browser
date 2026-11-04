@@ -218,11 +218,11 @@ def run():
             check("4b. denoise on, calibrate off, normalize off, plain I/V: the ratio equals the ratio with denoise off"
                   " (I(0 V) = 0 exactly)", False, "the denoise step was not applied")
         else:
-            band = np.abs(v_on.g - 1.0) < 1e-12                        # the samples left as recorded, g = 1
+            recorded = np.abs(v_on.g - 1.0) < 1e-12                    # the points left as recorded, g = 1 (the point at 0 V)
             r_on, r_off = v_on.ratio.copy(), v_off.ratio.copy()
-            r_on[band] = np.nan; r_off[band] = np.nan
+            r_on[recorded] = np.nan; r_off[recorded] = np.nan
             check("4b. denoise on, calibrate off, normalize off, plain I/V: the ratio equals the ratio with denoise off"
-                  " outside the band (I(0 V) = 0 exactly), to 1e-9 relative", rel_close(r_on, r_off, 1e-9))
+                  " at every point not left as recorded (I(0 V) = 0 exactly), to 1e-9 relative", rel_close(r_on, r_off, 1e-9))
 
         # 5. the field table
         base = PipelineState(channel='didv', hampel=None, sgolay=None, hampel_didv=None, sgolay_didv=None,
