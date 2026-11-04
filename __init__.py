@@ -63,8 +63,8 @@ Modules
   tools/         scripts that need a real file or an open window, run by hand: denoise_stats, diagnose_file
                  (one file step by step), zero_crossing (the current's zero crossing over the saved
                  averages), alignment_windows (the old and the current line placement side by side),
-                 perf_layer, background_processes, rebuild_panels (the two rebuilds of the current
-                 and their g on one sweep, five panels to a .png)
+                 perf_layer, background_processes, rebuild_panels (the denoise step's rebuild of
+                 the current and its g on one sweep, read from stages.step, five panels to a .png)
   reports/       the reports of the changes made (each with its approved and additional changes)
 
 Every module can be run on its own (its __main__ block); nothing is imported here.
