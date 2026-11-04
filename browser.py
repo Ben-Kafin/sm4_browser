@@ -605,11 +605,10 @@ from sm4_Browser import qtplot as plt
 from sm4_Browser import fit, widgets, plots, calibration
 from sm4_Browser.sm4file import (Sm4File, list_sm4_files, header_cache, file_duration_s, kind_from_types, filename_stamp,
                                  stamp_text, geom_contains)
-from sm4_Browser.sts import STS, curve_units
+from sm4_Browser.sts import STS, curve_units, PipelineState, state_from_record, say
 from sm4_Browser.averaging import Averages, Selection
 from sm4_Browser.records import SavedAveragesWindow
-from sm4_Browser.feenstra import feenstra_width, feenstra_titles, energy_has_zero, iv_corrected, iv_broadened
-from sm4_Browser.normalization import normalize_abs
+from sm4_Browser.feenstra import feenstra_width, feenstra_titles, energy_has_zero
 from sm4_Browser.topo import (TOPO_CMAP, process_topo, processed_topo, processor_labels, processor_defaults,
                               TopoWindow, ProfileWindow, ProfilePlots, cross_section, grid_stripe_layers)
 from sm4_Browser.drift import DRIFT_PARAMS, Drift, DriftWindow
@@ -1534,19 +1533,48 @@ class _BrowserCore:
         self.fig.canvas.draw_idle()
         return True
 
+    @property
+    def state(self):
+        """
+        The browser's PipelineState for the current file (sts.PipelineState.of):
+        its filter box, its pipeline box (denoise, calibrate, the gate with
+        its locks, normalize), its Feenstra settings, the 'channel' radio's
+        channel when the file has it (else the file's first), the division
+        off (the spectra panels show all four quantities of the view).
+        """
+        f = self.current
+        channel = self.channel
+        if f.kind in ('grid', 'point') and f.spectra is not None and channel not in f.channels():
+            channel = f.channels()[0]
+        return PipelineState.of(self.filters, self.pipeline.state(), self.feenstra_settings(), channel, False)
+
+    def _view_of(self, f, state):
+        """A file's view (Sm4File.view) for a state, one computation per file, sweep view and state (a small memo); the pipeline's console lines said once."""
+        memo = self.__dict__.setdefault('_spec_views', {})
+        key = (f.path, getattr(f, 'sweep_mode', None), state)
+        if key not in memo:
+            if len(memo) > 8:
+                memo.clear()
+            v = f.view(state)
+            say(v.notes)
+            memo[key] = v
+        return memo[key]
+
     def _draw_spectra(self):
         """
         The spectra panels of the current file.  dI/dV spectra (a grid or a
-        point on the dI/dV channel): the four Feenstra panels, always: the
-        dI/dV through the pipeline with the division off, the current in
-        amps as the division works on it (the filters and '0Vsub' applied),
-        its I/V in A/V as the division divides by it (the same curves in the
-        same colours), and the ratio (the division on), the filters
-        (self.filters: on the current only) and the 'calibrate' /
-        'normalize' box as set (with normalize on the current and the I/V
-        are unit area per curve, normalize_abs, as in every Feenstra
-        companion).  One panel otherwise: the IETS channel through the
-        pipeline, a phase rotation, a noise spectrum, or a note for a topo.
+        point on the dI/dV channel): the four Feenstra panels, always, every
+        one a field of the file's view for the browser's state
+        (Sm4File.view, self.state: the filter box with its two toggles per
+        row, the pipeline box as set, the Feenstra settings): the dI/dV
+        through the pipeline with the division off, the current the division
+        works on (the filters and '0Vsub' applied; the denoised current I/g
+        with 'denoise' on), its I/V as the division divides by it (the same
+        curves in the same colours), and the ratio (the division on); with
+        normalize on the current and the I/V are unit area per curve
+        (normalization.normalize_abs, as in every Feenstra companion).  One
+        panel otherwise: the IETS channel through the pipeline, a phase
+        rotation, a noise spectrum, or a note for a topo.
         """
         ax = self.ax_spec
         ax.clear()
@@ -1564,18 +1592,18 @@ class _BrowserCore:
         self.filters.show(four)
         self.pipeline.show(f.kind in ('grid', 'point') and f.spectra is not None)
         if f.kind in ('grid', 'point') and f.spectra is not None:
-            # The channel the radio says, or the file's only channel when it lacks that one.
-            channel = self.channel if self.channel in f.channels() else f.channels()[0]
-            zs, width = self.iv_zero_sub, self.iv_width()
-            hp, sp = self.filters.params()
-            hd, sd = self.filters.params_didv()
-            cal, norm, gate = self.pipeline.calibrate, self.pipeline.normalize, self.pipeline.gate
+            # The browser's state for this file: the channel the radio says, or the file's only channel
+            # when it lacks that one (state).
+            state = self.state
+            channel = state.channel
+            zs = state.iv_zero_sub
+            hp, sp = state.filters()[:2]
+            cal, norm = state.calibrate, state.normalize
             try:
-                c = f.curves(hp, sp, False, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal,
-                             hampel_didv=hd, sgolay_didv=sd, gate=gate)
-                c_ratio = (f.curves(hp, sp, True, width, channel=channel, iv_zero_sub=zs, normalize=norm, calibrate=cal,
-                                    hampel_didv=hd, sgolay_didv=sd, gate=gate)
-                           if four else None)
+                v = self._view_of(f, state)
+                if four and v.ratio is None:
+                    raise ValueError("Feenstra needs the 'Current' channel, which this file does not have.")
+                c, c_ratio = v.didv, v.ratio
             except Exception as exc:
                 ax.text(0.5, 0.5, f"spectra not processed: {exc}", ha='center', va='center',
                         transform=ax.transAxes, fontsize=8, wrap=True)
@@ -1584,11 +1612,12 @@ class _BrowserCore:
             V = f.energy[order]
             if f.n_sweeps > 1 and f.spectra_all is not None:
                 # Several sweeps per pixel: every sweep drawn, the forward ones solid and the reverse ones
-                # dashed, through the same pipeline (sweeps.py); the other panels show the default view.
+                # dashed, through the same pipeline (sweeps.py: the all-sweeps spectroscopy's view for the
+                # same state); the other panels show the default view.
                 try:
-                    ca = f.spectra_all.process(channel, hp, sp, False, width, iv_zero_sub=zs, normalize=norm,
-                                               calibrate=cal and f.iv is not None, hampel_didv=hd, sgolay_didv=sd,
-                                               gate=gate)
+                    va = f.spectra_all.view_of(state)
+                    say(va.notes)
+                    ca = va.didv
                     keep = np.asarray(f.spectra_all.acquired, dtype=bool)
                     dirs = f.sweep_info['dir']
                     for sgn, ls in ((1, '-'), (-1, '--')):
@@ -1602,7 +1631,7 @@ class _BrowserCore:
                 ax.plot(V, c[order, :][:, f.acquired], lw=0.5, alpha=0.6)
             # Sweeps stopped before their end (left out of every average and fit) are shown here too,
             # dashed, over the points they recorded, through the same pipeline.
-            unf = self._unfinished_curves(f, channel, hp, sp, width, zs, norm, cal, four, hd, sd, gate)
+            unf = self._unfinished_curves(f, state, four)
             for key, a in (('main', ax), ('ratio', self.ax_spec_ratio), ('iv', self.ax_spec_iv),
                            ('ivv', self.ax_spec_ivv)):
                 if key != 'main' and not four:
@@ -1625,14 +1654,9 @@ class _BrowserCore:
                 sub = ("I(0 V) subtracted" if has_zero else "no 0 V in range") if zs else "as recorded"
                 how = (f"broadened {self.iv_broadening:g} V" if self.iv_broadened else "plain")
                 ax2, ax3 = self.ax_spec_iv, self.ax_spec_ivv
-                if f.iv is not None:
-                    iv = iv_corrected(f.energy, f.iv, zs, hp, sp)
-                    ivv = iv_broadened(f.energy, f.iv, width, zs, hp, sp)
-                    if norm:
-                        iv = normalize_abs(f.energy, iv)[0]
-                        ivv = normalize_abs(f.energy, ivv)[0]
-                    ax2.plot(V, iv[order, :][:, f.acquired], lw=0.5, alpha=0.6)
-                    ax3.plot(V, ivv[order, :][:, f.acquired], lw=0.5, alpha=0.6)
+                if v.current is not None:
+                    ax2.plot(V, v.current[order, :][:, f.acquired], lw=0.5, alpha=0.6)
+                    ax3.plot(V, v.ivv[order, :][:, f.acquired], lw=0.5, alpha=0.6)
                 else:
                     for a in (ax2, ax3):
                         a.text(0.5, 0.5, "no Current channel", ha='center', va='center', transform=a.transAxes, fontsize=8)
@@ -1665,16 +1689,17 @@ class _BrowserCore:
             ax.set_xticks([])
             ax.set_yticks([])
 
-    def _unfinished_curves(self, f, channel, hp, sp, width, zs, norm, cal, four, hd=None, sd=None, gate=None):
+    def _unfinished_curves(self, f, state, four):
         """
         The sweeps of the file stopped before their end (written, but ending in never-written
-        samples, so not kept): each through the same pipeline as the kept ones over the points
-        it recorded (the first points of its column in acquisition order).  Returns
-        {'main': [(V, curve)], 'ratio': [...], 'iv': [...], 'ivv': [...]}, energies ascending;
-        a sweep with fewer than MIN_UNFINISHED_POINTS points is skipped.
+        samples, so not kept): each through the same pipeline as the kept ones (STS.view for the
+        browser's state on its columns) over the points it recorded (the first points of its
+        column in acquisition order).  Returns {'main': [(V, curve)], 'ratio': [...], 'iv': [...],
+        'ivv': [...]}, energies ascending; a sweep with fewer than MIN_UNFINISHED_POINTS points is
+        skipped.
         """
-        from sm4_Browser.feenstra import iv_corrected, iv_broadened
         sp_ = f.spectra
+        channel = state.channel
         ever = np.asarray(getattr(sp_, 'ever', f.acquired), dtype=bool)
         stopped = np.flatnonzero(ever & ~np.asarray(f.acquired, dtype=bool))
         out = {'main': [], 'ratio': [], 'iv': [], 'ivv': []}
@@ -1695,22 +1720,13 @@ class _BrowserCore:
             try:
                 setpoint = dict(V_bias=getattr(sp_, 'V_bias', None), I_setpoint=getattr(sp_, 'I_setpoint', None),
                                 sweeps=(sw_dir[j:j + 1], np.minimum(sw_first[j:j + 1], p - 1)))
-                c = STS.process_arrays(e, lia, iv, hp, sp, False, width, channel=channel, iv_zero_sub=zs,
-                                       normalize=norm, calibrate=cal and iv is not None, vmod=getattr(sp_, 'vmod', None),
-                                       hampel_didv=hd, sgolay_didv=sd, gate=gate, **setpoint)
-                out['main'].append((e[o], c[o, 0]))
-                if four and iv is not None:
-                    r = STS.process_arrays(e, lia, iv, hp, sp, True, width, channel=channel, iv_zero_sub=zs,
-                                           normalize=norm, calibrate=cal, vmod=getattr(sp_, 'vmod', None),
-                                           hampel_didv=hd, sgolay_didv=sd, gate=gate, **setpoint)
-                    out['ratio'].append((e[o], r[o, 0]))
-                    a = iv_corrected(e, iv, zs, hp, sp)
-                    b = iv_broadened(e, iv, width, zs, hp, sp)
-                    if norm:
-                        a = normalize_abs(e, a)[0]
-                        b = normalize_abs(e, b)[0]
-                    out['iv'].append((e[o], a[o, 0]))
-                    out['ivv'].append((e[o], b[o, 0]))
+                v = STS.view(e, lia, iv, state, vmod=getattr(sp_, 'vmod', None), **setpoint)
+                say(v.notes)
+                out['main'].append((e[o], v.didv[o, 0]))
+                if four and v.ratio is not None:
+                    out['ratio'].append((e[o], v.ratio[o, 0]))
+                    out['iv'].append((e[o], v.current[o, 0]))
+                    out['ivv'].append((e[o], v.ivv[o, 0]))
             except Exception as exc:
                 print(f"{f.name}: unfinished sweep {j} not shown ({exc}).")
         return out
@@ -2264,19 +2280,19 @@ class _BrowserCore:
                 return
             removed = [(int(i), int(j)) for i, j in rec.get('removed', [])]
             all_columns = int(rec.get('format', 1)) < 2      # format 1: indexed among all the file's sweeps
-            hp, sp = rec.get('hampel'), rec.get('sgolay')   # a 'notch' entry of an older record is ignored
-            hd, sd = rec.get('hampel_didv'), rec.get('sgolay_didv')   # absent before the dI/dV toggles: off
             rs = rec.get('resample')                       # absent before the resampling: bin / interp off
-            ch = rec.get('channel', 'didv')                # absent in records written before the IETS: dI/dV
-            div = bool(rec.get('divide_iv', False))        # ('weighted' / 'weight_c' of older records are ignored)
             bro = float(rec.get('iv_broadening_V', 0.0))
-            # Format 4 records hold the Feenstra settings; older ones are loaded as they were made:
-            # no 0 V subtraction, the I/V broadened when a width was recorded.
-            zs = bool(rec.get('iv_zero_sub', False))
-            brd = bool(rec.get('iv_broadened', bro > 0))
-            cal = bool(rec.get('calibrate', True))         # format 5: the pipeline flags; older records: both on
-            nrm = bool(rec.get('normalize', True))
-            gt = calibration.gate_from_record(rec)         # the gate settings; older records: the defaults
+            # The record's pipeline state (sts.state_from_record) over the defaults of the older formats: a
+            # 'notch' entry of an older record is ignored; the filters absent before the dI/dV toggles: off;
+            # the channel absent before the IETS: dI/dV; 'weighted' / 'weight_c' of older records are ignored;
+            # format 4 records hold the Feenstra settings, older ones are loaded as they were made (no 0 V
+            # subtraction, the I/V broadened when a width was recorded); format 5 the pipeline flags (older
+            # records: both on); the gate's keys, else the defaults (the locks and denoise off).
+            st = state_from_record(rec, PipelineState(channel='didv', calibrate=True, normalize=True, divide_iv=False,
+                                                      iv_zero_sub=False, iv_broadened=bro > 0, iv_broadening=bro))
+            hp, sp, hd, sd = st.filters()
+            ch, div = st.channel, st.divide_iv
+            zs, brd, cal, nrm, gt = st.iv_zero_sub, st.iv_broadened, st.calibrate, st.normalize, st.gate
         else:
             index = self._next_avg_index()
             name = None                                    # avg<index>

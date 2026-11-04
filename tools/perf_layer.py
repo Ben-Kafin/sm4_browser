@@ -2,7 +2,7 @@
 Performance of the scan layer on a large synthetic directory (offscreen): startup, background
 placing of every file, stepping with every file shown, a drift change.
 
-    python -m sm4_Browser.checks.perf_layer [n_topos]
+    python -m sm4_Browser.tools.perf_layer [n_topos]
 """
 import os
 import sys

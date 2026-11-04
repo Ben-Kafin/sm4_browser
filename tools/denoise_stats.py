@@ -15,7 +15,7 @@ all over the samples outside the band.  The expected result (2026-11-02, the syn
 eight real files): the roughness down by 1.3 to 2.2x on real files (20x on the synthetic), the
 mean's noise down 20 to 45 %, the shape within 0.5 % of the plain mean.
 
-Spyder: set `path` below and press F5, or python -m sm4_Browser.checks.denoise_check <path>.
+Spyder: set `path` below and press F5, or python -m sm4_Browser.tools.denoise_stats <path>.
 A .npz of the synthetic set (checks/synthetic_iets) is accepted beside an .sm4.
 """
 

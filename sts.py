@@ -1,10 +1,17 @@
 """
 Scanning tunnelling spectroscopy of one .sm4 file: the dI/dV and IETS channels
-with the I(V) page (STS, loaded by page label), and the pipeline driver
-(STS.process_arrays / STS.process) that runs the steps of the other modules
-in order: filters (filters.py), the denoise step (gap.py), calibration
+with the I(V) page (STS, loaded by page label), and the pipeline: the one
+shared path every window draws from.  PipelineState is everything the
+pipeline needs from a window's boxes (hashable: a window memoizes its views
+by it); STS.stages is the engine, which runs the steps of the other modules
+in order, filters (filters.py), the denoise step (gap.py), calibration
 (calibration.py), the Feenstra division (feenstra.py), unit-area
-normalization (normalization.py).
+normalization (normalization.py), once, keeping every intermediate (Stages);
+STS.view is what a window or a companion draws from one stages call (View:
+didv, current, ivv, ratio, shown); STS.process_arrays / STS.process are the
+same engine behind the earlier interface (the shown quantity and its areas,
+the console lines printed once).  state_record / state_from_record are the
+record keys of a state.
 """
 
 if __package__ in (None, ''):
@@ -12,6 +19,7 @@ if __package__ in (None, ''):
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import os
+from typing import NamedTuple
 import numpy as np
 from sm4_Browser import filters, calibration, normalization, feenstra, gap
 
@@ -56,6 +64,213 @@ class AlignmentError(ValueError):
     """A spectroscopy page whose recorded locations cannot be aligned onto the dI/dV page's (STS.page_perm)."""
 
 
+# ---------------------------------------------------------------------- #
+#  The pipeline state                                                      #
+# ---------------------------------------------------------------------- #
+
+def _items(d):
+    """A filter's parameter dict as sorted items (hashable, the form PipelineState holds), None (off) as None."""
+    return None if d is None else tuple(sorted((str(k), v) for k, v in dict(d).items()))
+
+
+def _dict(t):
+    """The dict of _items (the form filters.filter_lia takes), None as None."""
+    return None if t is None else dict(t)
+
+
+class PipelineState(NamedTuple):
+    """
+    Everything the pipeline needs from a window's boxes, hashable (a NamedTuple hashes by value: the
+    windows memoize {state: view} with it as the key): the channel ('didv' or 'iets'); the I(V)
+    Hampel and Savitzky-Golay filters and the channel's own pair (each its parameter dict as sorted
+    items, None = off); the gate with its 'H' / 'SG' boxes, the locks and the 'denoise' row
+    (calibration.GateSettings); the 'calibrate' and 'normalize' rows; the window's 'Feenstra' toggle
+    (divide_iv: which quantity the window shows); the Feenstra settings ('0Vsub', 'broadened', the
+    width in V); and the normalization's energy crop (lo, hi), None = the whole axis.  Built from a
+    window's boxes by `of`; `with_` gives a changed copy (a companion's overrides, a record);
+    `filters()` the four dicts back; `iv_width` the width the division uses.
+    """
+    channel: str = 'didv'
+    hampel: tuple = None
+    sgolay: tuple = None
+    hampel_didv: tuple = None
+    sgolay_didv: tuple = None
+    gate: calibration.GateSettings = calibration.GATE_DEFAULT
+    calibrate: bool = False
+    normalize: bool = False
+    divide_iv: bool = False
+    iv_zero_sub: bool = True
+    iv_broadened: bool = False
+    iv_broadening: float = 0.0
+    norm_range: tuple = None
+
+    @classmethod
+    def of(cls, filters, pipeline, feenstra, channel, divide_iv, norm_range=None):
+        """
+        The state of a window's boxes: `filters` its controls.FilterControls (params() the I(V) pair,
+        params_didv() the channel's; None = every filter off), `pipeline` its controls.PipelineBox
+        or that box's state() dict ('calibrate', 'normalize', 'gate'), `feenstra` the window's
+        Feenstra settings dict ('zero_sub', 'broadened', 'broadening'), `channel` and `divide_iv`
+        the window's, `norm_range` its energy crop or None.
+        """
+        hp, sp = filters.params() if filters is not None else (None, None)
+        hd, sd = filters.params_didv() if filters is not None else (None, None)
+        st = pipeline.state() if hasattr(pipeline, 'state') else dict(pipeline)
+        fs = dict(feenstra)
+        return cls(channel=str(channel), hampel=_items(hp), sgolay=_items(sp), hampel_didv=_items(hd),
+                   sgolay_didv=_items(sd), gate=calibration.gate_settings(st['gate']),
+                   calibrate=bool(st['calibrate']), normalize=bool(st['normalize']), divide_iv=bool(divide_iv),
+                   iv_zero_sub=bool(fs['zero_sub']), iv_broadened=bool(fs['broadened']),
+                   iv_broadening=float(fs['broadening']),
+                   norm_range=None if norm_range is None else (float(norm_range[0]), float(norm_range[1])))
+
+    @staticmethod
+    def items(d):
+        """A filter's parameter dict (or None) in the form the fields hold."""
+        return _items(d)
+
+    def with_(self, **changes):
+        """A copy with the given fields changed (a filter may be given as its dict, the gate as anything calibration.gate_settings takes)."""
+        for k in ('hampel', 'sgolay', 'hampel_didv', 'sgolay_didv'):
+            if k in changes and changes[k] is not None:
+                changes[k] = _items(changes[k])
+        if 'gate' in changes:
+            changes['gate'] = calibration.gate_settings(changes['gate'])
+        if changes.get('norm_range') is not None:
+            changes['norm_range'] = (float(changes['norm_range'][0]), float(changes['norm_range'][1]))
+        return self._replace(**changes)
+
+    def filters(self):
+        """(hampel, sgolay, hampel_didv, sgolay_didv) as dicts, None = off: the form filters.filter_lia takes."""
+        return _dict(self.hampel), _dict(self.sgolay), _dict(self.hampel_didv), _dict(self.sgolay_didv)
+
+    @property
+    def iv_width(self):
+        """The broadening width the division uses: the width with 'broadened' on, 0 (the plain I/V) off (feenstra.feenstra_width)."""
+        return feenstra.feenstra_width(self.iv_broadening, self.iv_broadened)
+
+
+class Stages(NamedTuple):
+    """
+    Every intermediate of one STS.stages run, arrays (npts, N) in the original energy order,
+    never-acquired columns as process_arrays leaves them (the two outputs zero there, the rest as
+    computed): lia_f, iv_f the channel page and the current through their filters, once; g the gap
+    factor (1 where not applied; None when the step is off or not applicable); lia_d, iv_d the
+    denoised pair lia_f / g, iv_f / g (the filtered pair itself when g is None); I_setpoint_used
+    the pin current the calibration got (per column with the Vbias lock and denoise, else the
+    setpoint); cal the calibrated page a · lia_d + b (calibrate_iets on IETS), lia_d with calibrate
+    off; fits the ColumnFit / IetsColumnFit list, None with calibrate off; iv0 the current the
+    division works on (iv_d, its value at 0 V subtracted with iv_zero_sub); ivv the I/V the division
+    divides by (plain or broadened per the state); ratio cal / ivv column by column (None on the
+    IETS channel or without a current); didv_n, ratio_n the two unit-area normalized over the
+    state's range when normalize is on, else the same arrays; areas the normalization's areas of
+    the quantity divide_iv selects (NaN when off, 0 for a never-acquired column); notes the console
+    lines the pipeline says (the denoise note, the gain text, the refusals), in order.
+    """
+    lia_f: object
+    iv_f: object
+    g: object
+    lia_d: object
+    iv_d: object
+    I_setpoint_used: object
+    cal: object
+    fits: object
+    iv0: object
+    ivv: object
+    ratio: object
+    didv_n: object
+    ratio_n: object
+    areas: object
+    notes: list
+
+
+class View(NamedTuple):
+    """
+    What a window or a companion draws, from one stages call (STS.view): didv the channel with the
+    division off, calibrated and normalized per the state (stages.didv_n); current the current the
+    division works on (stages.iv0), unit area per column with normalize on else in A; ivv the I/V
+    it divides by (stages.ivv), the same rule; ratio stages.ratio_n (None on IETS or without a
+    current); shown the ratio with divide_iv on else didv (what the main panel draws); g, fits,
+    notes passed through.  With normalize off, ratio equals didv / ivv wherever both are finite:
+    the division and the I/V panel are the same array.
+    """
+    didv: object
+    current: object
+    ivv: object
+    ratio: object
+    shown: object
+    g: object
+    fits: object
+    notes: list
+
+
+def state_record(state, values=None):
+    """
+    The record keys of a state, the ones the windows write: 'channel'; 'hampel' and 'sgolay' (the
+    filter boxes' values, `values` = (hampel dict, sgolay dict) as controls.FilterControls.values
+    gives them; without `values`, the parameters of the toggles that are on, None when both of a
+    row are off) with 'hampel_on', 'sgolay_on', 'hampel_didv_on', 'sgolay_didv_on'; 'calibrate',
+    'normalize'; the gate's keys (calibration.gate_record: the gate, its boxes, the locks, denoise);
+    'divide_iv'; 'iv_broadening_V', 'iv_broadened', 'iv_zero_sub'; 'energy_range' (None = the whole
+    axis).  state_from_record reads them.
+    """
+    hp, sp, hd, sd = state.filters()
+    if values is not None:
+        box_h, box_s = values
+    else:
+        box_h, box_s = (hp if hp is not None else hd), (sp if sp is not None else sd)
+    return {'channel': state.channel,
+            'hampel': None if box_h is None else dict(box_h), 'sgolay': None if box_s is None else dict(box_s),
+            'hampel_on': hp is not None, 'sgolay_on': sp is not None,
+            'hampel_didv_on': hd is not None, 'sgolay_didv_on': sd is not None,
+            'calibrate': bool(state.calibrate), 'normalize': bool(state.normalize),
+            **calibration.gate_record(state.gate),
+            'divide_iv': bool(state.divide_iv),
+            'iv_broadening_V': float(state.iv_broadening), 'iv_broadened': bool(state.iv_broadened),
+            'iv_zero_sub': bool(state.iv_zero_sub),
+            'energy_range': None if state.norm_range is None else [float(v) for v in state.norm_range]}
+
+
+def state_from_record(rec, default):
+    """
+    The state a record holds (the keys of state_record), every missing key the value of `default`
+    (a PipelineState: the window's own).  Older records: a filter dict without its on-flag means
+    the filter on ('hampel' / 'sgolay' as the averaging records write them, None = off);
+    'hampel_didv' / 'sgolay_didv' (dicts or None, the averaging records) are the channel's pair
+    when present, else the channel's pair shares the I(V) boxes under its own flags (the Line
+    records); the gate's keys through calibration.gate_from_record when any of them is present.
+    """
+    hp, sp = rec.get('hampel'), rec.get('sgolay')
+    hd = rec['hampel_didv'] if 'hampel_didv' in rec else hp
+    sd = rec['sgolay_didv'] if 'sgolay_didv' in rec else sp
+    h_on = bool(rec.get('hampel_on', hp is not None))
+    s_on = bool(rec.get('sgolay_on', sp is not None))
+    hd_on = bool(rec.get('hampel_didv_on', 'hampel_didv' in rec and hd is not None))
+    sd_on = bool(rec.get('sgolay_didv_on', 'sgolay_didv' in rec and sd is not None))
+    gate_keys = ('gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv', 'denoise')
+    gate = calibration.gate_from_record(rec) if any(k in rec for k in gate_keys) else default.gate
+    er = rec.get('energy_range', default.norm_range) if 'energy_range' in rec else default.norm_range
+    return default.with_(channel=rec.get('channel', default.channel),
+                         hampel=hp if (h_on and hp is not None) else None,
+                         sgolay=sp if (s_on and sp is not None) else None,
+                         hampel_didv=hd if (hd_on and hd is not None) else None,
+                         sgolay_didv=sd if (sd_on and sd is not None) else None,
+                         gate=gate,
+                         calibrate=bool(rec.get('calibrate', default.calibrate)),
+                         normalize=bool(rec.get('normalize', default.normalize)),
+                         divide_iv=bool(rec.get('divide_iv', default.divide_iv)),
+                         iv_zero_sub=bool(rec.get('iv_zero_sub', default.iv_zero_sub)),
+                         iv_broadened=bool(rec.get('iv_broadened', default.iv_broadened)),
+                         iv_broadening=float(rec.get('iv_broadening_V', default.iv_broadening)),
+                         norm_range=None if er is None else (float(min(er)), float(max(er))))
+
+
+def say(notes):
+    """The pipeline's console lines of a stages or view call, each said once (STS._note_once); the windows call it after a computed view."""
+    for n in notes:
+        STS._note_once(n)
+
+
 class STS:
     """
     One file's scanning tunnelling spectroscopy in physical units, from
@@ -93,7 +308,9 @@ class STS:
     and are never drawn; their positions are still recorded.  The pipeline
     keeps a zero column in their place.
 
-    The pipeline (process / process_arrays): the channel's columns through
+    The pipeline (stages / view, the one shared path every window draws
+    from; process / process_arrays the same engine behind the earlier
+    interface): the channel's columns through
     the dI/dV Hampel and Savitzky-Golay filters and the recorded current
     through the I(V) ones, each pair once (filters; the two targets have
     their own toggles, the same settings), the denoise step when the
@@ -1003,12 +1220,172 @@ class STS:
         return text + "; no modulation amplitude recorded."
 
     @classmethod
+    def stages(cls, energy, lia, iv, state, acquired=None, vmod=None, V_bias=None, I_setpoint=None, ref=None,
+               name=None, sweeps=None):
+        """
+        The engine: the pipeline on columns (npts, N) for a PipelineState, run once, every
+        intermediate kept (Stages).  Per column: the channel's columns through the channel's Hampel
+        and Savitzky-Golay filters and the recorded current through the I(V) ones, each once
+        (filters.filter_lia); the denoise step when the state's gate carries it (gap.denoise, the
+        dI/dV channel with a current present: the per-point gap factor of every acquired column
+        divided out of the channel page and the current, so that every step below works on the
+        denoised pair; with the Vbias lock on, the setpoint pin of a forward sweep becomes
+        I_setpoint / g at the setpoint sample, gap.setpoint_divided; a regression the step cannot
+        determine applies nothing, noted; on the IETS channel the row is noted to apply to dI/dV
+        only); the calibration of the channel's columns against that current (when present and
+        `calibrate` is on; calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep the
+        least squares of the gain, the offset and the constant of integration, through the pins of
+        the locks that are on, then the gate on the gains and offsets, as the state's gate sets
+        them; V_bias / I_setpoint the Vbias lock's setpoint, `sweeps` = (direction, first) per column
+        (STS.sweep_pins; None: every column a forward sweep); `ref` = (lia_ref, iv_ref), the
+        forward-sweep reference columns of a reverse-sweep view, handed over and not used; a column
+        the regression cannot determine refuses the file, noted; with `name` the file's, the gains,
+        the gate's doing and the check from the modulation amplitude `vmod` are noted); the current
+        the division works on (iv0: its value at 0 V subtracted with iv_zero_sub,
+        feenstra.iv_corrected) and the I/V it divides by (ivv: plain or broadened by the state's
+        width, feenstra.iv_broadened), the ratio cal / ivv (dI/dV only, with a current); unit-area
+        normalization of the channel and of the ratio (normalization.normalize over the state's
+        norm_range; skipped with normalize off: the areas are then NaN).  The filters reach every
+        use of the current here, the calibration included.  Columns flagged as never acquired in
+        `acquired` run through the division with the others (its matrix products give the last bits
+        of a column differently for another width), are left out of the denoise step and the
+        regression, and come back as zero columns in didv_n and ratio_n (area 0).  The notes are
+        returned, not printed (say prints them once).
+        """
+        hampel, sgolay, hampel_didv, sgolay_didv = state.filters()
+        channel = state.channel
+        notes = []
+        lia = np.asarray(lia, dtype=np.float64)
+        if acquired is None:
+            acquired = np.ones(lia.shape[1], dtype=bool)
+        acquired = np.asarray(acquired, dtype=bool)
+        cols = np.flatnonzero(acquired)
+        # The channel's columns through the channel's filters once (a plain copy when both are off);
+        # the recorded current through the I(V) filters once: the calibration and the division both
+        # work on this current.
+        lia_f = filters.filter_lia(lia, hampel_didv, sgolay_didv)
+        iv_f = None if iv is None else filters.filter_lia(np.asarray(iv, dtype=np.float64), hampel, sgolay)
+        sw = None if sweeps is None else tuple(np.asarray(a)[cols] for a in sweeps)
+        settings = state.gate
+        g = None
+        lia_d, iv_d = lia_f, iv_f
+        I_used = I_setpoint
+        if settings.denoise and iv_f is not None:
+            if channel == 'didv':
+                # The denoise step (gap.denoise): the acquired columns of the channel and of the current
+                # divided by the per-point gap factor; the calibration, the division and the
+                # normalization below then work on the denoised pair.
+                try:
+                    ld, idn, g_cols, note = gap.denoise(energy, lia_f[:, cols], iv_f[:, cols], vmod, V_bias=V_bias,
+                                                        I_setpoint=I_setpoint, gate=settings, sweeps=sw)
+                    lia_d, iv_d = lia_f.copy(), iv_f.copy()
+                    lia_d[:, cols], iv_d[:, cols] = ld, idn
+                    g = np.ones_like(lia_f)
+                    g[:, cols] = g_cols
+                    if settings.lockv:
+                        # The Vbias lock's pin of a denoised forward sweep: the setpoint current over g there.
+                        divided = gap.setpoint_divided(energy, g_cols, V_bias, I_setpoint)
+                        if divided is not None:
+                            I_used = divided
+                    if name:
+                        notes.append(f"{name}: {note}")
+                except ValueError as exc:
+                    notes.append(f"denoise not applied: {exc}")
+            elif name:
+                notes.append(f"{name}: denoise applies to the dI/dV channel only; the IETS channel is left as recorded.")
+        cal, fits = lia_d, None
+        if state.calibrate and iv_d is not None:
+            ref_f = None
+            if ref is not None and ref[0] is not None and ref[1] is not None:
+                # The reference columns through the same filters as the columns they stand for.
+                ref_f = (filters.filter_lia(np.asarray(ref[0], dtype=np.float64), hampel_didv, sgolay_didv)[:, cols],
+                         filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
+            fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
+            try:
+                c_cols, fits = fn(energy, lia_d[:, cols], iv_d[:, cols], vmod, V_bias=V_bias, I_setpoint=I_used,
+                                  ref=ref_f, gate=settings, sweeps=sw)
+                cal = lia_d.copy()
+                cal[:, cols] = c_cols
+                if name and fits:
+                    notes.append(cls._gain_text(name, fits, vmod, channel, cols))
+            except ValueError as exc:
+                notes.append(f"calibration not applied: {exc}")
+        iv0 = ivv = ratio = None
+        if iv_d is not None:
+            # The division's current and its I/V (feenstra.divide_by_iv forms the same two and divides,
+            # on the array's full width); the ratio is the division's output, element by element.
+            iv0 = feenstra.iv_corrected(energy, iv_d, zero_sub=state.iv_zero_sub)
+            ivv = feenstra.iv_broadened(energy, iv_d, state.iv_width, state.iv_zero_sub)
+            if channel != 'iets':
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    ratio = cal / ivv
+        n = cal.shape[1]
+        if state.normalize:
+            with np.errstate(invalid='ignore'):
+                didv_n, areas_d = normalization.normalize(energy, cal, energy_range=state.norm_range)
+                if ratio is not None:
+                    ratio_n, areas_r = normalization.normalize(energy, ratio, energy_range=state.norm_range)
+                else:
+                    ratio_n, areas_r = None, np.full(n, np.nan)
+        else:
+            didv_n, areas_d = cal.copy(), np.full(n, np.nan)
+            ratio_n, areas_r = (None if ratio is None else ratio.copy()), np.full(n, np.nan)
+        didv_n[:, ~acquired] = 0.0
+        if ratio_n is not None:
+            ratio_n[:, ~acquired] = 0.0
+        areas = (areas_r if (state.divide_iv and ratio_n is not None) else areas_d).copy()
+        areas[~acquired] = 0.0
+        return Stages(lia_f=lia_f, iv_f=iv_f, g=g, lia_d=lia_d, iv_d=iv_d, I_setpoint_used=I_used, cal=cal, fits=fits,
+                      iv0=iv0, ivv=ivv, ratio=ratio, didv_n=didv_n, ratio_n=ratio_n, areas=areas, notes=notes)
+
+    @staticmethod
+    def _needs_current(state, iv):
+        """The division asked for without a current (dI/dV): the refusal process_arrays always gave."""
+        if state.divide_iv and state.channel != 'iets' and iv is None:
+            raise ValueError("Feenstra needs the 'Current' channel, which this file does not have.")
+
+    @classmethod
+    def view_from(cls, s, energy, state):
+        """
+        The View of a Stages result for its state (pure): didv = didv_n; current = iv0 and ivv =
+        ivv, each unit area per column (normalization.normalize_abs over the state's range) with
+        normalize on, else in A and A/V; ratio = ratio_n; shown = ratio with divide_iv on (when
+        there is one) else didv; g, fits, notes passed through.
+        """
+        current = ivv = None
+        if s.iv0 is not None:
+            current, ivv = s.iv0, s.ivv
+            if state.normalize:
+                with np.errstate(invalid='ignore'):
+                    current = normalization.normalize_abs(energy, s.iv0, energy_range=state.norm_range)[0]
+                    ivv = normalization.normalize_abs(energy, s.ivv, energy_range=state.norm_range)[0]
+        shown = s.ratio_n if (state.divide_iv and s.ratio_n is not None) else s.didv_n
+        return View(didv=s.didv_n, current=current, ivv=ivv, ratio=s.ratio_n, shown=shown, g=s.g, fits=s.fits,
+                    notes=s.notes)
+
+    @classmethod
+    def view(cls, energy, lia, iv, state, acquired=None, vmod=None, V_bias=None, I_setpoint=None, ref=None,
+             name=None, sweeps=None):
+        """
+        What a window or a companion draws (View) for a PipelineState, from one stages call (the
+        same data arguments); pure: the notes are returned, not printed.  view.shown equals
+        process_arrays with the state's arguments, the division asked for without a current
+        refused the same way (ValueError).
+        """
+        cls._needs_current(state, iv)
+        return cls.view_from(cls.stages(energy, lia, iv, state, acquired=acquired, vmod=vmod, V_bias=V_bias,
+                                        I_setpoint=I_setpoint, ref=ref, name=name, sweeps=sweeps), energy, state)
+
+    @classmethod
     def process_arrays(cls, energy, lia, iv, hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                        return_areas=False, channel='didv', acquired=None, iv_zero_sub=False, normalize=True,
                        calibrate=True, vmod=None, norm_range=None, V_bias=None, I_setpoint=None, ref=None,
                        hampel_didv=None, sgolay_didv=None, name=None, gate=None, sweeps=None):
         """
-        Per column: the channel's columns through the dI/dV Hampel and
+        The earlier interface of the engine: stages with a state built from the arguments, its
+        notes said once on the console (_note_once), and the quantity divide_iv selects returned
+        (the ratio, dI/dV only and needing I(V): ValueError without it; else the channel), with
+        its areas when return_areas.  Per column: the channel's columns through the dI/dV Hampel and
         Savitzky-Golay filters (hampel_didv, sgolay_didv: None = off) and
         the recorded current through the I(V) ones (hampel, sgolay), each
         once (filters.filter_lia); the denoise step when the window's
@@ -1051,76 +1428,40 @@ class STS:
         the area to the samples inside that energy range).  The filters reach every
         use of the current here, the calibration included.  Columns flagged
         as never acquired in `acquired` run through the division with the
-        others (see the comment below), are left out of the calibration,
+        others (see the comment in stages), are left out of the calibration,
         and come back as zero columns (area 0).  With return_areas, returns
         (curves, areas).  vmod (the file's modulation amplitude,
         RHK_CH1Drive_Amplitude) is handed to the calibration for the check
         it carries beside the fitted gains (calibration.py's regression
         does not use it).
         """
-        lia = np.asarray(lia, dtype=np.float64)
-        if acquired is None:
-            acquired = np.ones(lia.shape[1], dtype=bool)
-        acquired = np.asarray(acquired, dtype=bool)
-        cols = np.flatnonzero(acquired)
-        # The division runs on the array's full width (a never-acquired column holds its page's offset),
-        # because its matrix products give the last bits of a column differently for another
-        # width; only the regression, column by column, leaves the never-acquired columns out.
-        # The channel's columns through the dI/dV filters once (a plain copy when both are off).
-        c = filters.filter_lia(lia, hampel_didv, sgolay_didv)
-        if iv is not None:
-            # The recorded current through the I(V) filters once (a copy when both are off): the
-            # calibration and the division both work on this current.
-            iv = filters.filter_lia(np.asarray(iv, dtype=np.float64), hampel, sgolay)
-        sw = None if sweeps is None else tuple(np.asarray(a)[cols] for a in sweeps)
-        settings = calibration.gate_settings(gate)
-        if settings.denoise and iv is not None:
-            if channel == 'didv':
-                # The denoise step (gap.denoise): the acquired columns of the channel and of the current
-                # divided by the per-point gap factor; the calibration, the division and the
-                # normalization below then work on the denoised pair.
-                try:
-                    c[:, cols], iv[:, cols], g, note = gap.denoise(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias,
-                                                                   I_setpoint=I_setpoint, gate=settings, sweeps=sw)
-                    if settings.lockv:
-                        # The Vbias lock's pin of a denoised forward sweep: the setpoint current over g there.
-                        divided = gap.setpoint_divided(energy, g, V_bias, I_setpoint)
-                        if divided is not None:
-                            I_setpoint = divided
-                    if name:
-                        cls._note_once(f"{name}: {note}")
-                except ValueError as exc:
-                    cls._note_once(f"denoise not applied: {exc}")
-            elif name:
-                cls._note_once(f"{name}: denoise applies to the dI/dV channel only; the IETS channel is left as recorded.")
-        if calibrate and iv is not None:
-            ref_f = None
-            if ref is not None and ref[0] is not None and ref[1] is not None:
-                # The reference columns through the same filters as the columns they stand for.
-                ref_f = (filters.filter_lia(np.asarray(ref[0], dtype=np.float64), hampel_didv, sgolay_didv)[:, cols],
-                         filters.filter_lia(np.asarray(ref[1], dtype=np.float64), hampel, sgolay)[:, cols])
-            fn = calibration.calibrate_iets if channel == 'iets' else calibration.calibrate
-            try:
-                cal, fits = fn(energy, c[:, cols], iv[:, cols], vmod, V_bias=V_bias, I_setpoint=I_setpoint, ref=ref_f,
-                               gate=gate, sweeps=sw)
-                c[:, cols] = cal
-                if name and fits:
-                    cls._note_once(cls._gain_text(name, fits, vmod, channel, cols))
-            except ValueError as exc:
-                cls._note_once(f"calibration not applied: {exc}")
-        if divide_iv and channel != 'iets':
-            if iv is None:
-                raise ValueError("Feenstra needs the 'Current' channel, which this file does not have.")
-            with np.errstate(divide='ignore', invalid='ignore'):
-                c = feenstra.divide_by_iv(energy, c, iv, iv_broadening, iv_zero_sub, None, None)
-        if normalize:
-            with np.errstate(invalid='ignore'):
-                c, areas = normalization.normalize(energy, c, energy_range=norm_range)
-        else:
-            areas = np.full(c.shape[1], np.nan)
-        c[:, ~acquired] = 0.0
-        areas[~acquired] = 0.0
-        return (c, areas) if return_areas else c
+        width = float(iv_broadening)
+        state = PipelineState(channel=channel, hampel=_items(hampel), sgolay=_items(sgolay),
+                              hampel_didv=_items(hampel_didv), sgolay_didv=_items(sgolay_didv),
+                              gate=calibration.gate_settings(gate), calibrate=bool(calibrate),
+                              normalize=bool(normalize), divide_iv=bool(divide_iv), iv_zero_sub=bool(iv_zero_sub),
+                              iv_broadened=width > 0, iv_broadening=width,
+                              norm_range=None if norm_range is None else (float(norm_range[0]), float(norm_range[1])))
+        s = cls.stages(energy, lia, iv, state, acquired=acquired, vmod=vmod, V_bias=V_bias, I_setpoint=I_setpoint,
+                       ref=ref, name=name, sweeps=sweeps)
+        for text in s.notes:
+            cls._note_once(text)
+        cls._needs_current(state, iv)
+        c = s.ratio_n if (state.divide_iv and s.ratio_n is not None) else s.didv_n
+        return (c, s.areas) if return_areas else c
+
+    def stages_of(self, state):
+        """This file's spectra of the state's channel through the engine (stages: the setpoint, the columns' sweep directions and a sweep view's forward reference from the file; what Sm4File.stages passes through to)."""
+        ref = (getattr(self, 'iets_ref' if state.channel == 'iets' else 'lia_ref', None), getattr(self, 'iv_ref', None))
+        return self.stages(self.energy, self.channel(state.channel), self.iv, state, acquired=self.acquired,
+                           vmod=getattr(self, 'vmod', None), V_bias=getattr(self, 'V_bias', None),
+                           I_setpoint=getattr(self, 'I_setpoint', None), ref=ref, name=getattr(self, 'name', None),
+                           sweeps=self.sweep_pins())
+
+    def view_of(self, state):
+        """What a window draws of this file for a state (view from stages_of; what Sm4File.view passes through to)."""
+        self._needs_current(state, self.iv)
+        return self.view_from(self.stages_of(state), self.energy, state)
 
     def process(self, channel='didv', hampel=None, sgolay=None, divide_iv=False, iv_broadening=0.0,
                 return_areas=False, iv_zero_sub=False, normalize=True, calibrate=True,

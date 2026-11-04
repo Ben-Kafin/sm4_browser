@@ -6,7 +6,7 @@ spectra pipeline.  A step that takes longer than 15 s has its Python stack print
 (the place where it hangs); a crash of Qt or of a C extension is written to qtplot.CRASH_LOG.
 
 Run it on the file the browser stops at (Spyder: set `path` below and press F5, or
-python -m sm4_Browser.checks.diagnose_file <path>), and send the console output.
+python -m sm4_Browser.tools.diagnose_file <path>), and send the console output.
 """
 
 if __package__ in (None, ''):

@@ -8,7 +8,7 @@ per pixel, and a plain one-sweep grid (unchanged).  Then single-point files: 20 
 forward / reverse pairs (the views, the clock, the calibration's pins), three forward sweeps
 (no reverse view), and a file without the tip height (taken as forward).
 
-    python -m sm4_Browser.checks.check_sweeps
+    python -m sm4_Browser.checks.sweeps_check
 """
 import io
 import os
@@ -25,9 +25,9 @@ RESULTS = []
 
 
 def ok(name, cond, detail=''):
-    """Record and print one result: PASS or FAIL, the name, the detail in parentheses."""
+    """Record and print one result: [ok] or [FAIL], the name, the detail after a colon."""
     RESULTS.append(bool(cond))
-    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
+    print(f"  [{'ok' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail else ''))
 
 
 def make(sweeps, layout, stop_after=None):
@@ -197,9 +197,10 @@ def run():
     ok("[point, no tip height] taken as forward with the console line",
        list(f.sweep_info['dir'][:4]) == [1, 1, 1, 1] and 'nothing in the storage marks a direction' in log,
        log.strip().splitlines()[-1][:200] if log.strip() else '')
-    print("ALL PASS" if all(RESULTS) else "SOME FAILED")
-    return all(RESULTS)
+    fails = sum(1 for r in RESULTS if not r)
+    print(f"{fails} failure(s)")
+    return fails
 
 
 if __name__ == '__main__':
-    sys.exit(0 if run() else 1)
+    sys.exit(1 if run() else 0)

@@ -29,11 +29,9 @@ from sm4_Browser import fit, widgets, plots, calibration, controls, contour
 from sm4_Browser.qtplot import QtWidgets, QtCore
 
 Qt = QtCore.Qt
-from sm4_Browser.sts import STS, curve_units
+from sm4_Browser.sts import STS, curve_units, PipelineState, say
 from sm4_Browser.averaging import Averages, Selection
-from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero, iv_corrected,
-                                  iv_broadened)
-from sm4_Browser.normalization import normalize_abs
+from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero)
 from sm4_Browser.drift import DriftWindow
 from sm4_Browser.composer import FigureComposer
 from sm4_Browser.topo import processed_topo, process_topo, average_passes, TOPO_CMAP
@@ -47,9 +45,11 @@ class Map:
     map's energy), and (b) one energy beside the file's own embedded
     topography with energy arrows ('< E', 'E >') and the curve panel (one
     panel, moved between the views).  Maps are the channel (dI/dV, or IETS
-    by the 'channel' radio) through the pipeline (Sm4File.curves,
-    STS.process_arrays: the filter box's Hampel and Savitzky-Golay filters
-    on the current, the division by the broadened I/V with 'Feenstra' on),
+    by the 'channel' radio) through the one pipeline path (Sm4File.view for
+    the window's state, sts.PipelineState: the filter box's Hampel and
+    Savitzky-Golay filters, the pipeline box's denoise, calibrate, gate,
+    locks and normalize rows, the division by the broadened I/V with
+    'Feenstra' on; view(state).shown, memoized by the state),
     every location calibrated against its own I(V) and unit-area normalized
     as the 'calibrate' / 'normalize' box says (both off at open), energy
     ascending, reshaped to (n_lines, n_fast) in the scan frame (self.extent:
@@ -220,7 +220,7 @@ class Map:
         self.n_e = len(self.V)
         self.e_index = int(np.argmin(np.abs(self.V)))
         self.gammas = np.ones(self.n_e)             # one γ per energy slice
-        self.view = 'single'
+        self.view_mode = 'single'                  # 'single' or 'grid' (the pipeline's view is view(state))
         self.active_procs = list(active_procs)
         self.direction = 'forward'
         self.has_topo = bool(grid.topo_pages)
@@ -507,7 +507,7 @@ class Map:
         """'cmap norm': each map its own colour scale (on) or one scale over the whole cube (off)."""
         self.cmap_norm = bool(flag)
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -889,7 +889,7 @@ class Map:
         self._draw_topo(self.ax_topo)
         self._grid_topo_stale = True
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -908,7 +908,7 @@ class Map:
         self.gammas[self.e_index] = float(value)
         self.grid_gammas[self.e_index].set(value)
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -970,23 +970,33 @@ class Map:
         if w is not None and w.is_open():
             w.refresh()
 
-    def _cube(self, divide_iv, calibrate=None, normalize=None, gate=None):
+    @property
+    def state(self):
         """
-        The processed cube (n_e, n_lines, n_fast) with the division as given
-        (recompute's reshaping) and the calibrate / normalize flags and the
-        gate settings (the window's unless given: the companion's own).
+        The window's PipelineState (sts.PipelineState.of): the channel, the
+        filter box's four settings, the pipeline box's rows (calibrate,
+        normalize, the gate with its locks and denoise), the window's own
+        'Feenstra' toggle and the Feenstra settings; no energy crop.  Every
+        drawn quantity comes from view(self.state).
         """
-        g = self.grid
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        c = g.curves(hp, sp, divide_iv, self.iv_width(), channel=self.channel, iv_zero_sub=self.iv_zero_sub,
-                     normalize=self.normalize if normalize is None else normalize,
-                     calibrate=self.calibrate if calibrate is None else calibrate,
-                     hampel_didv=hd, sgolay_didv=sd, gate=self.gate if gate is None else gate)[self.order, :]
-        n = g.n_lines * g.n_fast
-        c = c[:, :n].copy()
-        c[:, ~g.acquired[:n]] = np.nan
-        return c.reshape(self.n_e, g.n_lines, g.n_fast)
+        return PipelineState.of(self.filters, {'calibrate': self.calibrate, 'normalize': self.normalize, 'gate': self.gate},
+                                self.feenstra_settings(), self.channel, self.divide_iv)
+
+    def view(self, state=None):
+        """
+        What the window draws for a state (the window's own when None):
+        the grid's view (Sm4File.view: didv, current, ivv, ratio, shown,
+        every spectrum in the file's column order), one computation per
+        state (the memo is dropped when the sweep view changes, _on_sweeps);
+        the pipeline's console lines said once.
+        """
+        state = self.state if state is None else state
+        memo = self.__dict__.setdefault('_view_memo', {})
+        if state not in memo:
+            v = self.grid.view(state)
+            say(v.notes)
+            memo[state] = v
+        return memo[state]
 
     def _cube_of(self, columns):
         """Raw columns (npts, N) of the grid reshaped like the maps (energy ascending, never acquired NaN)."""
@@ -1024,71 +1034,54 @@ class Map:
         return {'ylabel': f"{q} (arb. units)", 'ylabel_offset': f"{q} (arb. units, offset)",
                 'title_markers': f"{q} at markers", 'stack_where': ", blocks by centre (highest y at the top)"}
 
-    def feenstra_view(self, calibrate=True, normalize=True, gate=None):
+    def feenstra_view(self, state=None):
         """
-        The companion's view (feenstra.FeenstraWindow): the map at the current
-        energy in four versions, the dI/dV of the pipeline with the division
-        off, the current in amps as the division works on it (its value at
-        0 V subtracted with '0Vsub'), its I/V in A/V as the division divides
-        by it (broadened with 'broadened'), and the ratio with the division
-        on, with the marker curves of each in the current marker state; a
-        file without the Current channel gives notes for the current, I/V,
-        and ratio panels, the IETS channel a note for the ratio panel.
-        `calibrate`, `normalize` and `gate` are the companion's own flags and
-        gate settings: the dI/dV and the ratio through the pipeline with
-        them; with `normalize` on the current and the I/V are unit area per
-        pixel (normalize_abs).
+        The companion's view (feenstra.FeenstraWindow) for a state (the
+        window's own when None; the companion asks with its own calibrate,
+        normalize and gate rows overriding it): the map at the current
+        energy in four versions, every one a field of view(state) reshaped
+        like the maps (_cube_of): the dI/dV of the pipeline with the
+        division off, the current the division works on (the denoised
+        current I/g with 'denoise' on; its value at 0 V subtracted with
+        '0Vsub'), its I/V as the division divides by it (broadened with
+        'broadened'), and the ratio with the division on, with the marker
+        curves of each in the current marker state; a file without the
+        Current channel gives notes for the current, I/V, and ratio panels,
+        the IETS channel a note for the ratio panel.  With the state's
+        `normalize` on the current and the I/V are unit area per pixel
+        (normalization.normalize_abs); with `calibrate` off the dI/dV is the
+        lock-in output as recorded and the ratio that output divided by the I/V.
         """
+        state = self.state if state is None else state
         g = self.grid
-        gate = self.gate if gate is None else gate
-        q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
+        v = self.view(state)
+        calibrate, normalize = state.calibrate, state.normalize
+        q = ("d2I/dV2 (IETS)" if state.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
         at = f"at {self.V[self.e_index]:.3f} V"
-        zs, width = self.iv_zero_sub, self.iv_width()
-        t = feenstra_titles(zs, self.iv_broadened, self.iv_broadening, energy_has_zero(g.energy))
+        t = feenstra_titles(state.iv_zero_sub, state.iv_broadened, state.iv_broadening, energy_has_zero(g.energy))
         nn = "" if normalize else ", not normalized"
         versions = {
             'didv': {'title': f"{q} (division off){nn} {at}",
-                     'ylabel': f"{q} ({curve_units(self.channel, calibrate, normalize, g.units_lia, g.units_iets, g.units_iv)})"},
+                     'ylabel': f"{q} ({curve_units(state.channel, calibrate, normalize, g.units_lia, g.units_iets, g.units_iv)})"},
             'iv': {'title': f"{t['iv']} {at}", 'ylabel': "I (unit area)" if normalize else "I (A)"},
             'ivv': {'title': f"{t['ivv']} {at}", 'ylabel': "I/V (unit area)" if normalize else "I/V (A/V)"},
             'ratio': {'title': f"{t['ratio']} (division on){nn} {at}", 'ylabel': "(dI/dV)/(I/V) (arb. units)"},
         }
-        # The cubes depend on these settings only, never on the markers: computed once per setting.
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        memo_key = (bool(calibrate), bool(normalize), gate, repr(hp), repr(sp), repr(hd), repr(sd), zs, width, self.channel)
-        memo = getattr(self, '_cube_memo', None)
-        if memo is not None and memo[0] == memo_key:
-            cubes = memo[1]
-        else:
-            cubes = self._feenstra_cubes(calibrate, normalize, zs, width, gate)
-            self._cube_memo = (memo_key, cubes)
-        if g.iv is None:
+        cubes = {'didv': self._cube_of(v.didv)}
+        if v.current is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
-        elif self.channel == 'iets':
-            versions['ratio']['note'] = "the division applies to dI/dV only"
+        else:
+            cubes['iv'] = self._cube_of(v.current)
+            cubes['ivv'] = self._cube_of(v.ivv)
+            if state.channel == 'iets':
+                versions['ratio']['note'] = "the division applies to dI/dV only"
+            else:
+                cubes['ratio'] = self._cube_of(v.ratio)
         for key, cube in cubes.items():
             markers, groups = self._curve_items(cube)
             versions[key].update({'top': cube[self.e_index], 'markers': markers, 'groups': groups})
         return self._feenstra_view_dict(g, at, versions, q)
-
-    def _feenstra_cubes(self, calibrate, normalize, zs, width, gate=None):
-        """The companion's cubes (n_e, n_lines, n_fast) per version."""
-        g = self.grid
-        cubes = {'didv': self._cube(False, calibrate, normalize, gate)}
-        if g.iv is not None:
-            hp, sp = self.filters.params()
-            iv_a = iv_corrected(g.energy, g.iv, zs, hp, sp)
-            ivv = iv_broadened(g.energy, g.iv, width, zs, hp, sp)
-            if normalize:
-                iv_a = normalize_abs(g.energy, iv_a)[0]
-                ivv = normalize_abs(g.energy, ivv)[0]
-            cubes['iv'] = self._cube_of(iv_a)
-            cubes['ivv'] = self._cube_of(ivv)
-            if self.channel != 'iets':
-                cubes['ratio'] = self._cube(True, calibrate, normalize, gate)
-        return cubes
 
     def _feenstra_view_dict(self, g, at, versions, q):
         """The feenstra_view dict of kind 'map' (the keys feenstra.FeenstraWindow lists) around the versions."""
@@ -1108,32 +1101,24 @@ class Map:
 
     def recompute(self):
         """
-        The maps: every spectrum of the grid through the pipeline
-        (Sm4File.curves with the filter box's settings, the division when
-        'Feenstra' is on with the Feenstra settings, the channel, and the
-        calibrate / normalize flags), energy ascending, reshaped to (n_e,
-        n_lines, n_fast) with never-acquired pixels NaN; then the single
-        view (and the grid view when shown) redrawn.  A grid that cannot be
-        processed (no Current channel for the division, no such channel)
-        leaves self.maps as it was with the reason printed: the callers
-        test `self.maps is before` to put their control back.
+        The maps: every spectrum of the grid through the one pipeline path
+        for the window's state (view(self.state).shown: the filter box's
+        settings, the pipeline box's rows, the division when 'Feenstra' is
+        on with the Feenstra settings, the channel), energy ascending,
+        reshaped to (n_e, n_lines, n_fast) with never-acquired pixels NaN
+        (_cube_of); then the single view (and the grid view when shown)
+        redrawn.  A grid that cannot be processed (no Current channel for
+        the division, no such channel) leaves self.maps as it was with the
+        reason printed: the callers test `self.maps is before` to put their
+        control back.
         """
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        g = self.grid
         try:
-            c = g.curves(hp, sp, self.divide_iv, self.iv_width(), channel=self.channel, hampel_didv=hd, sgolay_didv=sd,
-                         iv_zero_sub=self.iv_zero_sub, normalize=self.normalize,
-                         calibrate=self.calibrate, gate=self.gate)[self.order, :]                  # (n_e, N)
+            self.maps = self._cube_of(self.view().shown)
         except Exception as exc:
             print(f"Map window: {exc}")
             return
-        n = g.n_lines * g.n_fast
-        c = c[:, :n].copy()
-        c[:, ~g.acquired[:n]] = np.nan                        # never acquired: drawn transparent
-        self.maps = c.reshape(self.n_e, g.n_lines, g.n_fast)
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -1207,7 +1192,7 @@ class Map:
         if self._grid_topo_stale:
             self._draw_topo(self.grid_topo_ax, small=True)
             self._grid_topo_stale = False
-        if topo_redrawn and self.view == 'grid':
+        if topo_redrawn and self.view_mode == 'grid':
             self._draw_marker_artists()
         lo, hi = self._limits()
         for e, ax in enumerate(self.grid_axes):
@@ -1262,7 +1247,7 @@ class Map:
     def _place_curve(self):
         """The one curve panel in the view shown: in the single view right of the map's colour bar (the single view's row), in the grid view under the topo cell, as wide as the topo's column and as tall as the rows below it."""
         cell = self._cell_curve
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self._single_layout.removeWidget(cell)
             self._grid_layout.addWidget(cell, 2, 0, 2 * (self._grid_rows - 1), 1)
         else:
@@ -1297,6 +1282,7 @@ class Map:
             self.rad_sweeps.set(self.grid.sweep_mode)
             return
         print(f"Map window: the maps show the {label} sweep(s) of every pixel.")
+        self._view_memo = {}                       # the views by state: the grid changed
         self._drift_res = None
         self._bounds = None
         self._lines_memo = None
@@ -1314,7 +1300,7 @@ class Map:
         self._bounds = None
         self._draw_topo(self.ax_topo)
         self._grid_topo_stale = True
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.draw_single()
         self.fig.canvas.draw_idle()
@@ -1327,7 +1313,7 @@ class Map:
 
     def _apply_view(self):
         """Show the cells, axes and γ boxes of the current view (single or grid), hide the other's; the one curve panel moved into the view shown (_place_curve); the toggle button names the other view."""
-        single = self.view == 'single'
+        single = self.view_mode == 'single'
         self._place_curve()
         for cell in self._single_cells:
             cell.setVisible(single or cell is self._cell_curve)
@@ -1342,8 +1328,8 @@ class Map:
 
     def toggle_view(self):
         """'Grid view' / 'Single view': the other view (the grid drawn when switched to), the markers and the contour slice drawn on its panels (_draw_marker_artists, _draw_contour_artists)."""
-        self.view = 'grid' if self.view == 'single' else 'single'
-        if self.view == 'grid':
+        self.view_mode = 'grid' if self.view_mode == 'single' else 'single'
+        if self.view_mode == 'grid':
             self.draw_grid()
         self._draw_marker_artists()
         self._draw_contour_artists()
@@ -1504,9 +1490,9 @@ class Map:
         cell and every energy's map.  A file without a topo page has no
         topo panel.
         """
-        topo = self.grid_topo_ax if self.view == 'grid' else self.ax_topo
+        topo = self.grid_topo_ax if self.view_mode == 'grid' else self.ax_topo
         panels = [(topo, False, None)] if self.has_topo else []
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             return panels + [(ax, True, e) for e, ax in enumerate(self.grid_axes)]
         return [(self.ax_map, True, self.e_index)] + panels
 
@@ -1619,7 +1605,7 @@ class Map:
 
     def _contour_panels(self):
         """The map panels the contour slice is drawn on in the view shown: the single view's map, or every grid map (never a topo panel)."""
-        return list(self.grid_axes) if self.view == 'grid' else [self.ax_map]
+        return list(self.grid_axes) if self.view_mode == 'grid' else [self.ax_map]
 
     def _draw_contour_artists(self):
         """The contour slice drawn anew (the old traces removed) on every map panel of the view shown (_contour_panels; plots.draw_contour with the segments of _contour_segments); nothing before the first recompute or without a topo page."""

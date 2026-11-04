@@ -180,7 +180,15 @@ an average holds spectra alone and needs none. The timeline is kept in the setti
 
 ### The pipeline
 
-Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this order:
+Every spectrum goes through the same steps, in `sts.STS.stages`, in this order. `stages` is the
+one engine every window draws from: a window keeps one `sts.PipelineState` built from its boxes
+(the channel, the four filter settings, the gate with its locks and the `denoise` row, the
+`calibrate` and `normalize` rows, its own `Feenstra` toggle, the Feenstra settings, the energy
+crop), and everything it draws is a field of `sts.STS.view` for that state (`didv`, `current`,
+`ivv`, `ratio`, `shown`), computed once per state (`Sm4File.view`). The Feenstra companions ask
+for the main window's state with their own `calibrate`, `normalize` and gate rows overriding it,
+so every toggle that appears in a window acts on every panel of that window it applies to by
+construction. `STS.process_arrays` is the same engine behind its earlier interface. The steps:
 
 1. the filters (`filters.py`): Hampel (spikes), then Savitzky-Golay (smoothing), each with one
    toggle for the lock-in channel's columns (`dI/dV`) and one for the recorded current I(V), the
@@ -747,9 +755,19 @@ computed store (`header_cache`) and the family of cache files of a data file (`c
 ### `sts.py`
 
 The dI/dV and IETS channels of one file with its I(V) page (`STS`): the curves as recorded, their
-units (`curve_units`), and the pipeline driver `process_arrays`, which runs the filters, the
-denoise step, the calibration, the Feenstra division and the normalization in that order on any
-set of columns. `AlignmentError` is raised when a file's channels do not share one energy axis.
+units (`curve_units`), and the one pipeline path: `PipelineState` (everything the pipeline needs
+from a window's boxes, hashable; `of` builds it from the boxes, `with_` changes fields,
+`filters()` gives the four filter dicts back), `STS.stages` (the engine: the filters, the denoise
+step, the calibration, the Feenstra division and the normalization in that order on any set of
+columns, run once, every intermediate kept in a `Stages` record, the console lines returned as
+`notes`), `STS.view` (what a window or a companion draws from one `stages` call: a `View` with
+`didv`, `current`, `ivv`, `ratio`, `shown`, `g`, `fits`, `notes`; pure), `STS.stages_of` /
+`STS.view_of` (the same for a file's own spectra: `Sm4File.stages` / `Sm4File.view` and
+`Selection.stages` / `Selection.view` pass through to them), `process_arrays` / `process` (the
+same engine behind the earlier interface: the quantity the division selects and its areas, the
+notes printed once through `_note_once`; `say` prints a view's notes once for the windows), and
+`state_record` / `state_from_record` (the record keys of a state). `AlignmentError` is raised when
+a file's channels do not share one energy axis.
 
 ### `filters.py`, `gap.py`, `calibration.py`, `feenstra.py`, `normalization.py`
 
@@ -903,47 +921,76 @@ says whether matplotlib can be imported.
 
 The package docstring: what the package is, the entry point and the module map in one place.
 
-### `checks/`
+### `checks/` and `tools/`
 
-The checks, described below. `checks/averages-topo-report.md` is the report of an earlier change
-(averages from lines and maps, Δz subtraction, range matching, topo rows), kept as its record.
+The checks (described below): small, each doing one thing on synthetic data, all run by one
+command. The tools (`tools/`): scripts that need a real `.sm4` file or an open window to be
+useful, run by hand. `reports/` holds the reports of the changes made so far
+(`averages-topo-report.md`: averages from lines and maps, Δz subtraction, range matching, topo
+rows; `1-unshifted-pins-report.md`; `2-view-path-and-checks-report.md`).
 
 ## The checks
 
-The checks run offscreen on synthetic experiments (`checks/synth.py`: empty `.sm4` placeholder
-files with their stamps and a registry of synthetic pages, installed in place of the loader, so
-every other line of the package runs as on real files; the surface and the drift are known). From
-the parent directory of the package folder (named `sm4_Browser`):
+The checks run on synthetic experiments (`checks/synth.py`: empty `.sm4` placeholder files with
+their stamps and a registry of synthetic pages, installed in place of the loader, so every other
+line of the package runs as on real files; the surface and the drift are known) or on numpy
+arrays; none needs a real file, and nothing is written outside a temporary directory. From the
+parent directory of the package folder (named `sm4_Browser`):
 
 ```
-PYTHONDONTWRITEBYTECODE=1 python -m sm4_Browser.checks.smoke_browser [names]
+PYTHONDONTWRITEBYTECODE=1 python -m sm4_Browser.checks.run [names]
 ```
 
-`smoke_browser` opens the browser on the standard experiment (`synth.standard`: two topographies,
-a map grid, a line grid, a single point, a topography; the map grid a finished 64 × 64 scan with 9
-energy slices, the line grid a 64 × 64 map scan stopped after 16 lines, at 401 energy points; the
-Line window checks open the line grid, the rest the map grid) and runs every check, one line per
-check, exiting non-zero on a failure; a name narrows it to the checks containing it. It configures
-Qt's offscreen platform with a screen large enough for every window at twice its design size (the
-built-in screen is 800 × 800). The families: the view (D), markers down to zero (E), the scan
-layer and the drift transform (A), the step filter (B), the point colours (C), the drift window and
-the stripe matching (G, H), the E-markers and ranges (F), the title rule (T), text size and short
-labels (I), the stores and the flags (J), the scale timeline (K), the section path (L) and the fixes
-of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
-occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
-heatmap shear, the qtplot rules, the records helpers) and the layout (N: every spatial panel edge to
-edge around everything drawn; every row of panels at one height; the calibration per sweep with
-nothing locked; the dI/dV filter toggles; the calibration locks). The other
-checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
-(the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
-location: the three storage layouts of a grid, a point's forward / reverse pairs, the views, the
-clock, the averaging window's radio and its record), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on
-a large directory), `alignment_windows` (the alignment of a line's stripe with its heatmap on real
-files), `diagnose_file` (one real file, step by step), `zero_crossing` (the raw current's zero
-crossing over saved averages), `check_contour` (the contour slice's marching squares and placement
-on known surfaces, numpy only: a plane, a cone, the saddles, never-acquired pixels, the frame),
-`check_pass_average` (the average of two passes, numpy only: identical passes unchanged, neither
-pass dominating whatever their heights, the reverse resampled onto the forward's placed positions).
+`checks/run.py` imports every check module in a fixed order, calls its `run()` (the number of
+failures; one `[ok]` / `[FAIL]` line per sub-check), prints `<name>: ok (<n> checks, <t> s)` or
+`<name>: FAIL (<failures>)` or `<name>: not run (<why>)`, and exits 1 if any failed or could not
+run (a check that cannot run in the environment counts as a failure of the runner, never as a
+pass). With names given, only those run. No timeout, no parallelism, no retries. The checks, in
+the runner's order:
+
+* `pipeline_check`: the one pipeline path (`sts.STS.stages` / `STS.view`) on synthetic sweeps,
+  three energy windows, forward and reverse sweeps, dI/dV and IETS: `view.shown` equals
+  `process_arrays` exactly (the areas and the console lines too) over every setting combination;
+  with `normalize` off the ratio is the dI/dV panel divided by the I/V panel to float precision;
+  the filters run once; with `denoise` off nothing is divided, with it on the plain ratio is
+  invariant to the gap factor; and the field table, each state field changing the view fields it
+  reaches and no other;
+* `pin_rule_check`: the calibration locks' pin rule against the equations it states (the 0-lock
+  equal to the original line tool's calibration, the Vbias lock, both locks, the gate's refits,
+  IETS);
+* `contour_check` (the contour slice's marching squares and placement on known surfaces, numpy
+  only: a plane, a cone, the saddles, never-acquired pixels, the frame);
+* `pass_average_check` (the average of two passes, numpy only: identical passes unchanged, neither
+  pass dominating whatever their heights, the reverse resampled onto the forward's placed
+  positions);
+* `affine_check` (the affine drift transform against per-pixel resampling);
+* `stripe_check` (the stripe matching against known truth);
+* `sweeps_check` (several sweeps per location: the three storage layouts of a grid, a point's
+  forward / reverse pairs, the views, the clock);
+* `window_smoke`: the windows, one pass on one synthetic experiment (a topography, one grid in
+  the 'paired' sweep layout with a forward and a reverse sweep per pixel, a single point with
+  sweeps in pairs, a topography): the browser, a Line window, a Map window, an averaging window
+  with the point and a marker-group selection, a line-average window after one run, a Topo window
+  and the Feenstra companions of the Line, Map and averaging windows. For each window one
+  non-default state is set through its boxes (every row of the filter box, the pipeline box and
+  the Feenstra settings changed once), `window.state` is asserted equal to the `PipelineState`
+  built independently, the drawn arrays are asserted equal to `view(window.state)` on the window's
+  columns, a record is saved where the window has one, reloaded and the state asserted to
+  round-trip, and everything is closed. The windows draw on a real screen, never on Qt's offscreen
+  platform (which errs in the browser and freezes the processing): the display at hand, or an Xvfb
+  virtual screen the check starts itself (4200 x 2600, every window at twice its design size) and
+  stops at the end; without a display and without Xvfb the check reports itself as not run.
+
+## The tools
+
+Scripts in `tools/`, run by hand (`python -m sm4_Browser.tools.<name>`, or F5 in Spyder with the
+settings of their `__main__` block): `denoise_stats` (the denoise step's roughness and odd/even
+statistics on one `.sm4`, off against on), `diagnose_file` (one `.sm4` step by step with timings
+and a stack where it hangs), `zero_crossing` (the 0 V crossing of the raw current over the saved
+averages), `alignment_windows` (the stripe against the heatmap under two placements, side by
+side, on real files), `perf_layer` (timings of the scan layer on a large synthetic directory) and
+`background_processes` (the scan layer's worker processes and disk cache). `calibration.py`'s own
+`__main__` window stays where it is.
 
 ## References
 

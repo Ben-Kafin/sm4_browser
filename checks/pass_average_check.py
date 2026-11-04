@@ -3,7 +3,7 @@ The average of a topography's two passes (topo.average_passes, the rule of every
 topography: topo images, the Map window's embedded topo and its contour slice, the scan area's
 bands, the Topo window's stripes), numpy only, instant:
 
-    python -m sm4_Browser.checks.check_pass_average
+    python -m sm4_Browser.checks.pass_average_check
 
 Identical passes come out unchanged (minus the minimum); a pass three times taller carries the
 same weight as the other (the least-squares share of each pass's standardized shape in the
@@ -13,7 +13,7 @@ displaced along the line (its positions, as the stripe matching places them) is 
 the forward row's positions, so the average of the same surface equals the forward within the
 interpolation's error where the reverse span covers and keeps the forward alone beyond it; a
 rotated scan frame gives the same; a reverse row with one placed pixel contributes nothing;
-positions of another shape are ignored.  Prints one PASS / FAIL line per point and the verdict;
+positions of another shape are ignored.  Prints one [ok] / [FAIL] line per point and the number of failures;
 returns it.
 """
 import os
@@ -34,13 +34,13 @@ def _weights(avg, a, b):
 
 
 def run():
-    ok = True
+    fails = 0
 
     def report(name, cond, detail=''):
-        nonlocal ok
+        nonlocal fails
         cond = bool(cond)
-        ok = ok and cond
-        print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
+        fails += 0 if cond else 1
+        print(f"  [{'ok' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail else ''))
 
     rng = np.random.default_rng(1)
     n = 48
@@ -100,9 +100,9 @@ def run():
     out2 = average_passes(fwd, rev, pos_f, pos_r2)
     report("a reverse row with one placed pixel: the forward row alone", np.allclose(out2[10], (fwd - fwd.min())[10]))
     report("positions of another shape are ignored", np.allclose(average_passes(fwd, rev, pos_f[:-1], pos_r[:-1]), plain))
-    print("ALL PASS" if ok else "SOME FAILED")
-    return ok
+    print(f"{fails} failure(s)")
+    return fails
 
 
 if __name__ == '__main__':
-    sys.exit(0 if run() else 1)
+    sys.exit(1 if run() else 0)

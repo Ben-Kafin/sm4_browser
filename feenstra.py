@@ -236,20 +236,33 @@ class FeenstraWindow:
     only, nothing moves on the bias axis; a sweep whose axis does not reach
     0 V is left as it is); 'broadened' off divides by the plain I/V.
 
-    Its 'calibrate' / 'normalize' box (controls.PipelineBox, top right, as in
-    every window) holds this window's own two flags, independent of the main
-    window's, both off at open: 'normalize' turns the per-location unit-area normalization of
-    all four panels on or off together (the dI/dV and the ratio through the
-    pipeline's unit-area step, the current and the I/V through
-    normalization.normalize_abs); 'calibrate' turns the calibration of the
-    dI/dV off, so the dI/dV panel shows the lock-in output as recorded (in
-    its page's units) and the ratio panel that output divided by the I/V, the
-    recorded data run through
-    the whole Feenstra workflow; the current and I/V panels do not change
-    with it.  Every heatmap ('line' and 'map' kinds) has its own 'γ' box
-    under its bottom-right corner.
+    Its pipeline box (controls.PipelineBox, top right, as in every window:
+    'denoise', 'calibrate', 'gate' with its boxes, '0-lock', 'Vbias lock',
+    'normalize') holds this window's own state of those rows, independent
+    of the main window's (calibrate and normalize off at open, the gate on,
+    the locks and denoise off): the four panels are the main window's
+    view for the main window's state with these rows overriding it
+    (refresh: sts.PipelineState.with_).  'normalize' turns the per-location
+    unit-area normalization of all four panels on or off together (the
+    dI/dV and the ratio through the pipeline's unit-area step, the current
+    and the I/V through normalization.normalize_abs); 'calibrate' turns the
+    calibration of the dI/dV off, so the dI/dV panel shows the lock-in
+    output as recorded (in its page's units) and the ratio panel that
+    output divided by the I/V; the current and I/V panels do not change
+    with it (the current is the calibration's reference); 'denoise' divides
+    the per-point gap factor out of the dI/dV page and the current, so the
+    current panel is I/g and the I/V panel its I/V, and the ratio panel is
+    the dI/dV panel divided by the I/V panel under every state with
+    'normalize' off; the gate and the locks act on the calibration as in the
+    main window.  A change of any row recomputes (the main window memoizes
+    its views by the state).  Every heatmap ('line' and 'map' kinds) has
+    its own 'γ' box under its bottom-right corner.
 
-    The main window's feenstra_view(calibrate, normalize) describes what to draw:
+    The main window's feenstra_view(state) describes what to draw, for the
+    state this window asks for: the main window's own PipelineState with
+    this window's box overriding its calibrate, normalize and gate fields
+    (the gate carries the locks and the denoise row) and nothing else, so
+    every panel is a field of sts.STS.view for that state:
       kind     : 'line' (four heatmaps with the topo stripe and the marker
                  curve panels under them), 'map' (four maps at the current
                  energy with the marker curve panels under them), or 'sweeps'
@@ -300,7 +313,8 @@ class FeenstraWindow:
         self.kind = None
         self.cols = []
         self._topo_cbar = None
-        # This window's own pipeline flags (top right, as in every window; both off at open).
+        # This window's own pipeline rows (top right, as in every window; calibrate and normalize off at
+        # open, the gate on, the locks and denoise off): they override the main window's state (refresh).
         self.pipeline = controls.PipelineBox(self.fig, calibrate=False, normalize=False)
         self.pipeline.on_change(lambda state: self.refresh())
         # The main window's Feenstra settings: '0Vsub', 'broadened' and the width box, under the
@@ -527,6 +541,7 @@ class FeenstraWindow:
             im = plots.draw_heatmap(top, img, view['extent'], view.get('cmap', 'jet'), gamma=self.gammas[key].value,
                                     aspect='equal', origin='lower', interpolation='none')
         plots.draw_colorbar(self.fig, im, cax)
+        col['im'] = im                                   # the drawn image (its array is what the panel shows)
         top.set_title(f"{self._simple(key, v)}: " + v.get('title', ''), fontsize=8)
         if kind == 'line':
             plots.draw_topo_stripe(col['stripe'], view.get('stripe_pos', view['pos']), view['stripe'])
@@ -548,9 +563,11 @@ class FeenstraWindow:
 
     def refresh(self):
         """
-        Redraw from the main window's current view, feenstra_view(calibrate,
-        normalize) with this window's own flags (nothing when this window is
-        closed; an exception from the main window is printed and ends the
+        Redraw from the main window's current view, feenstra_view(state) for
+        the main window's state with this window's own pipeline rows
+        (calibrate, normalize, the gate with its locks and denoise)
+        overriding it (nothing when this window is closed; an exception from
+        the main window is printed and ends the
         refresh): the axes rebuilt when the kind changed, the settings boxes
         synced to the main window's, then per column the sweep panel
         ('sweeps'), or the heatmap / map rebuilt only when its fingerprint
@@ -563,7 +580,8 @@ class FeenstraWindow:
             return
         flags = self.pipeline.state()
         try:
-            view = self.parent.feenstra_view(calibrate=flags['calibrate'], normalize=flags['normalize'], gate=flags['gate'])
+            state = self.parent.state.with_(calibrate=flags['calibrate'], normalize=flags['normalize'], gate=flags['gate'])
+            view = self.parent.feenstra_view(state)
         except Exception as exc:
             print(f"Feenstra window: {exc}")
             return

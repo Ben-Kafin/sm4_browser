@@ -2,7 +2,7 @@
 The contour slice's marching squares (contour.iso_segments) and placement (contour.to_frame) on
 known surfaces, numpy only, instant:
 
-    python -m sm4_Browser.checks.check_contour
+    python -m sm4_Browser.checks.contour_check
 
 A plane (every crossing at the known column, one segment per row of cells), a cone (every vertex
 at the known radius within the linear interpolation's error; the loop closed: every vertex shared
@@ -11,7 +11,7 @@ segments cut off the right corners), never-acquired pixels (no vertex in a NaN b
 level under everything draws nothing, so no line runs along the acquired edge), nothing crossing
 (empty), and the placement in the frame (the pixel centres of a reversed extent; a constant shift, a
 linear shift read between the pixels, a NaN shift as 0, a shift of another shape ignored).  Prints
-one PASS / FAIL line per point and the verdict; returns it.
+one [ok] / [FAIL] line per point and the number of failures; returns it.
 """
 import os
 import sys
@@ -32,13 +32,13 @@ def _around(seg, corner):
 
 
 def run():
-    ok = True
+    fails = 0
 
     def report(name, cond, detail=''):
-        nonlocal ok
+        nonlocal fails
         cond = bool(cond)
-        ok = ok and cond
-        print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
+        fails += 0 if cond else 1
+        print(f"  [{'ok' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail else ''))
 
     # 1. a plane rising along the columns: the level 3.25 crosses every row of cells at column 3.25
     ny, nx = 6, 9
@@ -116,9 +116,9 @@ def run():
     report("to_frame: a NaN shift counts as 0", np.allclose(to_frame(segs, extent, shape, nan_shift)[0, 0], want[0, 0]))
     report("to_frame: a shift of another shape is ignored", np.allclose(to_frame(segs, extent, shape, np.zeros((3, 3, 2))), want))
     report("to_frame: empty in, empty out", to_frame(np.zeros((0, 2, 2)), extent, shape, shift).shape == (0, 2, 2))
-    print("ALL PASS" if ok else "SOME FAILED")
-    return ok
+    print(f"{fails} failure(s)")
+    return fails
 
 
 if __name__ == '__main__':
-    sys.exit(0 if run() else 1)
+    sys.exit(1 if run() else 0)

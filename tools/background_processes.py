@@ -3,7 +3,7 @@ The scan layer's background placing with real worker processes (spawned, each wi
 files installed), the disk cache of processed images (a second opening reads no file for the scan
 area), and the recently used full files (stepping back re-reads nothing).
 
-    python -m sm4_Browser.checks.check_background
+    python -m sm4_Browser.tools.background_processes
 """
 import io
 import os
@@ -16,7 +16,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 if __package__ in (None, ''):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from sm4_Browser import qtplot as plt
-from sm4_Browser.checks import synth, perf_layer
+from sm4_Browser.checks import synth
+from sm4_Browser.tools import perf_layer
 
 RESULTS = []
 
