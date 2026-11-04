@@ -2252,14 +2252,18 @@ class _BrowserCore:
         an old fit history) rebuilt in a window of its index, run, compared
         with its fit history, and the fit opened from the fit history when
         one exists; a Line window's marker record opened on its file and
-        line with everything restored; a line-average record rebuilt in its
-        window.
+        line with everything restored; a Map window's marker record opened
+        on its file with everything restored (load_map_record); a
+        line-average record rebuilt in its window.
         """
         if entry['kind'] == 'line':
             self.load_line_record(entry['record'])
             return
         if entry['kind'] == 'lineavg':
             self.load_lineavg_record(entry['record'])
+            return
+        if entry['kind'] == 'map':
+            self.load_map_record(entry['record'])
             return
         cache = entry.get('cache')
         if entry['kind'] == 'record':
@@ -2428,6 +2432,50 @@ class _BrowserCore:
             print(f"line markers load: {exc}")
             return
         self.children.append(analyzer)
+
+    def load_map_record(self, rec):
+        """
+        A Map window's marker record: the browser goes to the record's file
+        (refused unless a grid), a Map window opens on it exactly as 'Map'
+        opens one (the same constructor arguments: the record's sweep view
+        when the file offers it, the timeline's scale with a note when the
+        record's differs, _record_scale; the record's Feenstra state and
+        settings and channel), then the rest of the record is put into it
+        (Map.restore_markers), and the window joins the browser's children.
+        """
+        try:
+            f = self._resolve_file(rec.get('path'), rec.get('name'))
+        except FileNotFoundError as exc:
+            print(f"map markers load refused: {exc}.")
+            return
+        if f.kind != 'grid':
+            print(f"map markers load refused: {f.name} is a {f.kind} file, not a grid.")
+            return
+        if f.path in self.files:
+            self._goto(self.files.index(f.path))
+        grid = f
+        sw = rec.get('sweeps')
+        if sw and getattr(f, 'sweep_info', None) is not None:
+            try:
+                grid = f.with_sweeps(sw)
+            except ValueError as exc:
+                print(f"map markers: the record's sweep view not applied ({exc}); the file's own view.")
+        own = self.channel if self.channel in f.channels() else f.channels()[0]
+        st = state_from_record(rec, PipelineState(channel=own, divide_iv=True, iv_zero_sub=self.iv_zero_sub,
+                                                  iv_broadened=self.iv_broadened, iv_broadening=self.iv_broadening))
+        try:
+            m = Map(grid, list(self.topo_active), self._record_scale(f, rec.get('scalefactor')),
+                    self.hampel_defaults, self.sgolay_defaults, self.cmap_map,
+                    divide_iv=st.divide_iv, iv_broadening=st.iv_broadening,
+                    iv_zero_sub=st.iv_zero_sub, iv_broadened=st.iv_broadened,
+                    channel=st.channel if st.channel in f.channels() else f.channels()[0],
+                    averages=self.averages, fit_settings=self.line_window_kwargs.get('fit_settings'),
+                    drift=self.drift, auto_on=self.auto_on, manual_on=self.manual_on)
+            m.restore_markers(rec)
+        except Exception as exc:
+            print(f"map markers load: {exc}")
+            return
+        self.children.append(m)
 
     def load_lineavg_record(self, rec):
         """

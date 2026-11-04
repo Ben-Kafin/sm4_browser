@@ -403,8 +403,13 @@ row of cells has the same height) and one energy beside the embedded topography
 with `< E` / `E >` and the curve panel (`sweeps`, for a file with several sweeps per pixel, under
 `< E` / `E >` at the bottom right); the curve panel is one panel, moved between the two views.
 `cmap norm` chooses one colour scale for the whole cube or one
-per map; one `γ` box per energy slice. The maps' colour map is `plots.MAP_CMAP` (midnight blue to
-light sky blue), the browser's `cmap_map` setting. A marker is a solid circle as wide as a pixel's diagonal,
+per map; `clip %` beside it (0 at open, a percentage from 0 up to 50) clips that scale to the
+p-th and (100 − p)-th percentiles of the values (`plots.percentile_range`: the whole cube with
+`cmap norm` off, each map its own with it on), so that a few extreme pixels do not set the
+colouring; a pixel beyond the limits takes the end colour, the colour bar spans the clipped
+limits, and nothing else changes (the map arrays, the marker curves, the companion, the sends and
+the composer read the same arrays); one `γ` box per energy slice, applied on top. The maps' colour
+map is `plots.MAP_CMAP` (midnight blue to light sky blue), the browser's `cmap_map` setting. A marker is a solid circle as wide as a pixel's diagonal,
 corner to corner, centred on its pixel (it overlaps the neighbouring pixels slightly; the pixel
 under its centre is the one whose spectrum it shows), drawn on the single view's map and
 topography and, in the grid view, on the topography cell and every energy's map (each map at its
@@ -413,7 +418,14 @@ white edge ring inside the circle's edge on every panel (in the publication file
 A marker or a group centre is dragged by its centre from any panel it is drawn on. The markers are the Line window's method in 2D (pixels; the
 `avgs` box and the marker box of `Markers` boxes, `Average`, `stack`, `substack`, `add new` / `add existing` per group,
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
-spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
+spectrum, to an averaging window. `save` (in the column with `Send to fit`) writes the map's
+marker record `averages/<file stem>_map_markers.json`, one per file, overwritten: the file and its
+sweep view, the pipeline state, the view, the energy step, the gammas, `cmap norm` and `clip %`,
+the topo pass and processors, the drift and stripe toggles, the contour slice's level (and its
+traces, for information) and the marker groups, markers and stack states; the saved-records window
+lists it, and `load` reopens the map on the file with everything put back (the slice rebuilt from
+the level, and compared with the saved traces: a console line says when the topography's pass,
+processing or drift state is no longer what it was at the save). With a drift source on every pixel sits at its spectrum's chained
 position plus the drift within its sweep up to the shown energy, the embedded topography is drawn as
 quads at the pixels' chained positions, the view is edge to edge around every pixel drawn at every
 energy and the drift lines (it holds still while the energy is stepped), and every
@@ -479,10 +491,11 @@ member's columns, current and I/V, and the sent curves).
 `load saved averages` opens the saved-records window (`records.py`): every record of the `averages`
 subfolder, by index, descending (name, entries and sweeps, removed sweeps, the files' times, the
 filter settings, the number of fits in its fit history), then the fit histories of the earlier
-label-named form (each family once, its newest file), the Line windows' marker records and the
-line-average records. `load` rebuilds the
+label-named form (each family once, its newest file), the Line windows' and the Map windows'
+marker records (together, by time) and the line-average records. `load` rebuilds the
 chosen average in a window of its index and opens the fit from its history when one exists, opens a
-Line window on a marker record's file and line with everything restored, or rebuilds a line-average
+Line window on a marker record's file and line with everything restored, opens a Map window on a
+map record's file with everything restored, or rebuilds a line-average
 window; `rescan` re-reads the directory.
 
 ### The fit
@@ -588,6 +601,7 @@ take it.
 | `averages/<stem>_fits.pkl` | the `averages` subfolder | the fit history of an average sent to the fit, with everything a refit needs | your results |
 | `averages/<stem>_fit<K>.json`, `.csv` | the `averages` subfolder (next to the data file for a file fitted directly) | a saved fit: its parameters, and V, data, background, components, model | your results |
 | `averages/<file stem>_line<k>_markers.json` | the `averages` subfolder | a Line window's marker record: groups, markers, E-markers, ranges, the scale it was made with | your results |
+| `averages/<file stem>_map_markers.json` | the `averages` subfolder | a Map window's marker record: the pipeline state, the view and energy step, the colour scale's settings, the topo pass and processors, the drift toggles, the contour level and traces, groups and markers, the scale it was made with | your results |
 | `averages/lineavg<N>_average.json` | the `averages` subfolder | a line-average record: members (each with the scale it was made with), alignment, markers | your results |
 | `<date_time>_fits.pkl` | next to a data file fitted directly | that file's fit history | your results |
 | `~/sm4_browser_crash.log` | the home directory | where Qt or a C extension crashed the kernel, with the last file the browser went to | yes |
@@ -876,9 +890,10 @@ alignment` window. `align.py` is the alignment on arrays alone: the common energ
 
 ### `map.py`, `composer.py` and `contour.py`
 
-The Map window (`Map`): the per-energy maps, the grid view and the single view, the colour scales,
-the markers in two dimensions, the drift within a sweep, the contour slice, the sends and `add to
-plot`. `composer.FigureComposer` is the figure composer: the collected panels, the symbols of the
+The Map window (`Map`): the per-energy maps, the grid view and the single view, the colour scales
+(`_limits`, through the `clip %` percentile clip), the markers in two dimensions, the drift within
+a sweep, the contour slice, the sends, `add to plot`, and the marker record (`marker_record`,
+`restore_markers`). `composer.FigureComposer` is the figure composer: the collected panels, the symbols of the
 spectra on every map, the bias arrows, the scale bars, the removal of a panel and `new plot`.
 `contour.py` is the contour slice's geometry: `iso_segments` (marching squares at one level,
 vectorized over the cells, the segments in pixel coordinates; a cell with a never-acquired corner
@@ -895,9 +910,9 @@ the send to the fit (`send_sets_to_fit`) and the averaging window (`MultiAverage
 ### `records.py`
 
 The record formats and paths in the `averages` subfolder (`avg_dir_of`, `record_path`,
-`line_record_path`, `cache_path_of`, `write_json`, `read_json`, `read_cache`, `saved_indices_of`,
-`is_lineavg_record`, `rename_record`) and the saved-records window (`SavedAveragesWindow`). The
-module docstring lists every format number.
+`line_record_path`, `map_record_path`, `cache_path_of`, `write_json`, `read_json`, `read_cache`,
+`saved_indices_of`, `is_lineavg_record`, `rename_record`) and the saved-records window
+(`SavedAveragesWindow`). The module docstring lists every format number.
 
 ### `fit.py`
 
@@ -988,9 +1003,13 @@ settings of their `__main__` block): `denoise_stats` (the denoise step's roughne
 statistics on one `.sm4`, off against on), `diagnose_file` (one `.sm4` step by step with timings
 and a stack where it hangs), `zero_crossing` (the 0 V crossing of the raw current over the saved
 averages), `alignment_windows` (the stripe against the heatmap under two placements, side by
-side, on real files), `perf_layer` (timings of the scan layer on a large synthetic directory) and
-`background_processes` (the scan layer's worker processes and disk cache). `calibration.py`'s own
-`__main__` window stays where it is.
+side, on real files), `perf_layer` (timings of the scan layer on a large synthetic directory),
+`background_processes` (the scan layer's worker processes and disk cache) and `denoise_steps` (the
+denoise step of one file, one sweep at a time, every intermediate drawn from `sts.STS.stages` so
+that each panel is a field of the engine: the inputs and the premise, the ratio and the
+reconstruction of the current, g and the denoised pair, the after-premise, the Feenstra invariance
+and the pipeline output with two consistency numbers, each expected 0; `< sweep` / `sweep >`, the
+filter box and the pipeline box). `calibration.py`'s own `__main__` window stays where it is.
 
 ## References
 

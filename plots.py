@@ -141,6 +141,23 @@ def finite_range(img):
     return float(np.min(a[ok])), float(np.max(a[ok]))
 
 
+def percentile_range(img, p):
+    """
+    (vmin, vmax) of an array for a percentile clip: the p-th and the (100 - p)-th percentiles of
+    its finite values (numpy.nanpercentile), p in percent, so that a few extreme pixels no longer
+    set a colour scale (the Map window's 'clip %' box); p = 0 gives finite_range (the finite
+    minimum and maximum); (0, 1) when there is no finite value, as finite_range gives it.
+    """
+    a = np.asarray(img, dtype=np.float64)
+    p = float(p)
+    if p <= 0.0:
+        return finite_range(a)
+    if not np.isfinite(a).any():
+        return 0.0, 1.0
+    lo, hi = np.nanpercentile(a, [p, 100.0 - p])
+    return float(lo), float(hi)
+
+
 def energy_range_scale(img, energy, e_range):
     """
     (vmin, vmax) of a row heatmap's colour scale over an energy range: the

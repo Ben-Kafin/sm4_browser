@@ -13,6 +13,15 @@ average, the browser's spectra panels, each companion's four panels), a record i
 window has one, reloaded, and the state asserted to round-trip; then everything is closed.  No
 per-feature cells, no interaction beyond the boxes.
 
+The Map window's two features ride on its pass: the percentile clip (one pixel set far above the
+rest at one energy: 'clip %' 0 gives the limits of plots.finite_range, 'clip %' 2 the limits of
+numpy.nanpercentile(values, [2, 98]) in both 'cmap norm' states, the drawn array unchanged by the
+box, an edit outside 0 <= p < 50 refused) and its marker record (saved with the non-default state
+and the markers, reloaded through Browser.load_map_record: the state, the view, the energy index,
+the markers, the group sizes and centres, z_frac and clip % round-trip; a hand-edited record with
+an out-of-range marker and a wrong e_index loaded, the marker clipped to the grid and the index
+refused on the console).
+
 The screen: Qt's offscreen platform is never used (it errs in the browser and freezes the
 processing).  The windows open on the display at hand (DISPLAY set, or a platform that always has
 one, Windows and macOS) or, without one, on an Xvfb virtual screen started here (4200 x 2600:
@@ -28,6 +37,8 @@ Spyder: F5.  Exit status 1 on any failure.
 if __package__ in (None, ''):
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -221,6 +232,7 @@ def _companion_rows(fw):
 def _run():
     import numpy as np
     from sm4_Browser import qtplot as plt
+    from sm4_Browser import records
     from sm4_Browser.checks import synth
 
     tmp = tempfile.mkdtemp(prefix='sm4smoke_')
@@ -267,6 +279,66 @@ def _run():
     check("Map companion: its four panels draw view(state) at the shown energy",
           all(_same(col['im'].get_array(), m._cube_of(fields[key])[m.e_index])
               for col, key in zip(m.feenstra.cols, m.feenstra.KEYS)))
+
+    # --- the percentile clip: one pixel far above the rest at the shown energy ---
+    from sm4_Browser import plots
+    e = m.e_index
+    i, j = m.n_lines // 2, m.n_fast // 2
+    m.maps[e, i, j] = float(np.nanmax(m.maps)) * 100.0
+    m.draw_single()
+    lim0 = (float(m._single_im.norm.vmin), float(m._single_im.norm.vmax))
+    drawn0 = np.array(m._single_im.get_array(), dtype=float)
+    check("Map clip: 'clip %' 0 gives the limits of finite_range over the cube", lim0 == plots.finite_range(m.maps), str(lim0))
+    _edit(m.box_clip, 2)
+    lim2 = (float(m._single_im.norm.vmin), float(m._single_im.norm.vmax))
+    want = tuple(float(v) for v in np.nanpercentile(m.maps, [2, 98]))
+    check("Map clip: 'clip %' 2 gives nanpercentile(values, [2, 98]) over the cube with 'cmap norm' off",
+          m.clip_percent == 2.0 and np.allclose(lim2, want) and lim2 != lim0, f"{lim2} vs {want}")
+    _click(m.chk_cmap_norm)
+    lim2n = (float(m._single_im.norm.vmin), float(m._single_im.norm.vmax))
+    want_n = tuple(float(v) for v in np.nanpercentile(m.maps[e], [2, 98]))
+    check("Map clip: with 'cmap norm' on each map its own nanpercentile(values, [2, 98])", np.allclose(lim2n, want_n),
+          f"{lim2n} vs {want_n}")
+    check("Map clip: the drawn array is unchanged by the box",
+          _same(m._single_im.get_array(), drawn0) and _same(m.maps[e], drawn0))
+    _edit(m.box_clip, 60)
+    check("Map clip: an edit outside 0 <= p < 50 is refused and the box put back",
+          m.clip_percent == 2.0 and m.box_clip.value == '2')
+    _click(m.chk_cmap_norm)                       # off again
+    m.recompute()                                 # the maps back from the data
+
+    # --- the Map's marker record: saved with the non-default state and the markers, reloaded ---
+    m._set_level(0.3)
+    rec = m.marker_record()
+    m._on_save()
+    saved = (m.state, m.view_mode, m.e_index, list(m.marker_px), list(m.group_sizes), m._sync_centres(), m.z_frac,
+             m.clip_percent)
+    check("Map record: written under records.map_record_path with the record's keys",
+          os.path.isfile(records.map_record_path(os.path.dirname(m.grid.path), m.grid.path))
+          and rec['format'] == records.MAP_RECORD_FORMAT and rec['clip_percent'] == 2.0 and rec['z_frac'] == 0.3
+          and len(rec['contour_segments_nm']) == len(m._contour_segments()))
+    plt.close(m.fig)
+    app.processEvents()
+    b.load_saved_average({'kind': 'map', 'record': rec})
+    m2 = b.children[-1]
+    opened.append(m2)
+    got = (m2.state, m2.view_mode, m2.e_index, list(m2.marker_px), list(m2.group_sizes), m2._sync_centres(), m2.z_frac,
+           m2.clip_percent) if m2 is not m else None
+    check("Map record: the state, the view, the energy index, the markers, the group sizes and centres, z_frac and "
+          "clip % round-trip through the browser's loader", got == saved, str(got))
+    bad = dict(rec)
+    bad['e_index'] = 999
+    bad['markers'] = [[999, 999]] + [list(px) for px in rec['markers'][1:]]
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        b.load_saved_average({'kind': 'map', 'record': bad})
+    m3 = b.children[-1]
+    opened.append(m3)
+    text = said.getvalue()
+    check("Map record: a hand-edited record with a wrong e_index and an out-of-range marker: the index refused on the "
+          "console, the marker clipped to the grid",
+          m3 is not m2 and "energy index 999 is outside" in text and m3.e_index == m2.e_index
+          and m3.marker_px[0] == (m3.n_lines - 1, m3.n_fast - 1), text.strip().splitlines()[-1][:120] if text.strip() else '')
 
     # --- the Line window and its companion ---
     b._goto(i_grid)
