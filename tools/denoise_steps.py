@@ -1,9 +1,12 @@
 """
 The denoise step of one file, one sweep at a time: every intermediate of the step drawn from
-sts.STS.stages for the window's state, so that each panel is a field of the engine (or the package
-call named in its title), not a re-derivation.  The step (gap.py): the per-point gap factor g of
-every sweep, read from the recorded current against the Feenstra ratio of the same sweep, divided
-out of the dI/dV page and the current before the calibration.  A tool (sm4_Browser/tools/): it
+sts.STS.stages for the window's state, so that each panel is a field of the engine, not a
+re-derivation; nothing of the step is run again here (the step's own pieces come back from
+gap.denoise as Stages.step: cal, fits, Fcal, Isub0, I_rebuilt, g, kept).  The step (gap.py): the
+per-point gap factor g of every sweep, read from the recorded current against the Feenstra ratio
+of the same sweep, divided out of the dI/dV page and the current before the calibration; its
+regression on the filtered pair forms its page and ratio only, the calibration the windows show
+is the pipeline's regression on the denoised pair (stages.fits).  A tool (sm4_Browser/tools/): it
 needs a .sm4 file with a current, modifies nothing in the package and only imports.
 
 Controls (the bottom row): '< sweep' / 'sweep >' with the sweep text; the filter box
@@ -16,22 +19,23 @@ column.  The channel is dI/dV only (the step runs on dI/dV only); no IETS radio.
 Panels, 4 x 3, each title naming the Stages field or the package call it shows:
   row 1, inputs and premise: (a) the LIA page of the sweep as recorded (grey) and stages.lia_f
     (bold), every acquired column faint behind; (b) the current as recorded and stages.iv_f, the
-    same; (c) the premise: the second differences of ln|LIA| against those of ln|I0| over the
+    same; (c) the premise: the second differences of ln|lia_f| against those of ln|Isub0| over the
     samples outside the band (the shared gap factor appears identically on both axes), r and the
     slope in the title;
-  row 2, the ratio and the reconstruction: (d) the calibrated page the step forms internally,
-    a·LIA + b (calibration.calibrate on the filtered pair with the window's gate and locks, as
-    gap.denoise forms it), the pins drawn when a lock is on and the gate's replacement noted; a, b,
-    1/V_mod and b/(a·median LIA) in the legend; stages.iv0 on the right axis with the band
-    |I0| < gap.GAP_BAND x max |I0| shaded; (e) F = (a·LIA + b)·V/I0, the ratio gap.denoise integrates
-    (feenstra.divide_by_iv of that page by the plain 0-sub I/V), the band masked; (f) ln|I0|
-    recorded (points) and ln I_rec (line), the cumulative trapezoid of F/V from each edge inward,
-    anchored per side, written here exactly as gap.gap_factor has it; their difference is ln g;
+  row 2, the ratio and the reconstruction: (d) stages.step.cal, the page the step forms, a·LIA + b
+    of its regression on the filtered pair with the window's gate and locks, the pins drawn when
+    a lock is on and the gate's replacement noted (stages.step.fits); a, b, 1/V_mod and
+    b/(a·median LIA) in the legend; stages.step.Isub0 on the right axis with the band
+    |Isub0| < gap.GAP_BAND x max |Isub0| shaded; (e) stages.step.Fcal = cal·V/Isub0, the ratio the
+    step integrates, the band masked; (f) ln|Isub0| (points) and ln I_rebuilt (line),
+    stages.step.I_rebuilt, the current gap.gap_factor rebuilt from Fcal, anchored per side; their
+    difference is ln g;
   row 3, g and the output: (g) stages.g for the sweep, 1 in the band, rms(g − 1) and the kept
-    samples in the title; (h) lia_f and lia_d overlaid, lia_f − lia_d (the removed part) in the
-    inset below; (i) iv_f and iv_d, the same;
+    samples (stages.step.kept) in the title; (h) lia_f and lia_d overlaid, lia_f − lia_d (the
+    removed part) in the inset below; (i) iv_f and iv_d, the same;
   row 4, the checks: (j) the after-premise: the second differences of ln(lia_d) against those of
-    ln(iv0 of the denoised pair), r (the shared component gone); (k) the Feenstra invariance: the
+    ln(stages.iv0, the denoised pair's 0-subtracted current), r (the shared component gone); (k)
+    the Feenstra invariance: the
     ratio of view(state.with_(divide_iv=True, calibrate=False, normalize=False, the denoise row
     off)) and the same with the row on, overlaid, the difference inset, max |ΔF|/|F| outside the
     band in the title (calibrate and normalize are forced off in this panel whatever the box says,
@@ -39,9 +43,9 @@ Panels, 4 x 3, each title naming the Stages field or the package call it shows:
     pipeline output as the box has it, view(state).shown for the sweep, with the denoise row as
     the box has it (bold) and the same state with the row flipped (faint), and a readout box: a,
     b, 1/V_mod, b/(a·median LIA), rms(g − 1), the kept samples, and two consistency numbers:
-    gap.gap_factor recomputed from the drawn F and I0 of (e) and (d) against stages.g (max |Δ|,
-    expected 0), and STS.process_arrays with the same arguments against view.shown (max |Δ|,
-    expected 0).
+    gap.gap_factor run again on the drawn Fcal and Isub0 of (e) and (d) against stages.g (max |Δ|,
+    expected 0; the integration, not the regression), and STS.process_arrays with the same
+    arguments against view.shown (max |Δ|, expected 0).
 The 'denoise' row: the step panels (d) to (j) always show the step for the sweep (the step is the
 window's subject); the row decides which state panel (l) draws bold; (k) always compares off
 against on.
@@ -55,9 +59,8 @@ if __package__ in (None, ''):
 import contextlib
 import io
 import numpy as np
-from scipy.integrate import cumulative_trapezoid
 from sm4_Browser import qtplot as plt
-from sm4_Browser import calibration, controls, feenstra, gap, sm4file
+from sm4_Browser import calibration, controls, gap, sm4file
 from sm4_Browser.sts import STS, PipelineState
 
 
@@ -67,42 +70,11 @@ def second_differences(y, order):
         return np.diff(np.log(np.abs(np.asarray(y, dtype=np.float64)[order])), n=2)
 
 
-def band_of(iv0_col):
-    """The samples of one column in the band where the ratio is not conditioned, |I0| < gap.GAP_BAND x max |I0| (as gap.gap_factor has it), as a mask in the column's own order."""
-    i0 = np.asarray(iv0_col, dtype=np.float64)
+def band_of(isub0_col):
+    """The samples of one column in the band where the ratio is not conditioned, |Isub0| < gap.GAP_BAND x max |Isub0| (as gap.gap_factor has it), as a mask in the column's own order."""
+    i0 = np.asarray(isub0_col, dtype=np.float64)
     top = np.max(np.abs(i0)) if i0.size else 0.0
     return ~((np.abs(i0) >= gap.GAP_BAND * top) & (top > 0))
-
-
-def reconstruct(energy, f_col, iv0_col):
-    """
-    ln I_rec of one column, written as gap.gap_factor has it: on each side of 0 V with at least
-    gap.GAP_MIN_POINTS samples outside the band and with a finite ratio, the cumulative trapezoid
-    of F/V from the window's edge toward 0 V (ascending energies on the negative side, descending
-    on the positive), shifted so that mean(ln|I0| − ln I_rec) = 0 over those samples; NaN
-    elsewhere.  Returns (ln I_rec, the usable samples), both in the column's own order.
-    """
-    energy = np.asarray(energy, dtype=np.float64)
-    order = np.argsort(energy)
-    e = energy[order]
-    i0 = np.asarray(iv0_col, dtype=np.float64)[order]
-    f = np.asarray(f_col, dtype=np.float64)[order]
-    top = np.max(np.abs(i0)) if i0.size else 0.0
-    usable = (np.abs(i0) >= gap.GAP_BAND * top) & np.isfinite(f) & (top > 0)
-    ln_rec = np.full(i0.size, np.nan)
-    for side in (e < 0.0, e > 0.0):
-        pts = np.flatnonzero(side & usable)
-        if pts.size < gap.GAP_MIN_POINTS:
-            continue
-        run = pts if e[pts[0]] < 0.0 else pts[::-1]
-        v = e[run]
-        lr = cumulative_trapezoid(f[run] / v, v, initial=0.0)
-        ln_rec[run] = lr - np.mean(lr - np.log(np.abs(i0[run])))
-    out = np.empty_like(ln_rec)
-    out[order] = ln_rec
-    um = np.empty(i0.size, dtype=bool)
-    um[order] = usable
-    return out, um
 
 
 def premise(x_col, y_col, order, band):
@@ -122,54 +94,43 @@ def premise(x_col, y_col, order, band):
 
 def run_steps(f, state):
     """
-    The engine and the step's own pieces on the file's acquired columns for a state (the gate is
-    cross-sweep, so every column runs): a dict with 'state'; 'on', the state with the denoise row
-    on (the step's); 'cols', the acquired columns; 'stages', STS.stages for 'on' (Sm4File.stages)
-    and 'notes', its console lines; 'cal_i' and 'fits_i', the page the step forms internally,
-    a·LIA + b, and its fits (calibration.calibrate on the filtered pair with the gate and locks,
-    as gap.denoise forms it; None, with the reason in 'refused', when the regression cannot be
-    determined); 'iv0_i', the step's I0 (the filtered current, its value at 0 V subtracted); 'F',
-    the ratio gap.denoise integrates (feenstra.divide_by_iv of cal_i by the plain 0-sub I/V);
-    'g_re' and 'kept', gap.gap_factor recomputed from F and iv0_i and the kept samples per column;
-    'g', stages.g on the acquired columns (None when the step was not applied); 'consistency_g',
-    max |g_re − g| (expected 0); 'v_off' and 'v_on', the Feenstra invariance's two views (the R9
-    state: the division on, calibrate and normalize off; the denoise row off and on);
-    'invariance', per column max |ΔF|/|F| outside the band, and 'invariance_max' over every column;
-    'v_box', view(state), the output as the box has it, and 'v_other', the same with the denoise
-    row flipped; 'consistency_shown', max |STS.process_arrays(the same arguments) − v_box.shown|
-    (expected 0).
+    The engine on the file's acquired columns for a state (the gate is cross-sweep, so every
+    column runs): a dict with 'state'; 'on', the state with the denoise row on (the step's);
+    'cols', the acquired columns; 'stages', STS.stages for 'on' (Sm4File.stages) and 'notes', its
+    console lines; 'step', stages.step (gap.DenoiseStep: cal, fits, Fcal, Isub0, I_rebuilt, g,
+    kept; None, with the reason in 'refused', when the step was not applied); 'consistency_g',
+    gap.gap_factor run again on step.Fcal and step.Isub0 against stages.g (max |Δ|, expected 0;
+    the integration only); 'v_off' and 'v_on', the Feenstra invariance's two views (the R9 state:
+    the division on, calibrate and normalize off; the denoise row off and on); 'invariance', per
+    column max |ΔF|/|F| outside the band, and 'invariance_max' over every column; 'v_box',
+    view(state), the output as the box has it, and 'v_other', the same with the denoise row
+    flipped; 'consistency_shown', max |STS.process_arrays(the same arguments) − v_box.shown|
+    (expected 0).  Nothing of the step is run again here.
     """
     V = np.asarray(f.energy, dtype=np.float64)
     sp = f.spectra
     cols = np.flatnonzero(f.acquired)
     on = state.with_(gate=state.gate._replace(denoise=True))
     s = f.stages(on)
-    sw = tuple(np.asarray(a)[cols] for a in sp.sweep_pins())
-    lia_f, iv_f = s.lia_f[:, cols], s.iv_f[:, cols]
-    try:
-        cal_i, fits_i = calibration.calibrate(V, lia_f, iv_f, sp.vmod, V_bias=sp.V_bias, I_setpoint=sp.I_setpoint,
-                                             gate=on.gate, sweeps=sw)
-        refused = None
-    except ValueError as exc:
-        cal_i, fits_i, refused = None, None, str(exc)
-    iv0_i = feenstra.iv_corrected(V, iv_f, zero_sub=True)
-    F = g_re = kept = None
-    if cal_i is not None:
-        with np.errstate(divide='ignore', invalid='ignore'):
-            F = feenstra.divide_by_iv(V, cal_i, iv_f, 0.0, True, None, None)
-        g_re, kept = gap.gap_factor(V, F, iv0_i)
-    g = None if s.g is None else s.g[:, cols]
-    consistency_g = None if (g is None or g_re is None) else float(np.max(np.abs(g_re - g)))
+    step = s.step
+    refused = None
+    if step is None:
+        refused = next((n for n in s.notes if n.startswith('denoise not applied')), "the step was not applied")
+    consistency_g = None
+    if step is not None:
+        g_re, _, _ = gap.gap_factor(V, step.Fcal[:, cols], step.Isub0[:, cols])
+        consistency_g = float(np.max(np.abs(g_re - s.g[:, cols])))
     base = state.with_(divide_iv=True, calibrate=False, normalize=False)
     v_off = f.view(base.with_(gate=base.gate._replace(denoise=False)))
     v_on = f.view(base.with_(gate=base.gate._replace(denoise=True)))
     invariance = np.full(cols.size, np.nan)
-    for k, c in enumerate(cols):
-        outside = ~band_of(iv0_i[:, k])
-        r_off, r_on = v_off.ratio[:, c], v_on.ratio[:, c]
-        ok = outside & np.isfinite(r_off) & np.isfinite(r_on)
-        if ok.any() and np.max(np.abs(r_off[ok])) > 0:
-            invariance[k] = float(np.max(np.abs(r_on[ok] - r_off[ok])) / np.max(np.abs(r_off[ok])))
+    if step is not None:
+        for k, c in enumerate(cols):
+            outside = ~band_of(step.Isub0[:, c])
+            r_off, r_on = v_off.ratio[:, c], v_on.ratio[:, c]
+            ok = outside & np.isfinite(r_off) & np.isfinite(r_on)
+            if ok.any() and np.max(np.abs(r_off[ok])) > 0:
+                invariance[k] = float(np.max(np.abs(r_on[ok] - r_off[ok])) / np.max(np.abs(r_off[ok])))
     v_box = f.view(state)
     v_other = f.view(state.with_(gate=state.gate._replace(denoise=not state.gate.denoise)))
     hp, sg, hd, sd = state.filters()
@@ -181,9 +142,8 @@ def run_steps(f, state):
                                 V_bias=sp.V_bias, I_setpoint=sp.I_setpoint, ref=ref, hampel_didv=hd, sgolay_didv=sd,
                                 name=f.name, gate=state.gate, sweeps=sp.sweep_pins())
     consistency_shown = float(np.nanmax(np.abs(pa - v_box.shown)))
-    return {'state': state, 'on': on, 'cols': cols, 'stages': s, 'notes': list(s.notes), 'cal_i': cal_i, 'fits_i': fits_i,
-            'refused': refused, 'iv0_i': iv0_i, 'F': F, 'g_re': g_re, 'kept': kept, 'g': g, 'consistency_g': consistency_g,
-            'v_off': v_off, 'v_on': v_on, 'invariance': invariance,
+    return {'state': state, 'on': on, 'cols': cols, 'stages': s, 'notes': list(s.notes), 'step': step,
+            'refused': refused, 'consistency_g': consistency_g, 'v_off': v_off, 'v_on': v_on, 'invariance': invariance,
             'invariance_max': float(np.nanmax(invariance)) if np.isfinite(invariance).any() else np.nan,
             'v_box': v_box, 'v_other': v_other, 'consistency_shown': consistency_shown}
 
@@ -317,8 +277,9 @@ class DenoiseSteps:
                           f"{controls.PipelineBox.text({'calibrate': state.calibrate, 'normalize': state.normalize, 'gate': state.gate})}",
                           fontsize=10)
         lia_f, iv_f = s.lia_f[:, cols], s.iv_f[:, cols]
-        iv0_i = R['iv0_i']
-        band = band_of(iv0_i[:, k])
+        step = R['step']
+        isub0 = None if step is None else step.Isub0[:, c]
+        band = np.zeros(V.size, dtype=bool) if isub0 is None else band_of(isub0)
         spans = self._band_spans(band)
 
         # Row 1: the inputs and the premise.
@@ -339,90 +300,93 @@ class DenoiseSteps:
         ax.legend(fontsize=7)
 
         ax = axes[0, 2]
-        x, y, r, slope = premise(iv0_i[:, k], lia_f[:, k], order, band)
-        ax.plot(x, y, '.', ms=4, color='C0')
-        if np.isfinite(slope):
-            xx = np.array([x.min(), x.max()])
-            ax.plot(xx, slope * (xx - x.mean()) + y.mean(), color='C3', lw=0.8)
-        ax.set_xlabel("Δ² ln|I0| (stages.iv_f, 0 V subtracted)")
-        ax.set_ylabel("Δ² ln|LIA| (stages.lia_f)")
+        r = slope = np.nan
+        if isub0 is None:
+            ax.text(0.5, 0.5, f"no premise: {R['refused']}", ha='center', va='center', transform=ax.transAxes, fontsize=8, wrap=True)
+        else:
+            x, y, r, slope = premise(isub0, lia_f[:, k], order, band)
+            ax.plot(x, y, '.', ms=4, color='C0')
+            if np.isfinite(slope):
+                xx = np.array([x.min(), x.max()])
+                ax.plot(xx, slope * (xx - x.mean()) + y.mean(), color='C3', lw=0.8)
+        ax.set_xlabel("Δ² ln|stages.step.Isub0|")
+        ax.set_ylabel("Δ² ln|stages.lia_f|")
         ax.set_title(f"(c) the premise, outside the band: r = {r:.3f}, slope = {slope:.3f} (the shared g on both axes)", fontsize=8)
 
         # Row 2: the ratio and the reconstruction.
         ax = axes[1, 0]
-        cal_i, fits_i = R['cal_i'], R['fits_i']
-        if cal_i is None:
-            ax.text(0.5, 0.5, f"the step's regression refused: {R['refused']}", ha='center', va='center',
+        cf = None if step is None else step.fits[k]
+        if step is None:
+            ax.text(0.5, 0.5, f"the step was not applied: {R['refused']}", ha='center', va='center',
                     transform=ax.transAxes, fontsize=8, wrap=True)
         else:
-            cf = fits_i[k]
             med = float(np.median(lia_f[:, k]))
             ratio_b = cf.b / (cf.a * med) if cf.a * med != 0 else np.nan
-            ax.plot(V, cal_i[:, k], **bold,
+            ax.plot(V, step.cal[:, c], **bold,
                     label=f"a·LIA + b: a = {cf.a:.4g}, b = {sm4file.si_text(cf.b, uI + '/V')}"
                           + (f", 1/V_mod = {cf.a_mod:.4g}" if np.isfinite(cf.a_mod) else "")
                           + f", b/(a·median LIA) = {ratio_b:.3g}")
             for name, v_pin, i_pin in cf.pins:
                 ax.axvline(v_pin, color='C1', lw=0.8, ls='--', label=f"{'Vbias' if name == 'Vbias' else '0'} pin at {v_pin:+.3f} V")
-            # stages.iv0 on the right axis: the current mapped onto the page's range, the right ticks in its units.
-            i0 = iv0_i[:, k]
-            c_lo, c_hi = float(np.nanmin(cal_i[:, k])), float(np.nanmax(cal_i[:, k]))
-            i_lo, i_hi = float(np.nanmin(i0)), float(np.nanmax(i0))
+            # stages.step.Isub0 on the right axis: the current mapped onto the page's range, the right ticks in its units.
+            c_lo, c_hi = float(np.nanmin(step.cal[:, c])), float(np.nanmax(step.cal[:, c]))
+            i_lo, i_hi = float(np.nanmin(isub0)), float(np.nanmax(isub0))
             if c_hi > c_lo and i_hi > i_lo:
                 k_m = (c_hi - c_lo) / (i_hi - i_lo)
-                ax.plot(V, (i0 - i_lo) * k_m + c_lo, color='C2', lw=0.8, ls=':', label="stages.iv0 (right axis)")
+                ax.plot(V, (isub0 - i_lo) * k_m + c_lo, color='C2', lw=0.8, ls=':', label="stages.step.Isub0 (right axis)")
                 ax.secondary_yaxis('right', functions=(lambda yv: (yv - c_lo) / k_m + i_lo,
-                                                       lambda iv_: (iv_ - i_lo) * k_m + c_lo)).set_ylabel(f"I0 ({uI})")
+                                                       lambda iv_: (iv_ - i_lo) * k_m + c_lo)).set_ylabel(f"Isub0 ({uI})")
             for lo, hi in spans:
                 ax.axvspan(lo, hi, color='0.9', zorder=0)
             ax.legend(fontsize=6.5, loc='best')
         ax.set_ylabel(f"a·LIA + b ({uI}/V)")
-        rep = "" if cal_i is None or not fits_i[k].replaced else f"; the gate replaced {'a and b' if fits_i[k].replaced == 'ab' else 'a'}"
-        ax.set_title("(d) the page the step forms internally: calibration.calibrate on (lia_f, iv_f) with the gate and locks"
+        rep = "" if cf is None or not cf.replaced else f"; the gate replaced {'a and b' if cf.replaced == 'ab' else 'a'}"
+        ax.set_title("(d) stages.step.cal: the page the step forms, its regression on (lia_f, iv_f) with the gate and locks"
                      + rep + "; the band shaded", fontsize=8)
 
         ax = axes[1, 1]
-        F = R['F']
-        if F is None:
-            ax.text(0.5, 0.5, "no ratio: the step's regression was refused", ha='center', va='center', transform=ax.transAxes, fontsize=8)
+        if step is None:
+            ax.text(0.5, 0.5, "no ratio: the step was not applied", ha='center', va='center', transform=ax.transAxes, fontsize=8)
         else:
-            Fm = np.array(F[:, k], dtype=np.float64)
+            Fm = np.array(step.Fcal[:, c], dtype=np.float64)
             Fm[band] = np.nan
             ax.plot(V, Fm, **bold)
             for lo, hi in spans:
                 ax.axvspan(lo, hi, color='0.9', zorder=0)
-        ax.set_ylabel("F")
-        ax.set_title("(e) F = (a·LIA + b)·V/I0: feenstra.divide_by_iv of (d) by the plain 0-sub I/V, the band masked", fontsize=8)
+        ax.set_ylabel("Fcal")
+        ax.set_title("(e) stages.step.Fcal = cal·V/Isub0: the ratio the step integrates (the plain 0-sub I/V), the band masked", fontsize=8)
 
         ax = axes[1, 2]
-        if F is None:
-            ax.text(0.5, 0.5, "no reconstruction: the step's regression was refused", ha='center', va='center', transform=ax.transAxes, fontsize=8)
+        if step is None:
+            ax.text(0.5, 0.5, "no rebuilt current: the step was not applied", ha='center', va='center', transform=ax.transAxes, fontsize=8)
         else:
-            ln_rec, usable = reconstruct(V, F[:, k], iv0_i[:, k])
+            rebuilt = step.I_rebuilt[:, c]
+            usable = np.isfinite(rebuilt)
             with np.errstate(divide='ignore', invalid='ignore'):
-                ln_i0 = np.log(np.abs(iv0_i[:, k]))
-            ax.plot(V[usable], ln_i0[usable], '.', ms=4, color='0.3', label="ln|I0| recorded")
-            ax.plot(V, ln_rec, color='C3', lw=1.0, label="ln I_rec: the cumulative trapezoid of F/V from each edge inward, anchored per side")
+                ln_i0 = np.log(np.abs(isub0))
+                ln_rebuilt = np.log(rebuilt)
+            ax.plot(V[usable], ln_i0[usable], '.', ms=4, color='0.3', label="ln|Isub0|")
+            ax.plot(V, ln_rebuilt, color='C3', lw=1.0, label="ln I_rebuilt: Fcal/V integrated from each edge inward, anchored per side")
             ax.legend(fontsize=6.5)
         ax.set_ylabel("ln I")
-        ax.set_title("(f) ln|I0| and ln I_rec, as gap.gap_factor forms them: their difference is ln g", fontsize=8)
+        ax.set_title("(f) ln|stages.step.Isub0| and ln stages.step.I_rebuilt: their difference is ln g", fontsize=8)
 
         # Row 3: g and the output.
         ax = axes[2, 0]
-        g = R['g']
+        g = s.g
         if g is None:
             ax.text(0.5, 0.5, "stages.g is None: the step was not applied (the console line says why)", ha='center', va='center',
                     transform=ax.transAxes, fontsize=8, wrap=True)
             ax.set_title("(g) stages.g", fontsize=8)
         else:
-            gk = g[:, k]
+            gk = g[:, c]
             ax.plot(V, gk, **bold)
             ax.axhline(1.0, color='k', lw=0.5)
             for lo, hi in spans:
                 ax.axvspan(lo, hi, color='0.9', zorder=0)
             rms = float(np.sqrt(np.mean((gk - 1.0) ** 2)))
-            kept = int(np.sum(gk == 1.0))
-            ax.set_title(f"(g) stages.g for the sweep (1 in the band): rms(g − 1) = {rms * 100:.2f} %, {kept} of {gk.size} samples kept as recorded", fontsize=8)
+            kept = int(step.kept[c])
+            ax.set_title(f"(g) stages.g for the sweep (1 in the band): rms(g − 1) = {rms * 100:.2f} %, {kept} of {gk.size} samples kept as recorded (stages.step.kept)", fontsize=8)
         ax.set_ylabel("g")
 
         for ax, name, a_f, a_d, unit in ((axes[2, 1], 'lia', lia_f[:, k], s.lia_d[:, c], uL),
@@ -440,10 +404,9 @@ class DenoiseSteps:
 
         # Row 4: the checks.
         ax = axes[3, 0]
-        iv0_d = feenstra.iv_corrected(V, s.iv_d[:, cols], zero_sub=True)
-        x, y, r2, slope2 = premise(iv0_d[:, k], s.lia_d[:, c], order, band)
+        x, y, r2, slope2 = premise(s.iv0[:, c], s.lia_d[:, c], order, band)
         ax.plot(x, y, '.', ms=4, color='C0')
-        ax.set_xlabel("Δ² ln|iv0 of the denoised pair|")
+        ax.set_xlabel("Δ² ln|stages.iv0| (the denoised pair's current, 0 V subtracted)")
         ax.set_ylabel("Δ² ln|stages.lia_d|")
         ax.set_title(f"(j) the after-premise: r = {r2:.3f} (was {r:.3f}): the shared component gone", fontsize=8)
 
@@ -467,16 +430,15 @@ class DenoiseSteps:
         ax.plot(V, R['v_box'].shown[:, c], **bold, label=f"view(state).shown, denoise {'on' if on_now else 'off'} (the box)")
         ax.legend(fontsize=7, loc='upper left')
         readout = []
-        if cal_i is not None:
-            cf = fits_i[k]
+        if cf is not None:
             med = float(np.median(lia_f[:, k]))
-            readout += [f"a = {cf.a:.4g}, b = {sm4file.si_text(cf.b, uI + '/V')}",
+            readout += [f"step: a = {cf.a:.4g}, b = {sm4file.si_text(cf.b, uI + '/V')}",
                         (f"1/V_mod = {cf.a_mod:.4g}" if np.isfinite(cf.a_mod) else "no V_mod recorded"),
                         f"b/(a·median LIA) = {cf.b / (cf.a * med) if cf.a * med != 0 else np.nan:.3g}"]
         if g is not None:
-            gk = g[:, k]
-            readout += [f"rms(g − 1) = {float(np.sqrt(np.mean((gk - 1.0) ** 2))) * 100:.2f} %, {int(np.sum(gk == 1.0))} samples kept"]
-        readout += [f"gap_factor from (e), (d) vs stages.g: max |Δ| = {R['consistency_g'] if R['consistency_g'] is not None else 'n/a'}",
+            gk = g[:, c]
+            readout += [f"rms(g − 1) = {float(np.sqrt(np.mean((gk - 1.0) ** 2))) * 100:.2f} %, {int(step.kept[c])} samples kept"]
+        readout += [f"gap_factor on (e), (d) vs stages.g: max |Δ| = {R['consistency_g'] if R['consistency_g'] is not None else 'n/a'}",
                     f"process_arrays vs view.shown: max |Δ| = {R['consistency_shown']:.3g}"]
         ax.text(0.02, 0.03, "\n".join(readout), transform=ax.transAxes, fontsize=7, va='bottom',
                 bbox=dict(boxstyle='round', fc='w', alpha=0.8))

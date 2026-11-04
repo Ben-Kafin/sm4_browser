@@ -10,10 +10,14 @@ numpy only, no .sm4 file: the invariants of the stage-2 document, section 3.3.
    (the division and the I/V panel are the same array).
 3. stages.lia_f == filters.filter_lia(lia, hampel_didv, sgolay_didv) and the same for iv_f: the
    filters run once.
-4. denoise off: g is None and lia_d is lia_f.  Denoise on, calibrate off, normalize off, the plain
-   I/V: the ratio with denoise on equals the ratio with denoise off except for the term
-   I(0 V) (1/g - 1) of the 0 V subtraction; on sweeps with I(0 V) = 0 exactly, equal to 1e-9
-   relative.
+4. denoise off: g is None, step is None and lia_d is lia_f.  Denoise on, calibrate off, normalize
+   off, the plain I/V: the ratio with denoise on equals the ratio with denoise off except for the
+   term I(0 V) (1/g - 1) of the 0 V subtraction; on sweeps with I(0 V) = 0 exactly, equal to 1e-9
+   relative.  Denoise on: stages.step carries the step's own pieces (gap.DenoiseStep): cal is
+   calibration.calibrate on the filtered pair with the gate and locks (the step's regression, run
+   here once as the check), Isub0 the filtered current with its value at 0 V subtracted,
+   gap.gap_factor on Fcal and Isub0 gives stages.g and I_rebuilt again, |Isub0| / I_rebuilt is g
+   where rebuilt, and the never-acquired columns are NaN (g 1).
 5. The field table: each PipelineState field, when changed, changes the view fields it reaches and
    no other (the one place the toggle semantics are written down).
 
@@ -31,7 +35,7 @@ import itertools
 import sys
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
-from sm4_Browser import filters, calibration
+from sm4_Browser import filters, calibration, feenstra, gap
 from sm4_Browser.sts import STS, PipelineState
 
 fails = 0
@@ -180,7 +184,30 @@ def run():
 
         # 4. denoise off: g None, lia_d is lia_f; denoise on: the ratio invariance on sweeps with I(0 V) = 0
         s_off = STS.stages(V, lia, iv, PipelineState(channel='didv', calibrate=True), **data)
-        check("4a. denoise off: g is None and lia_d is lia_f", s_off.g is None and s_off.lia_d is s_off.lia_f)
+        check("4a. denoise off: g is None, step is None and lia_d is lia_f",
+              s_off.g is None and s_off.step is None and s_off.lia_d is s_off.lia_f)
+        s_on = STS.stages(V, lia, iv, PipelineState(channel='didv', gate=GS(denoise=True), calibrate=True), **data)
+        step = s_on.step
+        ok = step is not None
+        if ok:
+            cols = np.flatnonzero(acquired)
+            sw = (sweeps[0][cols], sweeps[1][cols])
+            cal_ref, fits_ref = calibration.calibrate(V, s_on.lia_f[:, cols], s_on.iv_f[:, cols], 0.025, V_bias=Vb,
+                                                      I_setpoint=Iset, gate=GS(denoise=True), sweeps=sw)
+            g_ref, kept_ref, reb_ref = gap.gap_factor(V, step.Fcal[:, cols], step.Isub0[:, cols])
+            with np.errstate(divide='ignore', invalid='ignore'):
+                g_from = np.abs(step.Isub0) / step.I_rebuilt
+            fin = np.isfinite(g_from)
+            ok &= (same(step.cal[:, cols], cal_ref) and len(step.fits) == cols.size
+                   and all(a.a == b.a and a.b == b.b for a, b in zip(step.fits, fits_ref))
+                   and same(step.Isub0[:, cols], feenstra.iv_corrected(V, s_on.iv_f[:, cols], zero_sub=True))
+                   and same(g_ref, s_on.g[:, cols]) and same(step.g, s_on.g) and same(reb_ref, step.I_rebuilt[:, cols])
+                   and same(kept_ref, step.kept[cols])
+                   and bool(np.allclose(g_from[fin], s_on.g[fin], rtol=1e-12, atol=0))
+                   and bool(np.all(np.isnan(step.cal[:, ~acquired]))) and bool(np.all(s_on.g[:, ~acquired] == 1.0)))
+        check("4c. denoise on: stages.step carries cal, fits, Fcal, Isub0, I_rebuilt, g and kept; cal is calibrate on the "
+              "filtered pair; gap_factor(Fcal, Isub0) gives stages.g and I_rebuilt; |Isub0| / I_rebuilt is g where rebuilt; "
+              "never-acquired columns NaN", ok)
         lia0, iv0, sw0 = synth(V, Vb, dfn, N, rng, zero_current=True)
         d0 = dict(data, sweeps=sw0, acquired=np.ones(N, dtype=bool))
         base = PipelineState(channel='didv', calibrate=False, normalize=False, divide_iv=True, iv_zero_sub=True,

@@ -156,7 +156,12 @@ class Stages(NamedTuple):
     never-acquired columns as process_arrays leaves them (the two outputs zero there, the rest as
     computed): lia_f, iv_f the channel page and the current through their filters, once; g the gap
     factor (1 where not applied; None when the step is off or not applicable); lia_d, iv_d the
-    denoised pair lia_f / g, iv_f / g (the filtered pair itself when g is None); I_setpoint_used
+    denoised pair lia_f / g, iv_f / g (the filtered pair itself when g is None);
+    step the step's own pieces (gap.DenoiseStep: cal, the page a · lia_f + b of the step's regression on the
+    filtered pair with the gate and locks, fits that regression's fits, Fcal the ratio the step integrates,
+    Isub0 the filtered current with its value at 0 V subtracted, I_rebuilt the current rebuilt from Fcal, g,
+    kept), the arrays (npts, N) with NaN in never-acquired columns (g 1 there), None when the step is off or
+    not applied; I_setpoint_used
     the pin current the calibration got (per column with the Vbias lock and denoise, else the
     setpoint); cal the calibrated page a · lia_d + b (calibrate_iets on IETS), lia_d with calibrate
     off; fits the ColumnFit / IetsColumnFit list, None with calibrate off; iv0 the current the
@@ -172,6 +177,7 @@ class Stages(NamedTuple):
     g: object
     lia_d: object
     iv_d: object
+    step: object
     I_setpoint_used: object
     cal: object
     fits: object
@@ -1267,24 +1273,35 @@ class STS:
         iv_f = None if iv is None else filters.filter_lia(np.asarray(iv, dtype=np.float64), hampel, sgolay)
         sw = None if sweeps is None else tuple(np.asarray(a)[cols] for a in sweeps)
         settings = state.gate
-        g = None
+        g = step = None
         lia_d, iv_d = lia_f, iv_f
         I_used = I_setpoint
         if settings.denoise and iv_f is not None:
             if channel == 'didv':
                 # The denoise step (gap.denoise): the acquired columns of the channel and of the current
                 # divided by the per-point gap factor; the calibration, the division and the
-                # normalization below then work on the denoised pair.
+                # normalization below then work on the denoised pair.  The step's own pieces are kept
+                # (step), on the full width with NaN in never-acquired columns.
                 try:
-                    ld, idn, g_cols, note = gap.denoise(energy, lia_f[:, cols], iv_f[:, cols], vmod, V_bias=V_bias,
-                                                        I_setpoint=I_setpoint, gate=settings, sweeps=sw)
+                    ld, idn, st, note = gap.denoise(energy, lia_f[:, cols], iv_f[:, cols], vmod, V_bias=V_bias,
+                                                    I_setpoint=I_setpoint, gate=settings, sweeps=sw)
                     lia_d, iv_d = lia_f.copy(), iv_f.copy()
                     lia_d[:, cols], iv_d[:, cols] = ld, idn
                     g = np.ones_like(lia_f)
-                    g[:, cols] = g_cols
+                    g[:, cols] = st.g
+
+                    def wide(a):
+                        w = np.full_like(lia_f, np.nan)
+                        w[:, cols] = a
+                        return w
+
+                    kept = np.zeros(lia_f.shape[1], dtype=int)
+                    kept[cols] = st.kept
+                    step = st._replace(cal=wide(st.cal), Fcal=wide(st.Fcal), Isub0=wide(st.Isub0),
+                                       I_rebuilt=wide(st.I_rebuilt), g=g, kept=kept)
                     if settings.lockv:
                         # The Vbias lock's pin of a denoised forward sweep: the setpoint current over g there.
-                        divided = gap.setpoint_divided(energy, g_cols, V_bias, I_setpoint)
+                        divided = gap.setpoint_divided(energy, st.g, V_bias, I_setpoint)
                         if divided is not None:
                             I_used = divided
                     if name:
@@ -1335,7 +1352,8 @@ class STS:
             ratio_n[:, ~acquired] = 0.0
         areas = (areas_r if (state.divide_iv and ratio_n is not None) else areas_d).copy()
         areas[~acquired] = 0.0
-        return Stages(lia_f=lia_f, iv_f=iv_f, g=g, lia_d=lia_d, iv_d=iv_d, I_setpoint_used=I_used, cal=cal, fits=fits,
+        return Stages(lia_f=lia_f, iv_f=iv_f, g=g, lia_d=lia_d, iv_d=iv_d, step=step, I_setpoint_used=I_used, cal=cal,
+                      fits=fits,
                       iv0=iv0, ivv=ivv, ratio=ratio, didv_n=didv_n, ratio_n=ratio_n, areas=areas, notes=notes)
 
     @staticmethod

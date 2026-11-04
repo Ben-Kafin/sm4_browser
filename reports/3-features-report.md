@@ -19,6 +19,24 @@ contours and markers exactly as they were when `save` was pressed.  Read as:
 - OPEN 2: one record per file, `<file stem>_map_markers.json`, the sweep view stored inside and
   restored (the Line window's rule: one record per file and line).
 
+## Benjamin's decision on the step's regression (2026-11-04, option 1)
+
+Asked whether the tool may run the step's regression again to draw it (two runs of
+`calibration.calibrate` solving for the same thing), he chose: keep both runs of
+`calibration.calibrate` as they are.  The step regresses the filtered pair with the window's gate
+and locks (the 2026-11-03 decision), uses that fit only to form Fcal, and now returns its fit, its
+ratio and its zero-subtracted current as `Stages` fields so the tool draws them instead of running
+the step again; the pipeline's regression on the denoised pair stays and remains the one the
+windows show (`stages.fits`); no pipeline number changes.  His basis, from 200 synthetic sweeps:
+g does not depend on which fit forms the ratio (1.11 % error with the pre-g a, b, 1.08 % with the
+post-g a, b), but the pre-g fit's gain scatters 0.92 to 1.05 of the true value sweep to sweep
+(the jitter is in both pages it fits) while the post-g fit gives 0.972 to 0.989, so a single
+pre-g regression would put that scatter into every calibrated heatmap (option 2 rejected).  The
+step's level stays as it is: the rebuilt current rescaled once per side from the average of
+ln|Isub0| − ln(rebuilt) over the side's usable points (g geometric mean 1 per side); not the
+calibration's c and not the edge point, both tested and worse.  His names: `cal` (a, b), `Fcal`,
+`Isub0`, `I_rebuilt`, `g`; not I0.
+
 ## Approved changes, as implemented
 
 ### A. The companion's `calibrate` and `denoise` rows act on every panel
@@ -65,17 +83,35 @@ seen to do nothing in a window on the synthetic experiment.
   record's Feenstra state and channel; `restore_markers`; the window appended to `children`);
   MODIFIED `load_saved_average` (kind `'map'` dispatched).
 
-### D. The denoise steps window (a tool)
+### D. The denoise steps window (a tool), and the step's pieces in the engine
+- `gap.py`: ADDED `DenoiseStep` (NamedTuple: `cal`, the page a · LIA + b of the step's regression
+  on the filtered pair with the gate and locks; `fits`, that regression's `ColumnFit` list; `Fcal`,
+  the ratio the step integrates; `Isub0`, the filtered current with its value at 0 V subtracted;
+  `I_rebuilt`, the current rebuilt from Fcal, NaN where none was rebuilt; `g`; `kept`); MODIFIED
+  `gap_factor` (returns `(g, kept, I_rebuilt)`: the rebuilt current kept beside g, the level rule
+  unchanged) and `denoise` (returns `(lia / g, iv / g, step, note)`, the step's pieces instead of g
+  alone; its regression, ratio and g unchanged).  `GAP_BAND`, `GAP_MIN_POINTS`, `setpoint_divided`
+  untouched.
+- `sts.py`: ADDED the `Stages` field `step` (the `DenoiseStep` on the full width, NaN in
+  never-acquired columns, g 1 there; None when the step is off or not applied); `stages` keeps it.
+  `process_arrays`, `view`, every other field: unchanged (the pipeline check's invariant 1 still
+  finds 0 differences over 640 combinations per window; the console lines the same).
 - ADDED `tools/denoise_steps.py`: `run_steps(f, state)` (the engine on the acquired columns for
-  the state with the denoise row on, every panel's arrays and the two consistency numbers),
-  `DenoiseSteps(f, column, state)` (the window: `< sweep` / `sweep >` with the sweep text, the filter
-  box, the pipeline box with all six rows, every change rebuilding the state with
-  `PipelineState.of`, rerunning the engine and redrawing; the twelve panels of the document, each
-  title naming the `Stages` field or the package call it shows; the `denoise` row deciding which
-  state panel (l) draws bold, (k) always off against on), the helpers `second_differences`,
-  `band_of`, `reconstruct` (ln I_rec written as `gap.gap_factor` has it), `premise`; the run block
-  with `path`, `column`, `hampel`, `sgolay`, `hampel_didv`, `sgolay_didv`, `calibrate`,
-  `normalize`, `gate`, `denoise`.  Nothing in the package is modified by it.
+  the state with the denoise row on; the step's pieces read from `stages.step`, nothing of the step
+  run again; the two consistency numbers, the Feenstra invariance), `DenoiseSteps(f, column,
+  state)` (the window: `< sweep` / `sweep >` with the sweep text, the filter box, the pipeline box
+  with all six rows, every change rebuilding the state with `PipelineState.of`, rerunning the
+  engine and redrawing; the twelve panels of the document, each title naming the `Stages` field
+  or the package call it shows: (d) `stages.step.cal` with `stages.step.fits`, (e)
+  `stages.step.Fcal`, (f) `stages.step.Isub0` and `stages.step.I_rebuilt`, (g) `stages.g` with
+  `stages.step.kept`, (j) `stages.iv0`; the `denoise` row deciding which state panel (l) draws
+  bold, (k) always off against on), the helpers `second_differences`, `band_of`, `premise`; the
+  run block with `path`, `column`, `hampel`, `sgolay`, `hampel_didv`, `sgolay_didv`, `calibrate`,
+  `normalize`, `gate`, `denoise`.
+- `checks/pipeline_check.py`: ADDED invariant 4c (with `denoise` on, `stages.step` carries the
+  step's pieces; `cal` is `calibration.calibrate` on the filtered pair, run once in the check as
+  the check; `gap.gap_factor` on `Fcal` and `Isub0` gives `stages.g` and `I_rebuilt` again;
+  |Isub0| / I_rebuilt is g where rebuilt; never-acquired columns NaN; `denoise` off: `step` None).
 
 ### `checks/window_smoke.py`, `README.md`, `__init__.py`
 - `window_smoke`: the clip's verification (one pixel far above the rest at one energy: `clip %` 0
@@ -92,32 +128,36 @@ seen to do nothing in a window on the synthetic experiment.
 
 1. The reading of OPEN 1 above: the traces are written and compared at load (a console line when
    they differ), beyond the document's reading (b) ("never read back").
-2. D, panel (d): "the calibrated page the step forms internally" is the calibration of the
-   filtered pair recomputed in the tool exactly as `gap.denoise` forms it (`calibration.calibrate`
-   on `stages.lia_f`, `stages.iv_f` with the gate and locks), with its own fits for the pins and the
-   gate's note; the document names `stages.fits[k]` there, which are the fits of the pipeline's
-   calibration of the denoised pair, a different regression.  The readout of (l) carries the same
-   a, b of the step's regression.
+2. D, panel (d): the document names `stages.fits[k]` for the page the step forms, which are the
+   fits of the pipeline's regression on the denoised pair; the page the step forms is its own
+   regression on the filtered pair.  Resolved by Benjamin's decision above: the engine carries
+   the step's `cal` and `fits` (`Stages.step`), and the tool draws those; `stages.fits` stay the
+   windows' calibration.  The `DenoiseStep` carries `fits` and `kept` beside his five names (the
+   pins and the gate's note of panel (d), the kept-sample count of (g)).
 3. D: beside the pipeline's lines, the tool prints one line per run with the Feenstra invariance's
    largest deviation over every acquired column (the document asks for it) and the two consistency
-   numbers (also in the readout box).
+   numbers (also in the readout box).  The first consistency number runs `gap.gap_factor` (the
+   integration, not the regression) on the drawn Fcal and Isub0 against `stages.g`, as the
+   document asks.
 4. `widgets.py`: the `'clip %'` entries (item C above).
 5. `Map.restore_markers` updates the filter box's values from the record's dicts even when a
    filter is off, as the Line window's restore does.
 
 ## Verification (run here, 2026-11-04)
 
-- `python -m sm4_Browser.checks.run`: exit 0; `pipeline_check` ok (18), `pin_rule_check` ok (28),
+- `python -m sm4_Browser.checks.run`: exit 0; `pipeline_check` ok (21), `pin_rule_check` ok (28),
   `contour_check` ok (22), `pass_average_check` ok (11), `affine_check` ok (2), `stripe_check` ok
   (10), `sweeps_check` ok (58), `window_smoke` ok (30, on an Xvfb screen it started itself, Qt
-  platform xcb).  Every check reported as run.
+  platform xcb).  Every check reported as run.  After the step's pieces moved into the engine,
+  invariant 1 (`view.shown` against `process_arrays`, areas and console lines) still finds 0
+  differences over 640 combinations per window: no pipeline number changed.
 - D, a scratch script (not in the repository), on a synthetic grid (16 × 8 pixels, 41 energies):
   in three states (denoise on with calibrate and normalize off; all on; denoise off with both locks
-  and the gate) every panel's arrays built; `gap.gap_factor` recomputed from the drawn F and I0
-  against `stages.g`: max |Δ| 0.0; `STS.process_arrays` with the same arguments against
-  `view.shown`: max |Δ| 0.0; ln I_rec of panel (f) reproduces `stages.g` where usable to 1e-9
-  relative; the window opened on the virtual screen (12 axes), stepped one sweep, took a pipeline
-  row and a filter toggle.  The Feenstra invariance on the synthetic grid: max |ΔF|/|F| outside the
+  and the gate) every panel's arrays come from `stages.step` and the views; `gap.gap_factor` on
+  the drawn Fcal and Isub0 against `stages.g`: max |Δ| 0.0; `STS.process_arrays` with the same
+  arguments against `view.shown`: max |Δ| 0.0; |Isub0| / I_rebuilt equals `stages.g` where rebuilt
+  to 1e-12 relative; the window opened on the virtual screen (12 axes), stepped one sweep, took a
+  pipeline row and a filter toggle.  The Feenstra invariance on the synthetic grid: max |ΔF|/|F| outside the
   band 1.8e-5 (the synthetic current is the integral of the dI/dV, so g cancels to the trapezoid's
   error).
 - `pyflakes` on every module touched: clean (the lines that pre-date the stages in `drift.py`,

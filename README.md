@@ -773,8 +773,9 @@ units (`curve_units`), and the one pipeline path: `PipelineState` (everything th
 from a window's boxes, hashable; `of` builds it from the boxes, `with_` changes fields,
 `filters()` gives the four filter dicts back), `STS.stages` (the engine: the filters, the denoise
 step, the calibration, the Feenstra division and the normalization in that order on any set of
-columns, run once, every intermediate kept in a `Stages` record, the console lines returned as
-`notes`), `STS.view` (what a window or a companion draws from one `stages` call: a `View` with
+columns, run once, every intermediate kept in a `Stages` record, the denoise step's own pieces
+as `step`, the console lines returned as `notes`), `STS.view` (what a window or a companion draws
+from one `stages` call: a `View` with
 `didv`, `current`, `ivv`, `ratio`, `shown`, `g`, `fits`, `notes`; pure), `STS.stages_of` /
 `STS.view_of` (the same for a file's own spectra: `Sm4File.stages` / `Sm4File.view` and
 `Selection.stages` / `Selection.view` pass through to them), `process_arrays` / `process` (the
@@ -787,9 +788,15 @@ a file's channels do not share one energy axis.
 
 The five pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
-`gap.denoise` is the denoise step (`gap_factor` the per-point gap factor from the plain 0-sub
-Feenstra ratio and the current, `GAP_BAND` the band left as recorded, `setpoint_divided` the Vbias
-lock's pin currents of denoised columns).
+`gap.denoise` is the denoise step (`gap_factor` the per-point gap factor and the rebuilt current
+from the plain 0-sub Feenstra ratio and the current, `GAP_BAND` the band left as recorded,
+`setpoint_divided` the Vbias lock's pin currents of denoised columns); it returns the two pages
+divided by g and its own pieces as a `DenoiseStep` (`cal`, the page of its regression on the
+filtered pair with the gate and locks, which forms the ratio only and is never the calibration
+the windows show; `fits`; `Fcal`, the ratio it integrates; `Isub0`, the filtered current with its
+value at 0 V subtracted; `I_rebuilt`, the current rebuilt from `Fcal`; `g`; `kept`), which
+`sts.STS.stages` keeps as `Stages.step`, so the denoise steps tool draws the step without running
+any of it again.
 `calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
 the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;
 `GateSettings` holds the gate, the two locks and the denoise flag; `_pinned_solve` is the least squares through the
