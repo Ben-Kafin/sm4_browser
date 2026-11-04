@@ -182,9 +182,9 @@ an average holds spectra alone and needs none. The timeline is kept in the setti
 
 Every spectrum goes through the same steps, in `sts.STS.stages`, in this order. `stages` is the
 one engine every window draws from: a window keeps one `sts.PipelineState` built from its boxes
-(the channel, the four filter settings, the gate with its locks and the `denoise` row, the
-`calibrate` and `normalize` rows, its own `Feenstra` toggle, the Feenstra settings, the energy
-crop), and everything it draws is a field of `sts.STS.view` for that state (`didv`, `current`,
+(the channel, the four filter settings, the gate with its locks, the `denoise` row with its `soft
+edge` row, the `calibrate` and `normalize` rows, its own `Feenstra` toggle, the Feenstra settings,
+the energy crop), and everything it draws is a field of `sts.STS.view` for that state (`didv`, `current`,
 `ivv`, `ratio`, `shown`), computed once per state (`Sm4File.view`). The Feenstra companions ask
 for the main window's state with their own `calibrate`, `normalize` and gate rows overriding it,
 so every toggle that appears in a window acts on every panel of that window it applies to by
@@ -206,15 +206,25 @@ construction. `STS.process_arrays` is the same engine behind its earlier interfa
    a and b only) forms the ratio; every point with a finite ratio gets its own g, with no band
    around 0 V (the points left at g = 1, as recorded, are the point at 0 V itself, which belongs to
    neither side, a point whose ratio is not finite, and the points of a side with fewer than three
-   points); nothing is fitted to the dI/dV shape and nothing is smoothed, so the features keep
-   their intensities, which the Feenstra division does not. What g does not contain, the per-sweep
-   level (the setpoint scatter) and the lock-in's own additive noise, is left to the area
-   normalization and to averaging. A window
+   points). The `soft edge` row under `denoise` (on at open) then scales each point's correction
+   by the share of it that is signal: over every usable point of every sweep, g − 1 is binned by
+   |I − I(0 V)| in twelve log-spaced bins and the rms per bin is the measured spread of g there;
+   the largest rms over the upper half of the bins is the jitter the step removes, a bin's excess
+   over it is the step's own error at that current, and w = jitter² / (jitter² + excess²) is the
+   share that is signal, 1 where the current is large and falling toward 0 where it is tiny, so
+   those points stay near their recorded values by measurement; g = 1 + (g − 1)·w point by point,
+   w read off the curve at the point's own current. When the curve cannot be measured (no bin of
+   the upper half has eight points) w is 1 everywhere and the console line says so. Nothing is
+   fitted to the dI/dV shape and nothing is smoothed, so the features keep their intensities,
+   which the Feenstra division does not. What g does not contain, the per-sweep level (the
+   setpoint scatter) and the lock-in's own additive noise, is left to the area normalization and
+   to averaging. A window
    that does not reach 0 V has no 0 V value to subtract: its current keeps its own offset and g is
    only as good as that offset is small. With the Vbias lock on, a denoised forward sweep's pin is
    the setpoint current over g at the setpoint sample. One console line per file gives the median
-   per-sweep rms of g and how many samples stayed as recorded; a regression the step cannot
-   determine applies nothing, said once;
+   per-sweep rms of g, how many samples stayed as recorded, and the soft edge's jitter and the
+   current at which w crosses 0.5; a regression the step cannot determine applies nothing, said
+   once;
 3. the calibration of the lock-in channel against that current (`calibration.py`): per sweep the
    recorded current is I(V) = a·X(V) + b·V + c, X the integral of the lock-in output, and a, b, c
    are that sweep's own least squares; the calibrated dI/dV is a·LIA + b. The gain the modulation
@@ -255,13 +265,14 @@ construction. `STS.process_arrays` is the same engine behind its earlier interfa
 The browser's spectra panels always show the Feenstra set with no toggle; every other window has
 its own `Feenstra` toggle and its Feenstra companion window. `denoise`, `calibrate` and `normalize`
 are the three flags of each window's pipeline box, `denoise` first and unindented, independent of
-`calibrate`, all off at open in every window, with the `gate`, `0-lock` and
-`Vbias lock` rows indented under `calibrate` (in the figure windows the `H` and `SG` boxes sit beside
-the gate row; in the browser they sit on rows of their own under it). The `denoise` state travels
-with the gate and the locks (`calibration.GateSettings`), so it reaches every pipeline call and
-every record they reach. A saved record restores the
-flags, the gate, the locks and `denoise` it was saved with; an older record opens with the locks and
-`denoise` off. A spectrum
+`calibrate`, all off at open in every window, with the `soft edge` row indented under `denoise`
+(on at open, read while `denoise` is on) and the `gate`, `0-lock` and `Vbias lock` rows indented
+under `calibrate` (in the figure windows the `H` and `SG` boxes sit beside the gate row; in the
+browser they sit on rows of their own under it). The `denoise` and `soft edge` states travel with
+the gate and the locks (`calibration.GateSettings`), so they reach every pipeline call and every
+record they reach. A saved record restores the flags, the gate, the locks, `denoise` and `soft
+edge` it was saved with; an older record opens with the locks and `denoise` off and `soft edge`
+on. A spectrum
 whose column is all zeros was never acquired and takes part in nothing.
 
 ### Drift
@@ -791,17 +802,20 @@ a file's channels do not share one energy axis.
 The five pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
 `gap.denoise` is the denoise step (`gap_factor` the per-point gap factor and the rebuilt current
-from the plain 0-sub Feenstra ratio and the current, at every point whose ratio is finite,
-`setpoint_divided` the Vbias lock's pin currents of denoised columns); it returns the two pages
-divided by g and its own pieces as a `DenoiseStep` (`cal`, the page of its regression on the
-filtered pair with the gate and locks, which forms the ratio only and is never the calibration
-the windows show; `fits`; `Fcal`, the ratio it integrates; `Isub0`, the filtered current with its
-value at 0 V subtracted; `I_rebuilt`, the current rebuilt from `Fcal`; `g`; `kept`), which
+from the plain 0-sub Feenstra ratio and the current, at every point whose ratio is finite;
+`weight_curve` the soft edge's curve measured on the set of sweeps and `soft_edge` each point's
+correction scaled by it; `setpoint_divided` the Vbias lock's pin currents of denoised columns); it
+returns the two pages divided by g and its own pieces as a `DenoiseStep` (`cal`, the page of its
+regression on the filtered pair with the gate and locks, which forms the ratio only and is never
+the calibration the windows show; `fits`; `Fcal`, the ratio it integrates; `Isub0`, the filtered
+current with its value at 0 V subtracted; `I_rebuilt`, the current rebuilt from `Fcal`; `g_raw`,
+the gap factor before the soft edge; `w`, each point's share of its correction; `curve`, the
+measured curve, None when it could not be measured or the row is off; `g`; `kept`), which
 `sts.STS.stages` keeps as `Stages.step`, so the rebuild panels tool draws the step without running
 any of it again.
 `calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
 the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;
-`GateSettings` holds the gate, the two locks and the denoise flag; `_pinned_solve` is the least squares through the
+`GateSettings` holds the gate, the two locks, the denoise flag and its soft edge; `_pinned_solve` is the least squares through the
 pins; `anchor_index` finds the sample at the setpoint bias and refuses a sweep without one;
 `gate_sweeps` is the gate; `gain_from_modulation` the check; `gate_record` / `gate_from_record`
 the record keys), `calibrate_iets` the second-harmonic channel (`IetsColumnFit`). `sts.STS.sweep_pins`
@@ -1018,8 +1032,10 @@ denoise step's rebuild of the current and its g on one sweep, every piece read f
 `sts.STS.stages` with the denoise row on, `stages.step`, nothing of the step computed in the tool;
 five panels saved to a `.png`: the recorded current and the rebuilt current, the current residual
 with g − 1, the LIA page and LIA / g, the LIA residual with g − 1, and g over the LIA page, the
-current and the ratio the step integrates; on the built-in synthetic sweep, one column of a saved
-`.npz` set or one sweep of an `.sm4`, with the Vbias lock or no lock). `calibration.py`'s own
+current and the ratio the step integrates, with g before the soft edge dotted beside it and the
+soft edge's curve printed bin by bin; on the built-in synthetic sweep, one column of a saved `.npz`
+set or one sweep of an `.sm4`, with the 0-lock, the Vbias lock or no lock, the soft edge on or
+off). `calibration.py`'s own
 `__main__` window stays where it is.
 
 ## References

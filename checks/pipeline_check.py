@@ -16,8 +16,10 @@ numpy only, no .sm4 file: the invariants of the stage-2 document, section 3.3.
    relative.  Denoise on: stages.step carries the step's own pieces (gap.DenoiseStep): cal is
    calibration.calibrate on the filtered pair with the gate and locks (the step's regression, run
    here once as the check), Isub0 the filtered current with its value at 0 V subtracted,
-   gap.gap_factor on Fcal and Isub0 gives stages.g and I_rebuilt again, |Isub0| / I_rebuilt is g
-   where rebuilt, and the never-acquired columns are NaN (g 1).
+   gap.gap_factor on Fcal and Isub0 gives g_raw and I_rebuilt again, |Isub0| / I_rebuilt is g_raw
+   where rebuilt, the soft edge gives stages.g = 1 + (g_raw - 1) w with w in [0, 1] when its curve
+   was measured and w = 1 with curve None when not, and the never-acquired columns are NaN (g 1);
+   with the soft edge row off, g is g_raw, w 1 and curve None.
 5. The field table: each PipelineState field, when changed, changes the view fields it reaches and
    no other (the one place the toggle semantics are written down).
 
@@ -121,16 +123,16 @@ def run():
         # The pipeline rows, the division, the gate and the locks in full (every combination, both
         # channels, with and without a current; the filters off, 0Vsub on, broadened on); the filters,
         # the Feenstra settings and the crop in full around one setting of the rows.
-        rows = [(c, None, None, None, None, den, cal, nrm, div, True, True, gon, l0, lv, False, has_iv)
-                for c, den, cal, nrm, div, gon, l0, lv, has_iv in itertools.product(
+        rows = [(c, None, None, None, None, den, se, cal, nrm, div, True, True, gon, l0, lv, False, has_iv)
+                for c, den, se, cal, nrm, div, gon, l0, lv, has_iv in itertools.product(
                     ('didv', 'iets'), (False, True), (False, True), (False, True), (False, True), (False, True),
-                    (False, True), (False, True), (True, False))]
-        rows += [('didv', hp, sp, hd, sd, True, True, True, True, zs, brd, True, False, False, cr, True)
+                    (False, True), (False, True), (False, True), (True, False))]
+        rows += [('didv', hp, sp, hd, sd, True, True, True, True, True, zs, brd, True, False, False, cr, True)
                  for hp, sp, hd, sd, zs, brd, cr in itertools.product(
                      (None, HP), (None, SP), (None, HP), (None, SP), (False, True), (False, True), (False, True))]
-        for channel, hp, sp, hd, sd, den, cal, nrm, div, zs, brd, gon, l0, lv, cr, has_iv in rows:
+        for channel, hp, sp, hd, sd, den, se, cal, nrm, div, zs, brd, gon, l0, lv, cr, has_iv in rows:
             page = S if channel == 'iets' else lia
-            gate = GS(on=gon, lock0=l0, lockv=lv, denoise=den, hampel=(3, 3), sgolay=(5, 2))
+            gate = GS(on=gon, lock0=l0, lockv=lv, denoise=den, soft_edge=se, hampel=(3, 3), sgolay=(5, 2))
             state = PipelineState(channel=channel, hampel=PipelineState.items(hp), sgolay=PipelineState.items(sp),
                                   hampel_didv=PipelineState.items(hd), sgolay_didv=PipelineState.items(sd), gate=gate,
                                   calibrate=cal, normalize=nrm, divide_iv=div, iv_zero_sub=zs, iv_broadened=brd,
@@ -198,16 +200,30 @@ def run():
             with np.errstate(divide='ignore', invalid='ignore'):
                 g_from = np.abs(step.Isub0) / step.I_rebuilt
             fin = np.isfinite(g_from)
+            if step.curve is not None:
+                w_c = step.w[:, cols]
+                soft_ok = (bool(np.all((w_c >= 0.0) & (w_c <= 1.0)))
+                           and same(step.g[:, cols], 1.0 + (step.g_raw[:, cols] - 1.0) * w_c))
+            else:
+                soft_ok = bool(np.all(step.w[:, cols] == 1.0)) and same(step.g, step.g_raw)
             ok &= (same(step.cal[:, cols], cal_ref) and len(step.fits) == cols.size
                    and all(a.a == b.a and a.b == b.b for a, b in zip(step.fits, fits_ref))
                    and same(step.Isub0[:, cols], feenstra.iv_corrected(V, s_on.iv_f[:, cols], zero_sub=True))
-                   and same(g_ref, s_on.g[:, cols]) and same(step.g, s_on.g) and same(reb_ref, step.I_rebuilt[:, cols])
+                   and same(g_ref, step.g_raw[:, cols]) and same(step.g, s_on.g) and same(reb_ref, step.I_rebuilt[:, cols])
                    and same(kept_ref, step.kept[cols])
-                   and bool(np.allclose(g_from[fin], s_on.g[fin], rtol=1e-12, atol=0))
-                   and bool(np.all(np.isnan(step.cal[:, ~acquired]))) and bool(np.all(s_on.g[:, ~acquired] == 1.0)))
-        check("4c. denoise on: stages.step carries cal, fits, Fcal, Isub0, I_rebuilt, g and kept; cal is calibrate on the "
-              "filtered pair; gap_factor(Fcal, Isub0) gives stages.g and I_rebuilt; |Isub0| / I_rebuilt is g where rebuilt; "
-              "never-acquired columns NaN", ok)
+                   and bool(np.allclose(g_from[fin], step.g_raw[fin], rtol=1e-12, atol=0))
+                   and soft_ok
+                   and bool(np.all(np.isnan(step.cal[:, ~acquired]))) and bool(np.all(s_on.g[:, ~acquired] == 1.0))
+                   and bool(np.all(step.g_raw[:, ~acquired] == 1.0)))
+        check("4c. denoise on: stages.step carries cal, fits, Fcal, Isub0, I_rebuilt, g_raw, w, curve, g and kept; cal is "
+              "calibrate on the filtered pair; gap_factor(Fcal, Isub0) gives g_raw and I_rebuilt; |Isub0| / I_rebuilt is "
+              "g_raw where rebuilt; g is 1 + (g_raw - 1) w (w = 1 when the curve was not measured); never-acquired "
+              "columns NaN", ok)
+        s_hard = STS.stages(V, lia, iv, PipelineState(channel='didv', gate=GS(denoise=True, soft_edge=False), calibrate=True),
+                            **data)
+        st_h, cols_a = s_hard.step, np.flatnonzero(acquired)
+        check("4d. denoise on, soft edge off: stages.g is g_raw, w is 1 everywhere and curve is None",
+              st_h is not None and same(st_h.g, st_h.g_raw) and bool(np.all(st_h.w[:, cols_a] == 1.0)) and st_h.curve is None)
         lia0, iv0, sw0 = synth(V, Vb, dfn, N, rng, zero_current=True)
         d0 = dict(data, sweeps=sw0, acquired=np.ones(N, dtype=bool))
         base = PipelineState(channel='didv', calibrate=False, normalize=False, divide_iv=True, iv_zero_sub=True,

@@ -1460,32 +1460,35 @@ class FilterControls:
 
 class PipelineBox:
     """
-    The 'denoise' / 'calibrate' / 'normalize' box with, under 'calibrate', the calibration's own
-    rows: the three pipeline steps switchable on their own; 'denoise' first (gap.denoise, off at
-    open: the per-point gap factor divided out of the dI/dV page and the current before the
-    calibration; its state rides in the GateSettings with the gate and the locks); 'gate'
+    The 'denoise' / 'calibrate' / 'normalize' box with, under 'denoise', its 'soft edge' row and,
+    under 'calibrate', the calibration's own rows: the three pipeline steps switchable on their
+    own; 'denoise' first (gap.denoise, off at open: the per-point gap factor divided out of the
+    dI/dV page and the current before the calibration; its state rides in the GateSettings with
+    the gate and the locks); 'soft edge' (on at open: each point's correction scaled by the share
+    of it that is signal, measured on the file, gap.weight_curve; read while 'denoise' is on; in
+    the GateSettings too); 'gate'
     (calibration.gate_sweeps: the safety on the
     per-sweep gains and offsets, on at open) with two small boxes, 'H' holding the gate's Hampel
     'window,n_sigma' and 'SG' its Savitzky-Golay 'length,order' (calibration.GATE_HAMPEL /
     GATE_SGOLAY at open); '0-lock' and 'Vbias lock' (calibration.calibrate's pins, off at open),
-    each on its own and with the gate in any combination.  The checkboxes of 'gate', '0-lock' and
-    'Vbias lock' are indented by the width of four spaces of the box's text (INDENT).  hs='beside'
-    puts the two boxes left of the box on the gate row, the locks under the gate row (the figure
-    windows: denoise / calibrate / gate / 0-lock / Vbias lock / normalize); hs='rows' puts them on a
-    row each under the gate row inside the box, the locks after them (the browser, whose settings
-    column stays narrow: denoise / calibrate / gate / H / SG / 0-lock / Vbias lock / normalize).
-    steps=False leaves the 'denoise', 'calibrate' and 'normalize' rows out (the calibration's own
-    window).  A box edit that does
+    each on its own and with the gate in any combination.  The checkboxes of 'soft edge', 'gate',
+    '0-lock' and 'Vbias lock' are indented by the width of four spaces of the box's text (INDENT).
+    hs='beside' puts the two boxes left of the box on the gate row, the locks under the gate row
+    (the figure windows: denoise / soft edge / calibrate / gate / 0-lock / Vbias lock / normalize);
+    hs='rows' puts them on a row each under the gate row inside the box, the locks after them (the
+    browser, whose settings column stays narrow: denoise / soft edge / calibrate / gate / H / SG /
+    0-lock / Vbias lock / normalize).  steps=False leaves the 'denoise', 'soft edge', 'calibrate'
+    and 'normalize' rows out (the calibration's own window).  A box edit that does
     not parse, or breaks the gate's rules (calibration.gate_settings), is reported on the console
-    and the box put back.  The gate and lock rows are ignored while 'calibrate' is off; the
-    'denoise' row is independent of 'calibrate'.  state()
+    and the box put back.  The gate and lock rows are ignored while 'calibrate' is off, the 'soft
+    edge' row while 'denoise' is off; the 'denoise' row is independent of 'calibrate'.  state()
     gives {'calibrate': bool, 'normalize': bool, 'gate': calibration.GateSettings (the gate, the
-    locks and denoise)}; set_state() sets the rows and boxes without firing; on_change(callback) runs
-    callback(state) after a click or an accepted edit.
+    locks, denoise and its soft edge)}; set_state() sets the rows and boxes without firing;
+    on_change(callback) runs callback(state) after a click or an accepted edit.
     """
 
     INDENT = '    '          # the gate and lock rows' indent: four spaces of the box's own text
-    _ROWS = ('denoise', 'calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize')
+    _ROWS = ('denoise', 'soft edge', 'calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize')
 
     def __init__(self, fig, calibrate=True, normalize=True, gate=None, hs='beside', steps=True):
         from sm4_Browser import calibration
@@ -1494,15 +1497,15 @@ class PipelineBox:
         self._steps = bool(steps)
         self._calibrate, self._normalize = bool(calibrate), bool(normalize)
         labels = list(SPECS['pipeline']['labels'])
-        values = [bool(self._gate.denoise), bool(calibrate), bool(self._gate.on), bool(self._gate.lock0),
-                  bool(self._gate.lockv), bool(normalize)]
-        self._idx = [0, 1, 2, 3, 4, 5] if self._steps else [2, 3, 4]   # the rows shown, as indices of _ROWS
-        sub = [i in (2, 3, 4) for i in self._idx]                      # the calibration's own rows: indented
+        values = [bool(self._gate.denoise), bool(self._gate.soft_edge), bool(calibrate), bool(self._gate.on),
+                  bool(self._gate.lock0), bool(self._gate.lockv), bool(normalize)]
+        self._idx = [0, 1, 2, 3, 4, 5, 6] if self._steps else [3, 4, 5]   # the rows shown, as indices of _ROWS
+        sub = [i in (1, 3, 4, 5) for i in self._idx]                      # the sub-rows (under denoise, under calibrate): indented
         labs = [labels[i] for i in self._idx]
         vals = [values[i] for i in self._idx]
         self.box_h = Text(fig, 'gate H', self._fmt(self._gate.hampel), width=36)
         self.box_sg = Text(fig, 'gate SG', self._fmt(self._gate.sgolay), width=36)
-        r_gate = self._idx.index(2)
+        r_gate = self._idx.index(3)
         if hs == 'rows':
             self.box = Checks(fig, 'pipeline', values=vals, labels=labs,
                               indents=[self.INDENT if f else 0 for f in sub])
@@ -1560,18 +1563,21 @@ class PipelineBox:
     def text(state):
         """
         The one console phrase of a box's state, every window's (a window adds its own context):
-        'denoise off, calibration on, gate on (H 3,3 SG 9,2), nothing locked, normalization off'.
-        `state` as state() gives it ({'calibrate', 'normalize', 'gate'}).
+        'denoise off, calibration on, gate on (H 3,3 SG 9,2), nothing locked, normalization off'
+        (with denoise on, 'denoise on (soft edge on)').  `state` as state() gives it
+        ({'calibrate', 'normalize', 'gate'}).
         """
         g = state['gate']
-        return (f"denoise {'on' if g.denoise else 'off'}, calibration {'on' if state['calibrate'] else 'off'}, "
+        return (f"denoise {'on' if g.denoise else 'off'}"
+                + (f" (soft edge {'on' if g.soft_edge else 'off'})" if g.denoise else "")
+                + f", calibration {'on' if state['calibrate'] else 'off'}, "
                 f"gate {'on' if g.on else 'off'} ({g.text}), "
                 f"{g.locks_text}, normalization {'on' if state['normalize'] else 'off'}")
 
     def _rows_now(self):
-        """The six rows' states (denoise, calibrate, gate, 0-lock, Vbias lock, normalize); the rows not shown as kept."""
-        out = [bool(self._gate.denoise), self._calibrate, bool(self._gate.on), bool(self._gate.lock0),
-               bool(self._gate.lockv), self._normalize]
+        """The seven rows' states (denoise, soft edge, calibrate, gate, 0-lock, Vbias lock, normalize); the rows not shown as kept."""
+        out = [bool(self._gate.denoise), bool(self._gate.soft_edge), self._calibrate, bool(self._gate.on),
+               bool(self._gate.lock0), bool(self._gate.lockv), self._normalize]
         for i, v in zip(self._idx, self.box.value):
             out[i] = bool(v)
         return out
@@ -1585,9 +1591,9 @@ class PipelineBox:
             self._cb(self.state())
 
     def _on_toggle(self):
-        d, c, g, l0, lv, n = self._rows_now()
+        d, se, c, g, l0, lv, n = self._rows_now()
         self._calibrate, self._normalize = c, n
-        self._gate = self._gate._replace(on=g, lock0=l0, lockv=lv, denoise=d)
+        self._gate = self._gate._replace(on=g, lock0=l0, lockv=lv, denoise=d, soft_edge=se)
         self._fire()
 
     def _on_edit(self, which, text):
@@ -1624,8 +1630,9 @@ class PipelineBox:
         self._cb = callback
 
     def state(self):
-        d, c, g, l0, lv, n = self._rows_now()
-        return {'calibrate': c, 'normalize': n, 'gate': self._gate._replace(on=g, lock0=l0, lockv=lv, denoise=d)}
+        d, se, c, g, l0, lv, n = self._rows_now()
+        return {'calibrate': c, 'normalize': n,
+                'gate': self._gate._replace(on=g, lock0=l0, lockv=lv, denoise=d, soft_edge=se)}
 
     @property
     def calibrate(self):
@@ -1637,7 +1644,7 @@ class PipelineBox:
 
     @property
     def gate(self):
-        """The gate, the locks and denoise as set: calibration.GateSettings (`on` the gate row, lock0 / lockv the lock rows, denoise the first row)."""
+        """The gate, the locks, denoise and its soft edge as set: calibration.GateSettings (`on` the gate row, lock0 / lockv the lock rows, denoise the first row, soft_edge the row under it)."""
         return self.state()['gate']
 
     def _set_row(self, i, flag):
@@ -1645,20 +1652,21 @@ class PipelineBox:
             self.box.set(self._idx.index(i), bool(flag))
 
     def set_state(self, calibrate=None, normalize=None, gate=None):
-        """The rows and boxes set without firing; `gate` a GateSettings, dict, bool or None (unchanged), the denoise row with it."""
+        """The rows and boxes set without firing; `gate` a GateSettings, dict, bool or None (unchanged), the denoise and soft edge rows with it."""
         from sm4_Browser import calibration
         if calibrate is not None:
             self._calibrate = bool(calibrate)
-            self._set_row(1, calibrate)
+            self._set_row(2, calibrate)
         if normalize is not None:
             self._normalize = bool(normalize)
-            self._set_row(5, normalize)
+            self._set_row(6, normalize)
         if gate is not None:
             self._gate = calibration.gate_settings(gate)
             self._set_row(0, self._gate.denoise)
-            self._set_row(2, self._gate.on)
-            self._set_row(3, self._gate.lock0)
-            self._set_row(4, self._gate.lockv)
+            self._set_row(1, self._gate.soft_edge)
+            self._set_row(3, self._gate.on)
+            self._set_row(4, self._gate.lock0)
+            self._set_row(5, self._gate.lockv)
             self._set_boxes()
 
     def show(self, flag):

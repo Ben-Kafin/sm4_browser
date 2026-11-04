@@ -159,9 +159,11 @@ class Stages(NamedTuple):
     denoised pair lia_f / g, iv_f / g (the filtered pair itself when g is None);
     step the step's own pieces (gap.DenoiseStep: cal, the page a · lia_f + b of the step's regression on the
     filtered pair with the gate and locks, fits that regression's fits, Fcal the ratio the step integrates,
-    Isub0 the filtered current with its value at 0 V subtracted, I_rebuilt the current rebuilt from Fcal, g,
-    kept), the arrays (npts, N) with NaN in never-acquired columns (g 1 there), None when the step is off or
-    not applied; I_setpoint_used
+    Isub0 the filtered current with its value at 0 V subtracted, I_rebuilt the current rebuilt from Fcal,
+    g_raw the gap factor before the soft edge, w each point's share of its correction, curve the soft
+    edge's measured curve (None when not measured or the row is off), g, kept), the arrays (npts, N)
+    with NaN in never-acquired columns (g and g_raw 1 there), None when the step is off or not applied;
+    I_setpoint_used
     the pin current the calibration got (per column with the Vbias lock and denoise, else the
     setpoint); cal the calibrated page a · lia_d + b (calibrate_iets on IETS), lia_d with calibrate
     off; fits the ColumnFit / IetsColumnFit list, None with calibrate off; iv0 the current the
@@ -253,7 +255,7 @@ def state_from_record(rec, default):
     s_on = bool(rec.get('sgolay_on', sp is not None))
     hd_on = bool(rec.get('hampel_didv_on', 'hampel_didv' in rec and hd is not None))
     sd_on = bool(rec.get('sgolay_didv_on', 'sgolay_didv' in rec and sd is not None))
-    gate_keys = ('gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv', 'denoise')
+    gate_keys = ('gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv', 'denoise', 'soft_edge')
     gate = calibration.gate_from_record(rec) if any(k in rec for k in gate_keys) else default.gate
     er = rec.get('energy_range', default.norm_range) if 'energy_range' in rec else default.norm_range
     return default.with_(channel=rec.get('channel', default.channel),
@@ -1289,6 +1291,8 @@ class STS:
                     lia_d[:, cols], iv_d[:, cols] = ld, idn
                     g = np.ones_like(lia_f)
                     g[:, cols] = st.g
+                    g_raw = np.ones_like(lia_f)
+                    g_raw[:, cols] = st.g_raw
 
                     def wide(a):
                         w = np.full_like(lia_f, np.nan)
@@ -1298,7 +1302,7 @@ class STS:
                     kept = np.zeros(lia_f.shape[1], dtype=int)
                     kept[cols] = st.kept
                     step = st._replace(cal=wide(st.cal), Fcal=wide(st.Fcal), Isub0=wide(st.Isub0),
-                                       I_rebuilt=wide(st.I_rebuilt), g=g, kept=kept)
+                                       I_rebuilt=wide(st.I_rebuilt), g_raw=g_raw, w=wide(st.w), g=g, kept=kept)
                     if settings.lockv:
                         # The Vbias lock's pin of a denoised forward sweep: the setpoint current over g there.
                         divided = gap.setpoint_divided(energy, st.g, V_bias, I_setpoint)
@@ -1411,9 +1415,10 @@ class STS:
         channel with a current present: its own regression as `gate` sets
         it for a and b only, the plain 0-sub Feenstra ratio of the
         calibrated page integrated in ln|V| back to a current, the
-        recorded current over it the per-point gap factor g, and the
-        acquired columns of the channel and of the current divided by g,
-        so that every step below works on the denoised pair;
+        recorded current over it the per-point gap factor g, through the
+        soft edge when `gate`.soft_edge (on at open), and the acquired
+        columns of the channel and of the current divided by g, so that
+        every step below works on the denoised pair;
         with the Vbias lock on, the setpoint pin of a forward sweep becomes
         I_setpoint / g at the setpoint sample, gap.setpoint_divided; a
         regression the step cannot determine applies nothing, said once on

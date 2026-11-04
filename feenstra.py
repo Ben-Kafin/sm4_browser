@@ -237,10 +237,11 @@ class FeenstraWindow:
     0 V is left as it is); 'broadened' off divides by the plain I/V.
 
     Its pipeline box (controls.PipelineBox, top right, as in every window:
-    'denoise', 'calibrate', 'gate' with its boxes, '0-lock', 'Vbias lock',
-    'normalize') holds this window's own state of those rows, independent
-    of the main window's (calibrate and normalize off at open, the gate on,
-    the locks and denoise off): the four panels are the main window's
+    'denoise' with its 'soft edge' row, 'calibrate', 'gate' with its boxes,
+    '0-lock', 'Vbias lock', 'normalize') holds this window's own state of
+    those rows, independent of the main window's (calibrate and normalize
+    off at open, the gate on, the locks and denoise off, the soft edge on):
+    the four panels are the main window's
     view for the main window's state with these rows overriding it
     (refresh: sts.PipelineState.with_).  'normalize' turns the per-location
     unit-area normalization of all four panels on or off together (the

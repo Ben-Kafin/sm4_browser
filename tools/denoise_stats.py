@@ -1,6 +1,6 @@
 """
 The denoise step on one file, off against on, through the pipeline as the browser runs it
-(sts.STS.process_arrays with the calibration on, its gate at the defaults, the locks off, no
+(sts.STS.process_arrays with the calibration on, its gate at the defaults, the locks off, the soft edge on, no
 filters, no Feenstra division, no normalization), on the acquired columns of the dI/dV channel:
 
 - single-sweep roughness: the rms of the second difference of each column over the rms of the

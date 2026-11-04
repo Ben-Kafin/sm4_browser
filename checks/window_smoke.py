@@ -157,7 +157,7 @@ def _set_boxes(filters, pipeline, settings):
     _edit(filters.box_nsig, HAMPEL['n_sigma'])
     _edit(filters.box_wl, SGOLAY['window_length'])
     _edit(filters.box_po, SGOLAY['polyorder'])
-    for label in ('denoise', 'calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize'):
+    for label in ('denoise', 'soft edge', 'calibrate', 'gate', '0-lock', 'Vbias lock', 'normalize'):
         _click_row(pipeline, label)
     _edit(pipeline.box_h, f"{GATE_H[0]},{GATE_H[1]}")
     _edit(pipeline.box_sg, f"{GATE_SG[0]},{GATE_SG[1]}")
@@ -167,14 +167,14 @@ def _set_boxes(filters, pipeline, settings):
         _edit(settings.box_width, BROADENING)
 
 
-def _expected(channel, divide_iv, norm_range=None, gate_on=False, locks=True, denoise=True):
-    """The state _set_boxes leaves a window in, built independently of the window."""
+def _expected(channel, divide_iv, norm_range=None, gate_on=False, locks=True, denoise=True, soft_edge=False):
+    """The state _set_boxes leaves a window in (every row flipped: the soft edge row, on at open, off), built independently of the window."""
     from sm4_Browser import calibration
     from sm4_Browser.sts import PipelineState
     return PipelineState(channel=channel, hampel=PipelineState.items(HAMPEL), sgolay=PipelineState.items(SGOLAY),
                          hampel_didv=PipelineState.items(HAMPEL), sgolay_didv=PipelineState.items(SGOLAY),
                          gate=calibration.GateSettings(on=gate_on, hampel=GATE_H, sgolay=GATE_SG, lock0=locks,
-                                                       lockv=locks, denoise=denoise),
+                                                       lockv=locks, denoise=denoise, soft_edge=soft_edge),
                          calibrate=True, normalize=True, divide_iv=divide_iv, iv_zero_sub=False, iv_broadened=True,
                          iv_broadening=BROADENING, norm_range=norm_range)
 

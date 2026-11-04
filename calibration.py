@@ -97,9 +97,10 @@ class GateSettings(NamedTuple):
     The gate and the locks as a window sets them: the gate on / off, its Hampel (window, n_sigma)
     and Savitzky-Golay (length, order); the '0-lock' (lock0) and the 'Vbias lock' (lockv), each on
     its own (both off at open; see calibrate); and the pipeline box's 'denoise' row (denoise, off at
-    open), which rides in this object because it reaches every pipeline call and every window record
-    with the gate and the locks.  The denoise step itself is gap.denoise, run by the pipeline before
-    the calibration; calibrate does not read the flag.
+    open) with its 'soft edge' row (soft_edge, on at open), which ride in this object because they
+    reach every pipeline call and every window record with the gate and the locks.  The denoise
+    step itself is gap.denoise, run by the pipeline before the calibration, which reads soft_edge;
+    calibrate reads neither flag.
     """
     on: bool = True
     hampel: tuple = GATE_HAMPEL
@@ -107,6 +108,7 @@ class GateSettings(NamedTuple):
     lock0: bool = False
     lockv: bool = False
     denoise: bool = False
+    soft_edge: bool = True
 
     @property
     def text(self):
@@ -126,9 +128,9 @@ GATE_DEFAULT = GateSettings()
 def gate_settings(gate):
     """
     The GateSettings of `gate`: None (the defaults), a GateSettings, a dict
-    with 'on', 'hampel', 'sgolay', 'lock0', 'lockv', 'denoise' (missing keys the
-    defaults; the locks and denoise off), or a bool (the gate on / off at the defaults,
-    the locks and denoise off).  Validated: the Hampel window a whole number
+    with 'on', 'hampel', 'sgolay', 'lock0', 'lockv', 'denoise', 'soft_edge' (missing keys the
+    defaults; the locks and denoise off, the soft edge on), or a bool (the gate on / off at the
+    defaults, the locks and denoise off, the soft edge on).  Validated: the Hampel window a whole number
     of at least 1 and n_sigma positive; the Savitzky-Golay length an odd
     whole number greater than the order, the order a whole number of at
     least 0.  ValueError otherwise, naming the box.
@@ -142,7 +144,8 @@ def gate_settings(gate):
     elif isinstance(gate, dict):
         g = GateSettings(on=bool(gate.get('on', True)), hampel=tuple(gate.get('hampel', GATE_HAMPEL)),
                          sgolay=tuple(gate.get('sgolay', GATE_SGOLAY)), lock0=bool(gate.get('lock0', False)),
-                         lockv=bool(gate.get('lockv', False)), denoise=bool(gate.get('denoise', False)))
+                         lockv=bool(gate.get('lockv', False)), denoise=bool(gate.get('denoise', False)),
+                         soft_edge=bool(gate.get('soft_edge', True)))
     else:
         raise ValueError(f"gate settings must be None, a bool, a dict or GateSettings; got {gate!r}.")
     try:
@@ -155,7 +158,8 @@ def gate_settings(gate):
         raise ValueError(f"gate 'H' box: the window must be a whole number of at least 1 and n_sigma positive (got {hw:g},{hs:g}).")
     if sl != int(sl) or so != int(so) or so < 0 or sl <= so or int(sl) % 2 == 0:
         raise ValueError(f"gate 'SG' box: the length must be an odd whole number greater than the order, the order at least 0 (got {sl:g},{so:g}).")
-    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)), bool(g.lock0), bool(g.lockv), bool(g.denoise))
+    return GateSettings(bool(g.on), (int(hw), hs), (int(sl), int(so)), bool(g.lock0), bool(g.lockv), bool(g.denoise),
+                        bool(g.soft_edge))
 
 
 class Gate(NamedTuple):
@@ -779,21 +783,22 @@ def calibrate_iets(energy, curves, iv, vmod=None, V_bias=None, I_setpoint=None, 
 
 
 def gate_from_record(rec):
-    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order], 'lock0', 'lockv', 'denoise'); a record without them (older) gives the defaults, the locks and denoise off."""
+    """The GateSettings a window record holds ('gate' on / off, 'gate_hampel' [window, n_sigma], 'gate_sgolay' [length, order], 'lock0', 'lockv', 'denoise', 'soft_edge'); a record without them (older) gives the defaults, the locks and denoise off, the soft edge on."""
     try:
         return gate_settings({'on': rec.get('gate', True), 'hampel': rec.get('gate_hampel', GATE_HAMPEL),
                               'sgolay': rec.get('gate_sgolay', GATE_SGOLAY), 'lock0': rec.get('lock0', False),
-                              'lockv': rec.get('lockv', False), 'denoise': rec.get('denoise', False)})
+                              'lockv': rec.get('lockv', False), 'denoise': rec.get('denoise', False),
+                              'soft_edge': rec.get('soft_edge', True)})
     except ValueError as exc:
         print(f"record: the gate settings are not usable ({exc}); the defaults are used.")
         return GATE_DEFAULT
 
 
 def gate_record(settings):
-    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv', 'denoise'} (gate_from_record reads them)."""
+    """The record keys of GateSettings: {'gate', 'gate_hampel', 'gate_sgolay', 'lock0', 'lockv', 'denoise', 'soft_edge'} (gate_from_record reads them)."""
     return {'gate': bool(settings.on), 'gate_hampel': [settings.hampel[0], settings.hampel[1]],
             'gate_sgolay': [settings.sgolay[0], settings.sgolay[1]], 'lock0': bool(settings.lock0),
-            'lockv': bool(settings.lockv), 'denoise': bool(settings.denoise)}
+            'lockv': bool(settings.lockv), 'denoise': bool(settings.denoise), 'soft_edge': bool(settings.soft_edge)}
 
 
 def gate_text(fits, cols=None):
