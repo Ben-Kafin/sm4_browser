@@ -5,10 +5,11 @@ Modules
   browser        Browser: the experiment browser (the file to run): the experiment logic and its Qt window
   qtplot         the drawing and window layer (matplotlib's interface on PySide6 / PyQt + pyqtgraph)
   sm4file        Sm4File: one .sm4 file (kind, times, image frame, topography, spectroscopy)
-  sts            STS: dI/dV and IETS spectroscopy data and the pipeline driver (process_arrays)
+  sts            STS: dI/dV and IETS spectroscopy data and the one pipeline path every window draws from:
+                 PipelineState (a window's boxes), STS.stages (the engine, every intermediate kept),
+                 STS.view (what a window draws), process_arrays / process (the earlier interface)
   sweeps         several sweeps per pixel in a grid file: the grouping rules, the sweep views
                  ('forward sweeps', 'reverse sweeps', 'all sweeps', 'sweep n') and their column choice
-  sts            STS: dI/dV and IETS spectroscopy data and the pipeline driver (process_arrays)
   filters        the Hampel and Savitzky-Golay filters, applied by the pipeline to the recorded current
                  once (the calibration and the Feenstra division both use that filtered current) and to
                  the channel's columns under their own toggles
@@ -55,12 +56,16 @@ Modules
   phase          PhaseRotate: lock-in phase rotation files
   fft            NoiseSpectrum: noise power spectrum files
   mplexport      a qtplot figure rebuilt as a matplotlib figure and saved (PDF, EPS, SVG, PNG, TIFF)
-  checks/        the checks and diagnostics: synth (synthetic experiments served through the loader),
-                 smoke_browser (the feature checks, offscreen, one @check per feature), smoke_sweeps,
-                 check_sweeps, check_affine, check_background, check_stripe, check_contour, check_pass_average, perf_layer,
-                 diagnose_file
-                 (one file step by step), alignment_windows (the old and the current line placement side
-                 by side), zero_crossing (the current's zero crossing over the saved averages)
+  checks/        the checks, one command runs them all (run): synth (synthetic experiments served through
+                 the loader), pipeline_check (the one pipeline path), pin_rule_check (the calibration
+                 locks), contour_check, pass_average_check, affine_check, stripe_check, sweeps_check, and
+                 window_smoke (every window on a virtual screen, its drawn arrays against view(state))
+  tools/         scripts that need a real file or an open window, run by hand: denoise_stats, diagnose_file
+                 (one file step by step), zero_crossing (the current's zero crossing over the saved
+                 averages), alignment_windows (the old and the current line placement side by side),
+                 perf_layer, background_processes, denoise_steps (the denoise step of one file, one
+                 sweep at a time, every panel a field of the engine)
+  reports/       the reports of the changes made (each with its approved and additional changes)
 
 Every module can be run on its own (its __main__ block); nothing is imported here.
 """

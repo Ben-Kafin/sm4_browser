@@ -4,7 +4,7 @@ replaces (drift.Drift.corrected_topo), on a synthetic topo with a large known dr
 over the image), forward and reverse passes.  Also shows the comparison is discriminating: the
 uncorrected placement differs from the resampled image by much more.
 
-    python -m sm4_Browser.checks.check_affine
+    python -m sm4_Browser.checks.affine_check
 """
 import os
 import sys
@@ -23,8 +23,8 @@ def run():
     One synthetic topo (rotated 17 deg) under a known velocity: for each pass the image placed by
     affine_matrix with the known drift model is sampled at every pixel and compared with the
     per-pixel resampling; passes when the largest difference is below 2 % of the height range and
-    the uncorrected placement differs by more than five times as much.  Prints the numbers and
-    PASS / FAIL; returns the verdict.
+    the uncorrected placement differs by more than five times as much.  Prints one [ok] / [FAIL]
+    line per pass with the numbers; returns the number of failures.
     """
     tmp = tempfile.mkdtemp(prefix='sm4affine_')
     v = np.array([40e-12, -25e-12])                       # m/s: ~ 0.6 nm over a 16 s image (several px)
@@ -40,7 +40,7 @@ def run():
     f = Sm4File(path)
     model = PairDrift(v, f.start_time, 'test', 'known')
     d = Drift.__new__(Drift)
-    ok_all = True
+    fails = 0
     for direction in ('forward', 'reverse'):
         img = processed_topo(f, direction, none)
         ref = d._corrected_pass(f, direction, none, model, topo_mod)
@@ -57,12 +57,14 @@ def run():
             ok[:4, :] = ok[-4:, :] = ok[:, :4] = ok[:, -4:] = False
             errs[name] = float(np.nanmax(np.abs(ref[ok] - got[ok])) / (np.nanmax(img) - np.nanmin(img)))
         shift_px = float(np.linalg.norm(v) * (f.end_time - f.start_time) / abs(f.xscale_m))
-        print(f"{direction}: drift over the image {shift_px:.1f} px; max difference to the resampled image, "
-              f"affine {errs['affine']:.4f}, uncorrected {errs['uncorrected']:.4f} (fraction of the height range)")
-        ok_all &= errs['affine'] < 0.02 and errs['uncorrected'] > 5 * errs['affine']
-    print("PASS" if ok_all else "FAIL")
-    return ok_all
+        good = errs['affine'] < 0.02 and errs['uncorrected'] > 5 * errs['affine']
+        fails += 0 if good else 1
+        print(f"  [{'ok' if good else 'FAIL'}] {direction}: drift over the image {shift_px:.1f} px; max difference to the "
+              f"resampled image, affine {errs['affine']:.4f}, uncorrected {errs['uncorrected']:.4f} (fraction of the "
+              f"height range)")
+    print(f"{fails} failure(s)")
+    return fails
 
 
 if __name__ == '__main__':
-    sys.exit(0 if run() else 1)
+    sys.exit(1 if run() else 0)

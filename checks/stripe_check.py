@@ -10,7 +10,7 @@ Stripe matching against known truth (synthetic experiments, checks/synth.py):
      on the topo;
   6. a grid across two topos: lines matched against both (named in the report).
 
-    python -m sm4_Browser.checks.check_stripe
+    python -m sm4_Browser.checks.stripe_check
 """
 import io
 import os
@@ -28,9 +28,9 @@ RESULTS = []
 
 
 def ok(name, cond, detail=''):
-    """Record and print one result: PASS or FAIL, the name, the detail in parentheses."""
+    """Record and print one result: [ok] or [FAIL], the name, the detail after a colon."""
     RESULTS.append(bool(cond))
-    print(f"{'PASS' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ''))
+    print(f"  [{'ok' if cond else 'FAIL'}] {name}" + (f": {detail}" if detail else ''))
 
 
 def experiment(tmp, v, b_true, grid_centre=(0.0, 0.0), second_topo=None):
@@ -152,9 +152,10 @@ def run():
     both = [line for line in r3['report'] if names[0] in line and names[1] in line and line.startswith('line ')]
     ok("6. grid across two topos: lines matched against both", len(both) >= 1,
        f"{len(both)} line(s) report both topos; reference: {r3['report'][0][:120]}")
-    print("ALL PASS" if all(RESULTS) else "SOME FAILED")
-    return all(RESULTS)
+    fails = sum(1 for r in RESULTS if not r)
+    print(f"{fails} failure(s)")
+    return fails
 
 
 if __name__ == '__main__':
-    sys.exit(0 if run() else 1)
+    sys.exit(1 if run() else 0)

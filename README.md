@@ -180,7 +180,15 @@ an average holds spectra alone and needs none. The timeline is kept in the setti
 
 ### The pipeline
 
-Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this order:
+Every spectrum goes through the same steps, in `sts.STS.stages`, in this order. `stages` is the
+one engine every window draws from: a window keeps one `sts.PipelineState` built from its boxes
+(the channel, the four filter settings, the gate with its locks and the `denoise` row, the
+`calibrate` and `normalize` rows, its own `Feenstra` toggle, the Feenstra settings, the energy
+crop), and everything it draws is a field of `sts.STS.view` for that state (`didv`, `current`,
+`ivv`, `ratio`, `shown`), computed once per state (`Sm4File.view`). The Feenstra companions ask
+for the main window's state with their own `calibrate`, `normalize` and gate rows overriding it,
+so every toggle that appears in a window acts on every panel of that window it applies to by
+construction. `STS.process_arrays` is the same engine behind its earlier interface. The steps:
 
 1. the filters (`filters.py`): Hampel (spikes), then Savitzky-Golay (smoothing), each with one
    toggle for the lock-in channel's columns (`dI/dV`) and one for the recorded current I(V), the
@@ -217,18 +225,26 @@ Every spectrum goes through the same steps, in `sts.STS.process_arrays`, in this
      the two sweeps touching it beyond the file's robust scale takes the trend's value (the
      sweeps' values through a Hampel filter, `H` window,nσ, then a Savitzky-Golay smoothing,
      `SG` length,order), so one disturbed current cannot break the calibration;
-   - `0-lock` (off at open): every fit passes through the recorded current at the sample nearest
-     0 V;
-   - `Vbias lock` (off at open): a forward sweep's fit passes through the setpoint current
-     RHK_Current at the setpoint-bias sample RHK_Bias, where the feedback loop was opened; a
-     reverse sweep, which has no setpoint current, passes through the recorded current at its own
-     first sample; a column averaging a pixel's forward and reverse sweeps (the `all sweeps` view)
-     takes no Vbias pin. While it is on, a forward sweep without a sample at the setpoint bias, or
-     a file without the setpoint, is not calibrated, said once on the console.
+   - `0-lock` (off at open): the fit is pinned at the sample nearest 0 V to the recorded current
+     there;
+   - `Vbias lock` (off at open): a forward sweep's fit is pinned at the setpoint-bias sample
+     RHK_Bias, where the feedback loop was opened, to the setpoint current RHK_Current; a reverse
+     sweep, which has no setpoint current, at its own first sample to the recorded current there;
+     a column averaging a pixel's forward and reverse sweeps (the `all sweeps` view) takes no Vbias
+     pin. While it is on, a forward sweep without a sample at the setpoint bias, or a file without
+     the setpoint, is not calibrated, said once on the console.
 
-   With one lock the constant c follows from the pin; with both, b and c follow from a. The gate's
-   refits keep the pins. `calibrate_iets` does the same for the second-harmonic channel, with
-   I = a·Z + b·V²/2 + c·V + d (Z the double integral), the same locks and the gate on a and b;
+   A pin holds through the integrated signal and the constant only, never through the bias term:
+   the bias axis enters every fit as recorded and is never referenced to a pin's voltage. With one
+   lock the constant follows from the pin, c = I_p − a·X_p, and a, b are the least squares of
+   I − I_p against (X − X_p, V), which with the `0-lock` is the original line tool's calibration
+   (X and ΔI referenced to the sample nearest 0 V, V as recorded). With both locks the gain and the
+   constant follow from the two pinned currents, a = (I_set − I_0)/(X_set − X_0), c = I_0 − a·X_0,
+   and b is the least squares of what is left against V. The gate's refits keep the first pin (the
+   Vbias pin before the 0-lock pin) for c under the same rule. `calibrate_iets` does the same for
+   the second-harmonic channel, with I = a·Z + b·V²/2 + c·V + d (Z the double integral): a pin
+   holds through Z and d only, one pin fixes d, two fix a and d; the same locks and the gate on a
+   and b;
 4. with a window's `Feenstra` toggle on, the division by the broadened I/V of the same filtered
    current (`feenstra.py`): Feenstra's normalized conductance (dI/dV)/(I/V), with `0Vsub` the
    current at 0 V subtracted first (a vertical shift only) and `broadened` the I/V broadened by an
@@ -389,8 +405,13 @@ row of cells has the same height) and one energy beside the embedded topography
 with `< E` / `E >` and the curve panel (`sweeps`, for a file with several sweeps per pixel, under
 `< E` / `E >` at the bottom right); the curve panel is one panel, moved between the two views.
 `cmap norm` chooses one colour scale for the whole cube or one
-per map; one `γ` box per energy slice. The maps' colour map is `plots.MAP_CMAP` (midnight blue to
-light sky blue), the browser's `cmap_map` setting. A marker is a solid circle as wide as a pixel's diagonal,
+per map; `clip %` beside it (0 at open, a percentage from 0 up to 50) clips that scale to the
+p-th and (100 − p)-th percentiles of the values (`plots.percentile_range`: the whole cube with
+`cmap norm` off, each map its own with it on), so that a few extreme pixels do not set the
+colouring; a pixel beyond the limits takes the end colour, the colour bar spans the clipped
+limits, and nothing else changes (the map arrays, the marker curves, the companion, the sends and
+the composer read the same arrays); one `γ` box per energy slice, applied on top. The maps' colour
+map is `plots.MAP_CMAP` (midnight blue to light sky blue), the browser's `cmap_map` setting. A marker is a solid circle as wide as a pixel's diagonal,
 corner to corner, centred on its pixel (it overlaps the neighbouring pixels slightly; the pixel
 under its centre is the one whose spectrum it shows), drawn on the single view's map and
 topography and, in the grid view, on the topography cell and every energy's map (each map at its
@@ -399,7 +420,14 @@ white edge ring inside the circle's edge on every panel (in the publication file
 A marker or a group centre is dragged by its centre from any panel it is drawn on. The markers are the Line window's method in 2D (pixels; the
 `avgs` box and the marker box of `Markers` boxes, `Average`, `stack`, `substack`, `add new` / `add existing` per group,
 `Send to fit`); `map → new avg` / `map → existing avg` send the whole map, every acquired pixel's
-spectrum, to an averaging window. With a drift source on every pixel sits at its spectrum's chained
+spectrum, to an averaging window. `save` (in the column with `Send to fit`) writes the map's
+marker record `averages/<file stem>_map_markers.json`, one per file, overwritten: the file and its
+sweep view, the pipeline state, the view, the energy step, the gammas, `cmap norm` and `clip %`,
+the topo pass and processors, the drift and stripe toggles, the contour slice's level (and its
+traces, for information) and the marker groups, markers and stack states; the saved-records window
+lists it, and `load` reopens the map on the file with everything put back (the slice rebuilt from
+the level, and compared with the saved traces: a console line says when the topography's pass,
+processing or drift state is no longer what it was at the save). With a drift source on every pixel sits at its spectrum's chained
 position plus the drift within its sweep up to the shown energy, the embedded topography is drawn as
 quads at the pixels' chained positions, the view is edge to edge around every pixel drawn at every
 energy and the drift lines (it holds still while the energy is stepped), and every
@@ -465,10 +493,11 @@ member's columns, current and I/V, and the sent curves).
 `load saved averages` opens the saved-records window (`records.py`): every record of the `averages`
 subfolder, by index, descending (name, entries and sweeps, removed sweeps, the files' times, the
 filter settings, the number of fits in its fit history), then the fit histories of the earlier
-label-named form (each family once, its newest file), the Line windows' marker records and the
-line-average records. `load` rebuilds the
+label-named form (each family once, its newest file), the Line windows' and the Map windows'
+marker records (together, by time) and the line-average records. `load` rebuilds the
 chosen average in a window of its index and opens the fit from its history when one exists, opens a
-Line window on a marker record's file and line with everything restored, or rebuilds a line-average
+Line window on a marker record's file and line with everything restored, opens a Map window on a
+map record's file with everything restored, or rebuilds a line-average
 window; `rescan` re-reads the directory.
 
 ### The fit
@@ -574,6 +603,7 @@ take it.
 | `averages/<stem>_fits.pkl` | the `averages` subfolder | the fit history of an average sent to the fit, with everything a refit needs | your results |
 | `averages/<stem>_fit<K>.json`, `.csv` | the `averages` subfolder (next to the data file for a file fitted directly) | a saved fit: its parameters, and V, data, background, components, model | your results |
 | `averages/<file stem>_line<k>_markers.json` | the `averages` subfolder | a Line window's marker record: groups, markers, E-markers, ranges, the scale it was made with | your results |
+| `averages/<file stem>_map_markers.json` | the `averages` subfolder | a Map window's marker record: the pipeline state, the view and energy step, the colour scale's settings, the topo pass and processors, the drift toggles, the contour level and traces, groups and markers, the scale it was made with | your results |
 | `averages/lineavg<N>_average.json` | the `averages` subfolder | a line-average record: members (each with the scale it was made with), alignment, markers | your results |
 | `<date_time>_fits.pkl` | next to a data file fitted directly | that file's fit history | your results |
 | `~/sm4_browser_crash.log` | the home directory | where Qt or a C extension crashed the kernel, with the last file the browser went to | yes |
@@ -741,17 +771,34 @@ computed store (`header_cache`) and the family of cache files of a data file (`c
 ### `sts.py`
 
 The dI/dV and IETS channels of one file with its I(V) page (`STS`): the curves as recorded, their
-units (`curve_units`), and the pipeline driver `process_arrays`, which runs the filters, the
-denoise step, the calibration, the Feenstra division and the normalization in that order on any
-set of columns. `AlignmentError` is raised when a file's channels do not share one energy axis.
+units (`curve_units`), and the one pipeline path: `PipelineState` (everything the pipeline needs
+from a window's boxes, hashable; `of` builds it from the boxes, `with_` changes fields,
+`filters()` gives the four filter dicts back), `STS.stages` (the engine: the filters, the denoise
+step, the calibration, the Feenstra division and the normalization in that order on any set of
+columns, run once, every intermediate kept in a `Stages` record, the denoise step's own pieces
+as `step`, the console lines returned as `notes`), `STS.view` (what a window or a companion draws
+from one `stages` call: a `View` with
+`didv`, `current`, `ivv`, `ratio`, `shown`, `g`, `fits`, `notes`; pure), `STS.stages_of` /
+`STS.view_of` (the same for a file's own spectra: `Sm4File.stages` / `Sm4File.view` and
+`Selection.stages` / `Selection.view` pass through to them), `process_arrays` / `process` (the
+same engine behind the earlier interface: the quantity the division selects and its areas, the
+notes printed once through `_note_once`; `say` prints a view's notes once for the windows), and
+`state_record` / `state_from_record` (the record keys of a state). `AlignmentError` is raised when
+a file's channels do not share one energy axis.
 
 ### `filters.py`, `gap.py`, `calibration.py`, `feenstra.py`, `normalization.py`
 
 The five pipeline steps on arrays. `filters.hampel` and `filters.sgolay` filter the recorded
 current and, under their own toggles, the lock-in columns (`filter_lia` runs the two in order).
-`gap.denoise` is the denoise step (`gap_factor` the per-point gap factor from the plain 0-sub
-Feenstra ratio and the current at every point whose ratio is finite, `setpoint_divided` the Vbias
-lock's pin currents of denoised columns).
+`gap.denoise` is the denoise step (`gap_factor` the per-point gap factor and the rebuilt current
+from the plain 0-sub Feenstra ratio and the current, at every point whose ratio is finite,
+`setpoint_divided` the Vbias lock's pin currents of denoised columns); it returns the two pages
+divided by g and its own pieces as a `DenoiseStep` (`cal`, the page of its regression on the
+filtered pair with the gate and locks, which forms the ratio only and is never the calibration
+the windows show; `fits`; `Fcal`, the ratio it integrates; `Isub0`, the filtered current with its
+value at 0 V subtracted; `I_rebuilt`, the current rebuilt from `Fcal`; `g`; `kept`), which
+`sts.STS.stages` keeps as `Stages.step`, so the denoise steps tool draws the step without running
+any of it again.
 `calibration.calibrate` calibrates each lock-in column against its filtered current (`ColumnFit`:
 the sweep's own a, b, c with their standard errors, the pair the gate applied, the pins;
 `GateSettings` holds the gate, the two locks and the denoise flag; `_pinned_solve` is the least squares through the
@@ -852,9 +899,10 @@ alignment` window. `align.py` is the alignment on arrays alone: the common energ
 
 ### `map.py`, `composer.py` and `contour.py`
 
-The Map window (`Map`): the per-energy maps, the grid view and the single view, the colour scales,
-the markers in two dimensions, the drift within a sweep, the contour slice, the sends and `add to
-plot`. `composer.FigureComposer` is the figure composer: the collected panels, the symbols of the
+The Map window (`Map`): the per-energy maps, the grid view and the single view, the colour scales
+(`_limits`, through the `clip %` percentile clip), the markers in two dimensions, the drift within
+a sweep, the contour slice, the sends, `add to plot`, and the marker record (`marker_record`,
+`restore_markers`). `composer.FigureComposer` is the figure composer: the collected panels, the symbols of the
 spectra on every map, the bias arrows, the scale bars, the removal of a panel and `new plot`.
 `contour.py` is the contour slice's geometry: `iso_segments` (marching squares at one level,
 vectorized over the cells, the segments in pixel coordinates; a cell with a never-acquired corner
@@ -871,9 +919,9 @@ the send to the fit (`send_sets_to_fit`) and the averaging window (`MultiAverage
 ### `records.py`
 
 The record formats and paths in the `averages` subfolder (`avg_dir_of`, `record_path`,
-`line_record_path`, `cache_path_of`, `write_json`, `read_json`, `read_cache`, `saved_indices_of`,
-`is_lineavg_record`, `rename_record`) and the saved-records window (`SavedAveragesWindow`). The
-module docstring lists every format number.
+`line_record_path`, `map_record_path`, `cache_path_of`, `write_json`, `read_json`, `read_cache`,
+`saved_indices_of`, `is_lineavg_record`, `rename_record`) and the saved-records window
+(`SavedAveragesWindow`). The module docstring lists every format number.
 
 ### `fit.py`
 
@@ -897,47 +945,80 @@ says whether matplotlib can be imported.
 
 The package docstring: what the package is, the entry point and the module map in one place.
 
-### `checks/`
+### `checks/` and `tools/`
 
-The checks, described below. `checks/averages-topo-report.md` is the report of an earlier change
-(averages from lines and maps, Δz subtraction, range matching, topo rows), kept as its record.
+The checks (described below): small, each doing one thing on synthetic data, all run by one
+command. The tools (`tools/`): scripts that need a real `.sm4` file or an open window to be
+useful, run by hand. `reports/` holds the reports of the changes made so far
+(`averages-topo-report.md`: averages from lines and maps, Δz subtraction, range matching, topo
+rows; `1-unshifted-pins-report.md`; `2-view-path-and-checks-report.md`).
 
 ## The checks
 
-The checks run offscreen on synthetic experiments (`checks/synth.py`: empty `.sm4` placeholder
-files with their stamps and a registry of synthetic pages, installed in place of the loader, so
-every other line of the package runs as on real files; the surface and the drift are known). From
-the parent directory of the package folder (named `sm4_Browser`):
+The checks run on synthetic experiments (`checks/synth.py`: empty `.sm4` placeholder files with
+their stamps and a registry of synthetic pages, installed in place of the loader, so every other
+line of the package runs as on real files; the surface and the drift are known) or on numpy
+arrays; none needs a real file, and nothing is written outside a temporary directory. From the
+parent directory of the package folder (named `sm4_Browser`):
 
 ```
-PYTHONDONTWRITEBYTECODE=1 python -m sm4_Browser.checks.smoke_browser [names]
+PYTHONDONTWRITEBYTECODE=1 python -m sm4_Browser.checks.run [names]
 ```
 
-`smoke_browser` opens the browser on the standard experiment (`synth.standard`: two topographies,
-a map grid, a line grid, a single point, a topography; the map grid a finished 64 × 64 scan with 9
-energy slices, the line grid a 64 × 64 map scan stopped after 16 lines, at 401 energy points; the
-Line window checks open the line grid, the rest the map grid) and runs every check, one line per
-check, exiting non-zero on a failure; a name narrows it to the checks containing it. It configures
-Qt's offscreen platform with a screen large enough for every window at twice its design size (the
-built-in screen is 800 × 800). The families: the view (D), markers down to zero (E), the scan
-layer and the drift transform (A), the step filter (B), the point colours (C), the drift window and
-the stripe matching (G, H), the E-markers and ranges (F), the title rule (T), text size and short
-labels (I), the stores and the flags (J), the scale timeline (K), the section path (L) and the fixes
-of the documentation review (M: the anchor toggle, the Line window's flags, the console strings, the
-occlusion as drawn, the tracked pairs, the fit history, the Map window under the stripe matching, the
-heatmap shear, the qtplot rules, the records helpers) and the layout (N: every spatial panel edge to
-edge around everything drawn; every row of panels at one height; the calibration per sweep with
-nothing locked; the dI/dV filter toggles; the calibration locks). The other
-checks: `check_affine` (the affine drift transform against per-pixel resampling), `check_stripe`
-(the stripe matching against known truth), `check_sweeps` and `smoke_sweeps` (several sweeps per
-location: the three storage layouts of a grid, a point's forward / reverse pairs, the views, the
-clock, the averaging window's radio and its record), `check_background` (the worker processes and the image cache), `perf_layer` (the scan layer on
-a large directory), `alignment_windows` (the alignment of a line's stripe with its heatmap on real
-files), `diagnose_file` (one real file, step by step), `zero_crossing` (the raw current's zero
-crossing over saved averages), `check_contour` (the contour slice's marching squares and placement
-on known surfaces, numpy only: a plane, a cone, the saddles, never-acquired pixels, the frame),
-`check_pass_average` (the average of two passes, numpy only: identical passes unchanged, neither
-pass dominating whatever their heights, the reverse resampled onto the forward's placed positions).
+`checks/run.py` imports every check module in a fixed order, calls its `run()` (the number of
+failures; one `[ok]` / `[FAIL]` line per sub-check), prints `<name>: ok (<n> checks, <t> s)` or
+`<name>: FAIL (<failures>)` or `<name>: not run (<why>)`, and exits 1 if any failed or could not
+run (a check that cannot run in the environment counts as a failure of the runner, never as a
+pass). With names given, only those run. No timeout, no parallelism, no retries. The checks, in
+the runner's order:
+
+* `pipeline_check`: the one pipeline path (`sts.STS.stages` / `STS.view`) on synthetic sweeps,
+  three energy windows, forward and reverse sweeps, dI/dV and IETS: `view.shown` equals
+  `process_arrays` exactly (the areas and the console lines too) over every setting combination;
+  with `normalize` off the ratio is the dI/dV panel divided by the I/V panel to float precision;
+  the filters run once; with `denoise` off nothing is divided, with it on the plain ratio is
+  invariant to the gap factor; and the field table, each state field changing the view fields it
+  reaches and no other;
+* `pin_rule_check`: the calibration locks' pin rule against the equations it states (the 0-lock
+  equal to the original line tool's calibration, the Vbias lock, both locks, the gate's refits,
+  IETS);
+* `contour_check` (the contour slice's marching squares and placement on known surfaces, numpy
+  only: a plane, a cone, the saddles, never-acquired pixels, the frame);
+* `pass_average_check` (the average of two passes, numpy only: identical passes unchanged, neither
+  pass dominating whatever their heights, the reverse resampled onto the forward's placed
+  positions);
+* `affine_check` (the affine drift transform against per-pixel resampling);
+* `stripe_check` (the stripe matching against known truth);
+* `sweeps_check` (several sweeps per location: the three storage layouts of a grid, a point's
+  forward / reverse pairs, the views, the clock);
+* `window_smoke`: the windows, one pass on one synthetic experiment (a topography, one grid in
+  the 'paired' sweep layout with a forward and a reverse sweep per pixel, a single point with
+  sweeps in pairs, a topography): the browser, a Line window, a Map window, an averaging window
+  with the point and a marker-group selection, a line-average window after one run, a Topo window
+  and the Feenstra companions of the Line, Map and averaging windows. For each window one
+  non-default state is set through its boxes (every row of the filter box, the pipeline box and
+  the Feenstra settings changed once), `window.state` is asserted equal to the `PipelineState`
+  built independently, the drawn arrays are asserted equal to `view(window.state)` on the window's
+  columns, a record is saved where the window has one, reloaded and the state asserted to
+  round-trip, and everything is closed. The windows draw on a real screen, never on Qt's offscreen
+  platform (which errs in the browser and freezes the processing): the display at hand, or an Xvfb
+  virtual screen the check starts itself (4200 x 2600, every window at twice its design size) and
+  stops at the end; without a display and without Xvfb the check reports itself as not run.
+
+## The tools
+
+Scripts in `tools/`, run by hand (`python -m sm4_Browser.tools.<name>`, or F5 in Spyder with the
+settings of their `__main__` block): `denoise_stats` (the denoise step's roughness and odd/even
+statistics on one `.sm4`, off against on), `diagnose_file` (one `.sm4` step by step with timings
+and a stack where it hangs), `zero_crossing` (the 0 V crossing of the raw current over the saved
+averages), `alignment_windows` (the stripe against the heatmap under two placements, side by
+side, on real files), `perf_layer` (timings of the scan layer on a large synthetic directory),
+`background_processes` (the scan layer's worker processes and disk cache) and `denoise_steps` (the
+denoise step of one file, one sweep at a time, every intermediate drawn from `sts.STS.stages` so
+that each panel is a field of the engine: the inputs and the premise, the ratio and the
+reconstruction of the current, g and the denoised pair, the after-premise, the Feenstra invariance
+and the pipeline output with two consistency numbers, each expected 0; `< sweep` / `sweep >`, the
+filter box and the pipeline box). `calibration.py`'s own `__main__` window stays where it is.
 
 ## References
 

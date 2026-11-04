@@ -12,14 +12,14 @@ filters, no Feenstra division, no normalization), on the acquired columns of the
 - g itself: the median per-sweep rms of g - 1 and the points left as recorded (the step's own
   console line: the point at 0 V, and any point without a finite ratio);
 
-all over every point whose ratio is finite (the plain 0-sub Feenstra ratio of the calibrated page,
-formed as the step forms it; in practice every point but 0 V).  The expected result (2026-11-02,
-the synthetic set and eight real files, measured over the samples outside the band the step then
-kept as recorded; to be re-measured over this mask): the roughness down by 1.3 to 2.2x on real
-files (20x on the synthetic), the mean's noise down 20 to 45 %, the shape within 0.5 % of the
-plain mean.
+all over every point whose ratio is finite (the ratio the step integrates, read from the engine as
+stages.step.Fcal, nothing of the step run again here; in practice every point but 0 V).  The
+expected result (2026-11-02, the synthetic set and eight real files, measured over the samples
+outside the band the step then kept as recorded; to be re-measured over this mask): the roughness
+down by 1.3 to 2.2x on real files (20x on the synthetic), the mean's noise down 20 to 45 %, the
+shape within 0.5 % of the plain mean.
 
-Spyder: set `path` below and press F5, or python -m sm4_Browser.checks.denoise_check <path>.
+Spyder: set `path` below and press F5, or python -m sm4_Browser.tools.denoise_stats <path>.
 A .npz of the synthetic set (checks/synthetic_iets) is accepted beside an .sm4.
 """
 
@@ -29,8 +29,8 @@ if __package__ in (None, ''):
 import os
 import sys
 import numpy as np
-from sm4_Browser import calibration, feenstra, gap
-from sm4_Browser.sts import STS
+from sm4_Browser import calibration
+from sm4_Browser.sts import STS, PipelineState
 
 
 def load(path):
@@ -57,23 +57,24 @@ def run(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name, denoi
     return c[order, :][:, acquired]
 
 
-def finite_mask(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps):
+def finite_mask(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name):
     """
-    Every point whose ratio is finite in every acquired column (the plain 0-sub Feenstra ratio of
-    the calibrated page, formed as gap.denoise forms it: the calibration with the check's gate, the
-    current with its value at 0 V subtracted, feenstra.divide_by_iv with broadening 0; in practice
-    every point but 0 V), energies ascending.
+    Every point whose ratio is finite in every acquired column, energies ascending: the ratio the
+    step integrates, read from the engine (sts.STS.stages with the pipeline as `run` sets it and
+    the denoise row on, stages.step.Fcal; nothing of the step is run again here; in practice every
+    point but 0 V).  When the step was not applied there is no ratio: every point, with the
+    engine's reason on the console.
     """
-    gate = calibration.GateSettings(denoise=True)
-    lia_a = np.asarray(lia, dtype=np.float64)[:, acquired]
-    iv_a = np.asarray(iv, dtype=np.float64)[:, acquired]
-    sw = None if sweeps is None else tuple(np.asarray(a)[acquired] for a in sweeps)
-    cal, _ = calibration.calibrate(energy, lia_a, iv_a, vmod, V_bias=V_bias, I_setpoint=I_setpoint, gate=gate,
-                                   sweeps=sw)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        ratio = feenstra.divide_by_iv(energy, cal, iv_a, 0.0, True, None, None)
+    state = PipelineState(channel='didv', gate=calibration.GateSettings(denoise=True), calibrate=True)
+    s = STS.stages(energy, lia, iv, state, acquired=acquired, vmod=vmod, V_bias=V_bias, I_setpoint=I_setpoint,
+                   name=name, sweeps=sweeps)
+    if s.step is None:
+        why = next((n for n in s.notes if n.startswith('denoise not applied')), "the step was not applied")
+        print(f"{name}: {why}; the numbers run over every point")
+        return np.ones(len(energy), dtype=bool)
     order = np.argsort(energy)
-    return np.all(np.isfinite(ratio[order, :]), axis=1)
+    Fcal = np.asarray(s.step.Fcal, dtype=np.float64)[order, :][:, acquired]
+    return np.all(np.isfinite(Fcal), axis=1)
 
 
 def roughness(c, mask):
@@ -97,7 +98,7 @@ def check(path):
         return
     off = run(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name, False)
     on = run(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name, True)
-    mask = finite_mask(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps)
+    mask = finite_mask(energy, lia, iv, acquired, vmod, V_bias, I_setpoint, sweeps, name)
     q = on.mean(1)[mask] / off.mean(1)[mask]
     print(f"{name}: {int(acquired.sum())} acquired columns, {len(energy)} points, {int((~mask).sum())} without a finite ratio")
     print(f"  single-sweep roughness: off {roughness(off, mask):.4f}, on {roughness(on, mask):.4f}")

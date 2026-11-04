@@ -47,11 +47,9 @@ from sm4_Browser import fit, topo, sm4file, widgets, plots, records, calibration
 
 Qt = QtCore.Qt
 from sm4_Browser.drift import DriftWindow
-from sm4_Browser.sts import STS, curve_units
+from sm4_Browser.sts import STS, curve_units, PipelineState, state_record, state_from_record, say
 from sm4_Browser.averaging import Averages, Selection
-from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero, iv_corrected,
-                                  iv_broadened)
-from sm4_Browser.normalization import normalize_abs
+from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero)
 
 
 TOPO_MODES = ('forward', 'reverse')
@@ -395,35 +393,39 @@ class Line:
             raise ValueError(f"{os.path.basename(self.ifile)}: the file records no grid size (RHK_GridXsize).")
         return int(size)
 
-    def _pipeline(self, raw, iv, hampel_filter_params, sgolay_filter_params, apply_calibration,
-                  divide_iv, iv_broadening, apply_normalize, return_areas=False, iv_zero_sub=False,
-                  norm_range=None, hampel_didv=None, sgolay_didv=None, ref=None, gate=None, sweeps=None):
+    def _pipeline(self, state, source=None, ref=None, sweeps=None):
         """
-        The package's one pipeline (STS.process_arrays) on this line's
-        columns (npts, N), each step when switched on: the columns through
-        the dI/dV Hampel and Savitzky-Golay filters and the I(V) through the
-        I(V) ones, each once, the calibration against that current
-        (calibration.calibrate for dI/dV, calibrate_iets for IETS: per sweep
-        the least squares of the gain, the offset and the constant of
-        integration, through the pins of the locks that are on, then the
-        gate; `sweeps` the columns' sweep directions for the Vbias lock,
-        the displayed line's own when not given and the widths agree; `ref`
-        the forward-sweep reference columns of a reverse-sweep view, handed
-        over and not used), the
-        division by the broadened I/V of the same current (dI/dV only;
-        iv_broadening 0 the plain I/V; before iv_zero_sub subtracts its
-        value at 0 V, feenstra.iv_corrected), unit-area normalization (over
-        the energy range norm_range (lo, hi) when one is given: the window's
-        energy crop; else the whole axis).  A column that is
-        never written (every sample the page's offset, self._unset) was never acquired: it is left out of the regression and
-        comes back as NaN (never drawn); a line with no acquired column at
-        all is refused, as is the calibration of a file without the I(V).
-        With return_areas, returns (curves, areas), the areas of the
-        normalization (NaN for never-acquired columns).  The kept columns are
-        the file's (STS.acquired, this line's slice in self.kept: no column
-        never written or ending in never-written samples); for columns of
-        another width the never-written test alone.
+        The package's one pipeline path (STS.stages / STS.view) on this
+        line's columns (npts, N) for a PipelineState: the columns through
+        the channel's Hampel and Savitzky-Golay filters and the I(V) through
+        the I(V) ones, each once, the denoise step when the state's gate
+        carries it, the calibration against that current (calibration.calibrate
+        for dI/dV, calibrate_iets for IETS: per sweep the least squares of the
+        gain, the offset and the constant of integration, through the pins of
+        the locks that are on, then the gate; `sweeps` the columns' sweep
+        directions for the Vbias lock, the displayed line's own when not
+        given and the widths agree; `ref` the forward-sweep reference columns
+        of a reverse-sweep view, the displayed line's own when the source is
+        its own, handed over and not used), the division by the broadened
+        I/V of the same current (dI/dV only; the state's Feenstra settings),
+        unit-area normalization over the state's energy crop (the window's,
+        norm_range: (lo, hi) when one is given, else the whole axis).
+        `source` = (raw, iv) columns, the displayed line's own
+        (_int_load_source) when None.  A column that is never written (every
+        sample the page's offset, self._unset) was never acquired: it is left
+        out of the regression and comes back as NaN (never drawn) in every
+        array of the view; a line with no acquired column at all is refused,
+        as is the calibration of a file without the I(V) and the division
+        without it.  The kept columns are the file's (STS.acquired, this
+        line's slice in self.kept: no column never written or ending in
+        never-written samples); for columns of another width the
+        never-written test alone.  Returns (view, stages): the sts.View (its
+        arrays with the never-acquired columns NaN) and the sts.Stages it came
+        from (its areas, the normalization's, NaN for those columns); the
+        pipeline's console lines said once (sts.say).
         """
+        own = source is None
+        raw, iv = (self._int_raw, self._int_iv) if own else source
         raw = np.asarray(raw, dtype=np.float64)
         kept = getattr(self, 'kept', None)
         if kept is not None and len(kept) == raw.shape[1]:
@@ -432,30 +434,73 @@ class Line:
             acquired = np.any(raw != self._unset, axis=0)
         if not acquired.any():
             raise ValueError("no kept spectrum on this line.")
-        if apply_calibration and iv is None:
+        if state.calibrate and iv is None:
             raise ValueError(
                 "No I(V) current channel found in this SM4 file. "
                 "Cannot perform linear-regression calibration."
             )
+        STS._needs_current(state, iv)
         if sweeps is None:
-            own = getattr(self, '_int_sweeps', None)
-            sweeps = own if own is not None and len(own[0]) == raw.shape[1] else None
-        curves, areas = STS.process_arrays(self.energy, raw, iv, hampel_filter_params, sgolay_filter_params,
-                                           divide_iv, iv_broadening, return_areas=True, channel=self.channel,
-                                           acquired=acquired, iv_zero_sub=iv_zero_sub,
-                                           normalize=apply_normalize, calibrate=apply_calibration,
-                                           vmod=getattr(self, 'vmod', None), norm_range=norm_range,
-                                           V_bias=getattr(self, 'V_bias', None),
-                                           I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
-                                           hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                           name=os.path.basename(str(self.ifile)),
-                                           gate=getattr(self, '_int_gate', None) if gate is None else gate,
-                                           sweeps=sweeps)
-        curves = np.array(curves, dtype=np.float64)
-        areas = np.array(areas, dtype=np.float64)
-        curves[:, ~acquired] = np.nan
+            own_sw = getattr(self, '_int_sweeps', None)
+            sweeps = own_sw if own_sw is not None and len(own_sw[0]) == raw.shape[1] else None
+        if ref is None and own:
+            ref = getattr(self, '_int_ref', None)
+        s = STS.stages(self.energy, raw, iv, state, acquired=acquired, vmod=getattr(self, 'vmod', None),
+                       V_bias=getattr(self, 'V_bias', None), I_setpoint=getattr(self, 'I_setpoint', None), ref=ref,
+                       name=os.path.basename(str(self.ifile)), sweeps=sweeps)
+        say(s.notes)
+        v = STS.view_from(s, self.energy, state)
+
+        def masked(a):
+            if a is None:
+                return None
+            a = np.array(a, dtype=np.float64)
+            a[:, ~acquired] = np.nan
+            return a
+
+        areas = np.array(s.areas, dtype=np.float64)
         areas[~acquired] = np.nan
-        return (curves, areas) if return_areas else curves
+        return (v._replace(didv=masked(v.didv), current=masked(v.current), ivv=masked(v.ivv), ratio=masked(v.ratio),
+                           shown=masked(v.shown)),
+                s._replace(areas=areas))
+
+    @property
+    def state(self):
+        """
+        The window's PipelineState (sts.PipelineState): the channel, the
+        filter box's four settings as set (the I(V) pair, the channel's pair;
+        None = off), the pipeline box's gate with its locks and denoise, the
+        calibrate / normalize flags, the window's own 'Feenstra' toggle, the
+        Feenstra settings and the energy crop.  Every drawn quantity comes
+        from view(self.state); a box change sets the attributes behind it
+        and redraws.
+        """
+        return PipelineState(channel=self.channel,
+                             hampel=PipelineState.items(self._int_hampel_params),
+                             sgolay=PipelineState.items(self._int_sgolay_params),
+                             hampel_didv=PipelineState.items(self._int_hampel_didv),
+                             sgolay_didv=PipelineState.items(self._int_sgolay_didv),
+                             gate=self._int_gate, calibrate=bool(self._int_apply_calibration),
+                             normalize=bool(self._int_apply_normalize), divide_iv=bool(self._int_divide_iv),
+                             iv_zero_sub=bool(self._int_iv_zero_sub), iv_broadened=bool(self._int_iv_broadened),
+                             iv_broadening=float(self._int_iv_broadening), norm_range=self._int_e_range)
+
+    def _int_pair(self, state=None):
+        """(view, stages) of the displayed line for a state (the window's own when None), memoized by the state (the memo is dropped when the source changes, _int_load_source)."""
+        state = self.state if state is None else state
+        memo = self.__dict__.setdefault('_int_view_memo', {})
+        if state not in memo:
+            memo[state] = self._pipeline(state)
+        return memo[state]
+
+    def view(self, state=None):
+        """
+        What the window draws for a state (sts.View on the displayed line's
+        columns: didv, current, ivv, ratio, shown, with the never-acquired
+        columns NaN), the window's own state when None; one computation per
+        state (_int_pair), the companion's overrides included.
+        """
+        return self._int_pair(state)[0]
 
     def _topo_profiles(self, topo_lines):
         """
@@ -504,6 +549,7 @@ class Line:
                 same = (d[0::2] == d[1::2]) & (f[0::2] == f[1::2])
                 d, f = np.where(same, d[0::2], 0), np.where(same, f[0::2], -1)
             self._int_sweeps = (d, f)
+        self._int_view_memo = {}                   # the views by state (view): the source changed
 
     def _int_orient(self, c):
         """Columns (npts, N) of the line oriented like the heatmap (row j = spectrum j at self.pos[j], energy ascending)."""
@@ -512,21 +558,15 @@ class Line:
             c = c[:, ::-1]
         return c
 
-    def _int_pipeline(self, hampel_filter_params, sgolay_filter_params, hampel_didv=None, sgolay_didv=None):
+    def _int_pipeline(self, state=None):
         """
-        The displayed line's curves for given filter settings (None = off;
-        the I(V) pair, then the dI/dV pair): the pipeline (_pipeline) with
-        the window's calibrate / normalize flags, the division when the
-        window's 'Feenstra' toggle is on, and the Feenstra settings, the
-        normalization over the energy crop's range, oriented like the
-        heatmap.  Returns an (n_positions, n_energies) array.
+        The displayed line's curves for a state (the window's own when None):
+        view(state).shown, the window's quantity (the division when its
+        'Feenstra' toggle is on, the Feenstra settings, the normalization
+        over the energy crop's range), oriented like the heatmap.  Returns an
+        (n_positions, n_energies) array.
         """
-        curves = self._pipeline(self._int_raw, self._int_iv, hampel_filter_params, sgolay_filter_params,
-                                self._int_apply_calibration, self._int_divide_iv, self._int_iv_width(),
-                                self._int_apply_normalize, iv_zero_sub=self._int_iv_zero_sub,
-                                norm_range=self._int_e_range, hampel_didv=hampel_didv, sgolay_didv=sgolay_didv,
-                                ref=getattr(self, '_int_ref', None))
-        return self._int_orient(curves)
+        return self._int_orient(self.view(state).shown)
 
     def _int_source_label(self):
         """The window's source for titles: '<file>: line k'."""
@@ -586,7 +626,7 @@ class Line:
         cannot be processed (nothing changed).
         """
         try:
-            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
+            curves = self._int_pipeline()
         except Exception as exc:
             print(f"{note} not applied: {exc}")
             return False
@@ -1313,7 +1353,7 @@ class Line:
             self.chunk_index = new
             self.extract_data()
             self._int_load_source()
-            self._int_curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
+            self._int_curves = self._int_pipeline()
         except Exception as exc:
             print(f"Line '{text}' not applied: {exc}")
             self.chunk_index = old
@@ -1372,7 +1412,7 @@ class Line:
         hp, sp = self._int_filters.params()
         hd, sd = self._int_filters.params_didv()
         try:
-            curves = self._int_pipeline(hp, sp, hd, sd)
+            curves = self._int_pipeline(self.state.with_(hampel=hp, sgolay=sp, hampel_didv=hd, sgolay_didv=sd))
         except Exception as exc:
             print(f"Filter controls: settings not applied ({exc}).")
             return
@@ -1408,7 +1448,7 @@ class Line:
             self.channel = channel
             self.extract_data()
             self._int_load_source()
-            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
+            curves = self._int_pipeline()
         except Exception as exc:
             print(f"channel {label} not applied: {exc}")
             self.channel = old
@@ -1820,91 +1860,65 @@ class Line:
         if w is not None and w.is_open():
             w.refresh()
 
-    def _int_feenstra_versions(self, calibrate, normalize, gate=None):
+    def _int_versions_of(self, state):
         """
-        The four versions of the displayed line for the companion
-        (feenstra_view): a dict key -> {'title', 'ylabel', 'top' or 'note'}
-        with the companion's own calibrate / normalize flags.
+        The four versions of the displayed line for a state (feenstra_view):
+        a dict key -> {'title', 'ylabel', 'top' or 'note'}, each 'top' a
+        field of view(state) oriented like the heatmap: 'didv' the channel
+        with the division off, 'iv' the current the division works on, 'ivv'
+        the I/V it divides by, 'ratio' the division; a line without the
+        Current channel gives notes for the last three, the IETS channel a
+        note for the ratio.  Returns (versions, the quantity's name).
         """
-        hp, sp = self._int_hampel_params, self._int_sgolay_params
-        raw, iv = self._int_raw, self._int_iv
-        # The four versions depend on the settings below, never on the markers: computed once per
-        # setting (a marker drag refreshes the companion without rerunning the pipeline).
-        memo_key = (bool(calibrate), bool(normalize), repr(hp), repr(sp), self._int_iv_zero_sub,
-                    self._int_iv_broadened, self._int_iv_broadening, self.channel, self.chunk_index,
-                    id(raw), id(iv), len(self._int_pos), self._int_e_range)
-        memo = getattr(self, '_int_versions_memo', None)
-        if memo is not None and memo[0] == memo_key:
-            return {k: dict(v) for k, v in memo[1].items()}, memo[2]
-        versions, q = self._int_feenstra_versions_compute(calibrate, normalize, hp, sp, raw, iv, gate)
-        self._int_versions_memo = (memo_key, versions, q)
-        return {k: dict(v) for k, v in versions.items()}, q
-
-    def _int_feenstra_versions_compute(self, calibrate, normalize, hp, sp, raw, iv, gate=None):
-        """The four versions of _int_feenstra_versions, computed (every normalization over the window's energy crop; the window's dI/dV filters and the forward-sweep reference as the heatmap's)."""
-        hd, sd = getattr(self, '_int_hampel_didv', None), getattr(self, '_int_sgolay_didv', None)
-        ref = getattr(self, '_int_ref', None)
-        q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
-        nn = "" if normalize else ", not normalized"
-        zs, width = self._int_iv_zero_sub, self._int_iv_width()
-        t = feenstra_titles(zs, self._int_iv_broadened, self._int_iv_broadening, energy_has_zero(self.energy))
-        units = curve_units(self.channel, calibrate, normalize, self.units_lia, self.units_iets, self.units_iv)
+        v = self.view(state)
+        q = ("d2I/dV2 (IETS)" if state.channel == 'iets' else "dI/dV") + ("" if state.calibrate else ", uncalibrated")
+        nn = "" if state.normalize else ", not normalized"
+        t = feenstra_titles(state.iv_zero_sub, state.iv_broadened, state.iv_broadening, energy_has_zero(self.energy))
+        units = curve_units(state.channel, state.calibrate, state.normalize, self.units_lia, self.units_iets, self.units_iv)
+        normalize = state.normalize
         versions = {
             'didv': {'title': f"{q} (division off){nn} line {self.chunk_index}", 'ylabel': f"{q} ({units})"},
             'iv': {'title': t['iv'], 'ylabel': "I (unit area)" if normalize else "I (A)"},
             'ivv': {'title': t['ivv'], 'ylabel': "I/V (unit area)" if normalize else "I/V (A/V)"},
             'ratio': {'title': t['ratio'] + f" (division on){nn}", 'ylabel': "(dI/dV)/(I/V) (arb. units)"},
         }
-        versions['didv']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, False, 0.0, normalize,
-                                                                  norm_range=self._int_e_range, hampel_didv=hd,
-                                                                  sgolay_didv=sd, ref=ref, gate=gate))
-        if iv is None:
+        versions['didv']['top'] = self._int_orient(v.didv)
+        if v.current is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
         else:
-            acquired = self._int_kept_mask() if np.asarray(raw).shape[1] == len(self._int_pos) \
-                else np.any(np.asarray(raw) != self._unset, axis=0)
-            iv_a = iv_corrected(self.energy, iv, zs, hp, sp)
-            if normalize:
-                iv_a = normalize_abs(self.energy, iv_a, energy_range=self._int_e_range)[0]
-            iv_a[:, ~acquired] = np.nan
-            versions['iv']['top'] = self._int_orient(iv_a)
-            ivv = iv_broadened(self.energy, iv, width, zs, hp, sp)
-            if normalize:
-                ivv = normalize_abs(self.energy, ivv, energy_range=self._int_e_range)[0]
-            ivv[:, ~acquired] = np.nan
-            versions['ivv']['top'] = self._int_orient(ivv)
-            if self.channel == 'iets':
+            versions['iv']['top'] = self._int_orient(v.current)
+            versions['ivv']['top'] = self._int_orient(v.ivv)
+            if state.channel == 'iets':
                 versions['ratio']['note'] = "the division applies to dI/dV only"
             else:
-                versions['ratio']['top'] = self._int_orient(self._pipeline(raw, iv, hp, sp, calibrate, True, width,
-                                                                           normalize, iv_zero_sub=zs,
-                                                                           norm_range=self._int_e_range,
-                                                                           hampel_didv=hd, sgolay_didv=sd, ref=ref,
-                                                                           gate=gate))
+                versions['ratio']['top'] = self._int_orient(v.ratio)
         return versions, q
 
-    def feenstra_view(self, calibrate=True, normalize=True, gate=None):
+    def feenstra_view(self, state=None):
         """
-        The companion's view (feenstra.FeenstraWindow): the displayed line in
-        four versions, the dI/dV of the window's pipeline with the division
-        off, the current in amps as the division works on it (its value at
-        0 V subtracted with '0Vsub'), its I/V in A/V as the division divides
-        by it (broadened with 'broadened'), and the ratio with the division
-        on, each oriented like the heatmap with the marker curves in the
-        current marker state, the current stripe, and the marker lines; a
+        The companion's view (feenstra.FeenstraWindow) for a state (the
+        window's own when None; the companion asks with its own calibrate,
+        normalize and gate rows overriding it): the displayed line in four
+        versions, every one a field of view(state) (_int_versions_of): the
+        dI/dV of the pipeline with the division off, the current the
+        division works on (the denoised current I/g with 'denoise' on; its
+        value at 0 V subtracted with '0Vsub'), its I/V as the division
+        divides by it (broadened with 'broadened'), and the ratio with the
+        division on, each oriented like the heatmap with the marker curves in
+        the current marker state, the current stripe, and the marker lines; a
         line without the Current channel gives notes for the current, I/V,
-        and ratio panels, the IETS channel a note for the ratio panel.
-        `calibrate` and `normalize` are the companion's own flags: the dI/dV
-        and the ratio through the pipeline with them (calibrate off: the
-        lock-in output as recorded, and the ratio of that output by the filtered I/V);
-        with `normalize` on the current and the I/V are unit area per
-        location (normalization.normalize_abs); off, no panel is normalized.
-        Every normalization is over the window's energy crop, handed over
-        as 'e_range' ((lo, hi) or None): the companion shows that range and
+        and ratio panels, the IETS channel a note for the ratio panel.  With
+        the state's `normalize` on the current and the I/V are unit area per
+        location (normalization.normalize_abs); off, no panel is normalized;
+        with `calibrate` off the dI/dV is the lock-in output as recorded, and
+        the ratio that output divided by the I/V.  Every normalization is
+        over the state's energy crop (the window's), handed over as
+        'e_range' ((lo, hi) or None): the companion shows that range and
         scales its colours over it.
         """
-        versions, q = self._int_feenstra_versions(calibrate, normalize, gate)
+        state = self.state if state is None else state
+        versions, q = self._int_versions_of(state)
         for key, v in versions.items():
             if 'top' in v:
                 markers, groups = self._int_curve_items(v['top'])
@@ -2128,7 +2142,7 @@ class Line:
             self.spectra = self.spectra_all.sweep_view(label)
             self.extract_data()
             self._int_load_source()
-            curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
+            curves = self._int_pipeline()
         except Exception as exc:
             print(f"sweeps {label} not applied: {exc}")
             self.sweep_mode = old
@@ -2350,28 +2364,17 @@ class Line:
         timeline's scale for the file and notes a difference on the
         console, browser._record_scale), and the time of writing.
         """
-        hp, sp = self._int_filters.values()
-        h_on, s_on = self._int_filters.states()
-        hd_on, sd_on = self._int_filters.states_didv()
         return {'format': records.LINE_RECORD_FORMAT,
                 'path': os.path.abspath(self.ifile),
                 'name': os.path.basename(self.ifile),
                 'line': int(self.chunk_index),
                 'scalefactor': float(self.scalefactor),
-                'channel': self.channel,
                 'sweeps': self.sweep_mode,
-                'hampel': hp, 'sgolay': sp,
-                'hampel_on': bool(h_on), 'sgolay_on': bool(s_on),
-                'hampel_didv_on': bool(hd_on), 'sgolay_didv_on': bool(sd_on),
-                'calibrate': bool(self._int_apply_calibration),
-                'normalize': bool(self._int_apply_normalize),
-                **calibration.gate_record(self._int_gate),
-                'divide_iv': bool(self._int_divide_iv),
-                'iv_broadening_V': float(self._int_iv_broadening),
-                'iv_broadened': bool(self._int_iv_broadened),
-                'iv_zero_sub': bool(self._int_iv_zero_sub),
+                # The pipeline state (sts.state_record): the channel, the filter boxes' values and their four
+                # on / off states, calibrate, normalize, the gate with the locks and denoise, divide_iv, the
+                # Feenstra settings, the energy crop ('energy_range').
+                **state_record(self.state, self._int_filters.values()),
                 'gamma': float(self._int_gamma_box.value),
-                'energy_range': None if self._int_e_range is None else [float(v) for v in self._int_e_range],
                 'pos_range': None if self._int_x_range is None else [float(v) for v in self._int_x_range],
                 'topo_lines': [[int(r), m] for r, m in self._int_topo_lines],
                 'topo_active': [bool(a) for a in self._int_topo_active],
@@ -2424,23 +2427,22 @@ class Line:
             self._int_hampel_didv, self._int_sgolay_didv = self._int_filters.params_didv()
         except Exception as exc:
             print(f"restore markers: filter settings not applied ({exc}).")
-        self._int_iv_zero_sub = bool(rec.get('iv_zero_sub', self._int_iv_zero_sub))
-        self._int_iv_broadened = bool(rec.get('iv_broadened', self._int_iv_broadened))
-        self._int_iv_broadening = float(rec.get('iv_broadening_V', self._int_iv_broadening))
-        self._int_divide_iv = bool(rec.get('divide_iv', self._int_divide_iv))
+        # The pipeline state the record holds (sts.state_from_record; a missing key keeps the window's):
+        # the Feenstra state and settings, calibrate, normalize, the gate with the locks and denoise.
+        # The channel is the loader's (the window was opened on the record's), the filters the box's above.
+        st = state_from_record(rec, self.state)
+        self._int_iv_zero_sub, self._int_iv_broadened = st.iv_zero_sub, st.iv_broadened
+        self._int_iv_broadening = st.iv_broadening
+        self._int_divide_iv = st.divide_iv
         self._int_chk_feenstra.set(self._int_divide_iv)
-        self._int_apply_calibration = bool(rec.get('calibrate', self._int_apply_calibration))
-        self._int_apply_normalize = bool(rec.get('normalize', self._int_apply_normalize))
-        if 'gate' in rec or 'gate_hampel' in rec or 'gate_sgolay' in rec:
-            self._int_gate = calibration.gate_from_record(rec)
+        self._int_apply_calibration, self._int_apply_normalize, self._int_gate = st.calibrate, st.normalize, st.gate
         self._int_pipeline_box.set_state(self._int_apply_calibration, self._int_apply_normalize, self._int_gate)
         try:
             self._int_gamma_box.set(float(rec.get('gamma', 1.0)))
         except Exception:
             pass
         if 'energy_range' in rec:
-            r = rec.get('energy_range')
-            rng = None if r is None else (float(min(r)), float(max(r)))
+            rng = st.norm_range
             e = self._int_e_axis()
             if rng is not None and int(np.count_nonzero((e >= rng[0]) & (e <= rng[1]))) < 2:
                 print("restore markers: the record's energy range holds fewer than two recorded energies; "
@@ -2563,18 +2565,19 @@ class Line:
         hd, sd = self._int_hampel_didv, self._int_sgolay_didv
         ref = getattr(self, '_int_ref', None)
 
-        # As displayed, with calibration and normalization forced on: the columns through the dI/dV
-        # filters and the I(V) through the I(V) ones, once; the calibration against that current (the
-        # forward-sweep reference as the heatmap's), (the division by its broadened I/V), the normalization.
+        # As displayed, with calibration and normalization forced on: the window's state with those two
+        # rows on, through the one pipeline path (view: the columns through the dI/dV filters and the I(V)
+        # through the I(V) ones, once; the calibration against that current (the forward-sweep reference
+        # as the heatmap's), (the division by its broadened I/V), the normalization over the energy crop).
         div = self._int_divide_iv
         quantity = 'ratio' if div else 'didv'
         width, zs = self._int_iv_width(), self._int_iv_zero_sub
-        cf, norm_areas = self._pipeline(raw, iv, hp, sp, True, div, width, True, return_areas=True, iv_zero_sub=zs,
-                                        norm_range=self._int_e_range, hampel_didv=hd, sgolay_didv=sd, ref=ref)
-        areas_f = np.array(norm_areas)                       # per column, amps (ratio: arb. units x V)
+        st = self.state.with_(calibrate=True, normalize=True)
+        vf, sf = self._int_pair(st)
+        cf = vf.shown
+        areas_f = np.array(sf.areas)                         # per column, amps (ratio: arb. units x V)
         # The same with every filter off (the 'unfiltered' curve of the record).
-        cu = self._pipeline(raw.copy(), iv, None, None, True, div, width, True, iv_zero_sub=zs,
-                            norm_range=self._int_e_range, ref=ref)
+        cu = self.view(st.with_(hampel=None, sgolay=None, hampel_didv=None, sgolay_didv=None)).shown
 
         def refs_of(cols):
             return None if ref is None else (ref[0][:, cols], ref[1][:, cols])
@@ -3028,7 +3031,7 @@ class Line:
         average locations sit on the stripe, highest at the top; offset
         STACK_OFFSET_FRAC of the largest curve range per step inside a block
         and one full range between blocks.  The topo processor box holds
-        'Slope Sub' and 'Δz sub' (one active at most, Δz sub on at open; a
+        'Slope Sub' and 'Δz sub' (one active at most, Slope Sub on at open; a
         click on the active one turns it off).  'add new' and 'add existing'
         beside every 'Markers' box add that group to the averages as the
         browser's buttons add a single point: a Selection of the group's
@@ -3188,8 +3191,8 @@ class Line:
         self._int_hampel_didv = None          # the dI/dV toggles' settings (None = off), as the two above
         self._int_sgolay_didv = None
 
-        # --- The curves (the pipeline of _int_pipeline with the starting settings) ---
-        self._int_curves = self._int_pipeline(self._int_hampel_params, self._int_sgolay_params, self._int_hampel_didv, self._int_sgolay_didv)
+        # --- The curves (the pipeline of _int_pipeline with the starting state) ---
+        self._int_curves = self._int_pipeline()
         e_left = min(self.energy[0], self.energy[-1])
         e_right = max(self.energy[0], self.energy[-1])
         self._int_energy = np.linspace(e_left, e_right, self._int_curves.shape[1])
@@ -3205,7 +3208,7 @@ class Line:
         except Exception as e:
             print("Failed to extract topography:", e)
             return
-        # Topo processing registry (one active at a time, Δz sub at open).
+        # Topo processing registry (one active at a time, Slope Sub at open).
         self._int_topo_active = topo.processor_defaults()
 
         # --- Marker state: one group at the start, the given positions, or two markers one ---

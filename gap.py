@@ -48,6 +48,7 @@ pin of a denoised forward sweep is I_setpoint / g at the setpoint point
 denoised current themselves).  Decided 2026-11-02.
 """
 
+from typing import NamedTuple
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
 from sm4_Browser import calibration, feenstra
@@ -56,6 +57,29 @@ from sm4_Browser import calibration, feenstra
 # A side of 0 V needs at least this many points with a finite ratio for its integral (a guard for
 # a window that barely crosses 0 V, not a threshold on the data).
 GAP_MIN_POINTS = 3
+
+
+class DenoiseStep(NamedTuple):
+    """
+    The step's own pieces for the columns it ran on, every array (npts, N) in the original energy
+    order (denoise returns it; sts.STS.stages keeps it as Stages.step, so the denoise steps tool
+    draws the step without running any of it again): cal, the page a · LIA + b of the step's
+    regression (calibration.calibrate on the filtered pair with the window's gate and locks; the
+    fit forms this page and the ratio only, it is never the calibration the windows show); fits,
+    that regression's ColumnFit list (a, b, c, the pins, the gate's replacement), one per column;
+    Fcal, the ratio the step integrates (the plain 0-sub Feenstra ratio of cal); Isub0, the
+    filtered current with its value at 0 V subtracted; I_rebuilt, the current rebuilt from Fcal
+    (gap_factor; NaN where not rebuilt: the point at 0 V, a point whose ratio is not finite, and
+    a side of 0 V with too few points); g, the per-point gap factor, 1 where not rebuilt; kept,
+    the points per column left as recorded (N,).
+    """
+    cal: object
+    fits: object
+    Fcal: object
+    Isub0: object
+    I_rebuilt: object
+    g: object
+    kept: object
 
 
 def gap_factor(energy, ratio, iv0):
@@ -70,8 +94,9 @@ def gap_factor(energy, ratio, iv0):
     mean(ln|I0| - ln I_rebuilt) = 0 over those points, and
     g = |I0| / I_rebuilt at every one of them.  Returns (g (npts, N), the
     number of points left at g = 1 per column (N,): the point at 0 V, a
-    point whose ratio is not finite, a side with too few points), g in
-    the original energy order.
+    point whose ratio is not finite, a side with too few points,
+    I_rebuilt (npts, N), the rebuilt current, NaN where none was rebuilt),
+    the arrays in the original energy order.
     """
     energy = np.asarray(energy, dtype=np.float64)
     ratio = np.asarray(ratio, dtype=np.float64)
@@ -83,12 +108,14 @@ def gap_factor(energy, ratio, iv0):
     step = np.median(np.abs(np.diff(e))) if e.size > 1 else 1.0
     zero = np.abs(e) < 1e-3 * step
     g = np.ones_like(iv0)
+    rebuilt = np.full_like(iv0, np.nan)
     kept = np.zeros(iv0.shape[1], dtype=int)
     for j in range(iv0.shape[1]):
         i0 = iv0[order, j]
         f = ratio[order, j]
         usable = np.isfinite(f) & (i0 != 0.0)
         gj = np.ones_like(i0)
+        rj = np.full_like(i0, np.nan)
         for side in ((e < 0.0) & ~zero, (e > 0.0) & ~zero):
             pts = np.flatnonzero(side & usable)
             if pts.size < GAP_MIN_POINTS:
@@ -102,10 +129,13 @@ def gap_factor(energy, ratio, iv0):
             v = e[run]
             ln_rec = cumulative_trapezoid(f[run], np.log(np.abs(v)), initial=0.0)
             ln_rec = ln_rec - np.mean(ln_rec - np.log(np.abs(i0[run])))
-            gj[run] = np.abs(i0[run]) / np.exp(ln_rec)
+            rec = np.exp(ln_rec)
+            rj[run] = rec
+            gj[run] = np.abs(i0[run]) / rec
         g[order, j] = gj
+        rebuilt[order, j] = rj
         kept[j] = int(np.sum(gj == 1.0))
-    return g, kept
+    return g, kept, rebuilt
 
 
 def denoise(energy, lia, iv, vmod=None, V_bias=None, I_setpoint=None, gate=None, sweeps=None):
@@ -115,21 +145,23 @@ def denoise(energy, lia, iv, vmod=None, V_bias=None, I_setpoint=None, gate=None,
     filters, in the original energy order; vmod, V_bias, I_setpoint,
     gate and sweeps as calibration.calibrate takes them (the gate and the
     locks as the window sets them; this step's own regression uses them
-    and is otherwise discarded).  Returns (lia / g, iv / g, g, note):
-    the two pages divided by the per-point gap factor, g itself (npts, N)
-    and the console line (the median and range of the per-sweep rms of
-    g - 1, and how many points per sweep stayed as recorded).  A
-    ValueError of the regression (a column it cannot determine, a lock it
-    cannot pin) is left to the caller, which then applies nothing.
+    for its page and ratio only, never as the calibration).  Returns
+    (lia / g, iv / g, step, note): the two pages divided by the per-point
+    gap factor, the step's own pieces (DenoiseStep: cal, fits, Fcal, Isub0,
+    I_rebuilt, g, kept) and the console line (the median and range of the
+    per-sweep rms of g - 1, and how many points per sweep stayed as
+    recorded).  A ValueError of the regression (a column it cannot
+    determine, a lock it cannot pin) is left to the caller, which then
+    applies nothing.
     """
     lia = np.asarray(lia, dtype=np.float64)
     iv = np.asarray(iv, dtype=np.float64)
-    cal, _ = calibration.calibrate(energy, lia, iv, vmod, V_bias=V_bias, I_setpoint=I_setpoint, gate=gate,
-                                   sweeps=sweeps)
-    iv0 = feenstra.iv_corrected(energy, iv, zero_sub=True)
+    cal, fits = calibration.calibrate(energy, lia, iv, vmod, V_bias=V_bias, I_setpoint=I_setpoint, gate=gate,
+                                      sweeps=sweeps)
+    Isub0 = feenstra.iv_corrected(energy, iv, zero_sub=True)
     with np.errstate(divide='ignore', invalid='ignore'):
-        ratio = feenstra.divide_by_iv(energy, cal, iv, 0.0, True, None, None)
-    g, kept = gap_factor(energy, ratio, iv0)
+        Fcal = feenstra.divide_by_iv(energy, cal, iv, 0.0, True, None, None)
+    g, kept, I_rebuilt = gap_factor(energy, Fcal, Isub0)
     rms = np.sqrt(np.mean((g - 1.0) ** 2, axis=0))
     npts = g.shape[0]
     if kept.size:
@@ -138,7 +170,8 @@ def denoise(energy, lia, iv, vmod=None, V_bias=None, I_setpoint=None, gate=None,
                 f"per sweep left as recorded (the point at 0 V, and any point without a finite ratio)")
     else:
         note = "denoise: no acquired columns"
-    return lia / g, iv / g, g, note
+    step = DenoiseStep(cal=cal, fits=fits, Fcal=Fcal, Isub0=Isub0, I_rebuilt=I_rebuilt, g=g, kept=kept)
+    return lia / g, iv / g, step, note
 
 
 def setpoint_divided(energy, g, V_bias, I_setpoint):

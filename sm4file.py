@@ -1424,6 +1424,29 @@ class Sm4File(ScanFrame):
                                     normalize=normalize, calibrate=calibrate,
                                     hampel_didv=hampel_didv, sgolay_didv=sgolay_didv, gate=gate)
 
+    def stages(self, state):
+        """
+        Every spectrum of the state's channel through the pipeline engine, every intermediate
+        kept (sts.STS.stages_of: the setpoint, the columns' sweep directions and a sweep view's
+        forward reference from the file; `state` a sts.PipelineState); a file without spectra is
+        refused (ValueError).
+        """
+        if self.spectra is None:
+            raise ValueError(f"{self.name} has no spectra.")
+        return self.spectra.stages_of(state)
+
+    def view(self, state):
+        """
+        What a window draws of this file for a state (sts.STS.view_of, from one stages call:
+        didv, current, ivv, ratio, shown, g, fits, notes), the same pass-through as curves; a file
+        without the Current channel and `calibrate` on is said as curves says it.
+        """
+        if self.spectra is None:
+            raise ValueError(f"{self.name} has no spectra.")
+        if self.iv is None and state.calibrate:
+            print(f"{self.name}: no 'Current' channel, curves shown without calibration.")
+        return self.spectra.view_of(state)
+
     # --- images ---
 
     def topo_raw(self, direction='forward'):

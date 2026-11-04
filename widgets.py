@@ -160,6 +160,7 @@ SPECS = {
     'file': _spec('slider', 7.0, 0.2, fs=9, vmin=0, vmax=1, valstep=1, valfmt='%d'),
     # --- text boxes ---
     'γ': _spec('text', 0.45, 0.24, fs=7),
+    'clip %': _spec('text', 0.45, 0.24, fs=7),                       # the Map window's percentile clip of the colour scale (plots.percentile_range)
     'E lo': _spec('text', 0.55, 0.22, fs=7),                         # the Line window's crop cursors: the boxes riding with them,
     'E hi': _spec('text', 0.55, 0.22, fs=7),                         # ... the energy ones (V, three decimals) along the heatmap's top edge,
     'x lo': _spec('text', 0.55, 0.22, fs=7),                         # ... the position ones (Å, one decimal) along its right edge
@@ -179,7 +180,7 @@ LABELS = {'pipeline': None, 'topo processors': None, 'channel': None, 'topo pass
           'hold': '', 'param': '', 'rows': '', 'width': '', 'file': 'file',
           'name': 'name ', 'line': 'line ', 'scale factor': 'scale factor ', 'reference': 'reference ',
           'cal length': 'calibrated length (nm) ',
-          'γ': 'γ ', 'drift v': 'v (nm/h, cal) ', 'E lo': '', 'E hi': '', 'x lo': '', 'x hi': '',
+          'γ': 'γ ', 'clip %': 'clip % ', 'drift v': 'v (nm/h, cal) ', 'E lo': '', 'E hi': '', 'x lo': '', 'x hi': '',
           'gate H': 'H ', 'gate SG': 'SG ',
           'slow axis': 'drift', 'fast axis': 'stripe', 'stripe pass': 'pass'}        # the radios' titles (Radio, title=True)
 
@@ -193,7 +194,7 @@ SHORT_LABELS = {
     # toggles and boxes
     'calibrate': 'cal', 'normalize': 'norm', 'auto drift': 'auto', 'manual drift': 'manual',
     'anchor to topo': 'anchor', 'broadened': 'broad', 'substack': 'sub', 'Average': 'Avg',
-    'Feenstra': 'Feen', 'Feenstra (refit)': 'Feen refit', 'cmap norm': 'cmap', 'WKB background': 'WKB',
+    'Feenstra': 'Feen', 'Feenstra (refit)': 'Feen refit', 'cmap norm': 'cmap', 'clip %': 'clip', 'WKB background': 'WKB',
     'overlapping': 'overlap',
     'step through': 'step', 'topo processing': 'topo proc', 'filters': 'filters',
     'polyorder': 'order', 'Savitzky-Golay': 'SG',

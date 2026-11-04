@@ -19,13 +19,20 @@ subfolder (AVG_SUBDIR), which also holds the fit histories
   - the line-average records lineavg<N>_average.json (LINEAVG_RECORD_FORMAT
     1: the members, each with its line, markers and the scale factor it
     was made with, and the alignment; lineavg.py); a record is a line
-    average by its 'members' key, not by its name (is_lineavg_record).
+    average by its 'members' key, not by its name (is_lineavg_record);
+  - the Map window's marker records <file stem>_map_markers.json
+    (MAP_RECORD_FORMAT 1, one per file: the file and its sweep view, the
+    pipeline state, the view, the energy step, the gammas, the colour
+    scale's settings, the topo pass and processors, the drift toggles, the
+    contour slice's level and its traces, the marker groups and markers,
+    the stack states, the scale factor, the time of saving;
+    map.Map.marker_record).
 A record that carries a scale factor keeps the one it was made with; on
 reload the browser applies the scale timeline's and reports a difference
 (browser._record_scale).  Here live the paths, the name-to-stem rule
 (stem_of), the atomic JSON writer (write_json), the fit-history reader
 (read_cache), the rename of a record with its fit history (rename_record),
-and the saved-records window (SavedAveragesWindow) that lists all three
+and the saved-records window (SavedAveragesWindow) that lists all four
 kinds and hands the chosen entry to the browser (Browser.load_saved_average).
 """
 
@@ -48,9 +55,11 @@ RECORD_FORMAT = 6          # 1: removed sweeps indexed among all of a file's swe
 #                            6: the window's sweep view ('sweeps'; a single point with several sweeps per location)
 LINE_RECORD_FORMAT = 1     # the Line window's marker records
 LINEAVG_RECORD_FORMAT = 1  # the line-average records
+MAP_RECORD_FORMAT = 1      # the Map window's marker records
 
 RECORD_RE = re.compile(r'^(.+)_average\.json$')          # group 1: the stem (the name cleaned as a file name)
 LINE_RECORD_RE = re.compile(r'^(.+)_line(\d+)_markers\.json$')
+MAP_RECORD_RE = re.compile(r'^(.+)_map_markers\.json$')
 LINEAVG_RECORD_RE = re.compile(r'^(lineavg\d+.*)_average\.json$')   # the default names; a record's 'members' key decides
 OLD_CACHE_RE = re.compile(r'^(.*_average_of_.*)_fits(?:_\d+)?\.pkl$')   # group 1: the family's stem (the numbered members too)
 
@@ -97,6 +106,12 @@ def line_record_path(directory, file_path, line):
     """The Line window's marker record of one file and line: <file stem>_line<k>_markers.json."""
     stem = os.path.splitext(os.path.basename(file_path))[0]
     return os.path.join(avg_dir_of(directory), f"{stem}_line{int(line)}_markers.json")
+
+
+def map_record_path(directory, file_path):
+    """The Map window's marker record of one file: <file stem>_map_markers.json (one per file, overwritten; the sweep view is stored inside and restored)."""
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    return os.path.join(avg_dir_of(directory), f"{stem}_map_markers.json")
 
 
 # --- reading and writing ---
@@ -234,7 +249,9 @@ class SavedAveragesWindow:
     label-named form (<stamp>_average_of_..._fits.pkl in the directory
     itself) by modification time, newest first; the Line window's marker
     records <file stem>_line<k>_markers.json (file, line, groups and
-    markers, channel, Feenstra, the time of saving) by modification time;
+    markers, channel, Feenstra, the time of saving) and the Map window's
+    marker records <file stem>_map_markers.json (file, map, markers, the
+    time of saving), the two together by modification time;
     and the line-average records lineavg<N>_average.json (name, the first
     four members, channel, Feenstra, the time of saving) by index,
     descending.  A record that cannot be read is reported on the console
@@ -244,12 +261,13 @@ class SavedAveragesWindow:
     window is a figure of size DESIGN with the rows drawn as text in one
     axes (ROW_H of the figure per row, at most 0.78 in all).
 
-    Entry dicts: kind ('record', 'old', 'line', 'lineavg'), text, and for a
+    Entry dicts: kind ('record', 'old', 'line', 'map', 'lineavg'), text, and for a
     record 'record' (the JSON dict), 'index', 'name', 'stem', 'cache' (the
     path of the up-to-date fit history, or None), 'n_fits'; an old entry
     carries 'label' and its parsed form 'parsed' (see parse_label),
-    'cache', 'n_fits', 'hampel', 'sgolay', 'mtime'; a line entry 'record',
-    'path' and 'mtime'; a lineavg entry 'record', 'index', 'name', 'stem'.
+    'cache', 'n_fits', 'hampel', 'sgolay', 'mtime'; a line entry and a map
+    entry 'record', 'path' and 'mtime'; a lineavg entry 'record', 'index',
+    'name', 'stem'.
     """
 
     LABEL_RE = re.compile(r'^(?P<path>.*?) \| average of (?P<n>\d+) sweeps from (?P<k>\d+) files '
@@ -444,6 +462,17 @@ class SavedAveragesWindow:
         return {'kind': 'line', 'record': rec, 'path': path, 'text': text,
                 'mtime': os.path.getmtime(path)}
 
+    def _map_entry(self, name):
+        """The entry of a Map window's marker record (file, map, markers, time of saving); None when unreadable."""
+        path = os.path.join(self.avg_dir, name)
+        try:
+            rec = read_json(path)
+        except Exception as exc:
+            print(f"saved averages: {name} not read ({exc}).")
+            return None
+        text = f"{rec.get('name', '?')}, map, {len(rec.get('markers', []))} markers, {rec.get('saved', '?')}"
+        return {'kind': 'map', 'record': rec, 'path': path, 'text': text, 'mtime': os.path.getmtime(path)}
+
     def _lineavg_entry(self, name, stem):
         """The entry of a line-average record (name, the first four members as name:line, channel, Feenstra, time of saving); None when unreadable or without an index."""
         path = os.path.join(self.avg_dir, name)
@@ -465,7 +494,7 @@ class SavedAveragesWindow:
     def scan(self):
         """
         Re-read the directory and redraw the list: the 'averages' subfolder
-        for the three record kinds (a *_average.json is a line average when
+        for the four record kinds (a *_average.json is a line average when
         its content has 'members', else by its name when unreadable), the
         directory itself for the old label-named fit histories; the sections
         sorted as the class docstring says; the selection back to the first
@@ -474,6 +503,11 @@ class SavedAveragesWindow:
         records, old, lines, lineavgs = [], [], [], []
         if os.path.isdir(self.avg_dir):
             for name in sorted(os.listdir(self.avg_dir)):
+                if MAP_RECORD_RE.match(name):
+                    e = self._map_entry(name)
+                    if e is not None:
+                        lines.append(e)                    # listed with the line records, by time
+                    continue
                 if LINE_RECORD_RE.match(name):
                     e = self._line_entry(name)
                     if e is not None:

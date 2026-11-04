@@ -23,20 +23,19 @@ if __package__ in (None, ''):
     import os as _os, sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import os
+from datetime import datetime
 import numpy as np
 from sm4_Browser import qtplot as plt
-from sm4_Browser import fit, widgets, plots, calibration, controls, contour
+from sm4_Browser import fit, widgets, plots, calibration, controls, contour, records
 from sm4_Browser.qtplot import QtWidgets, QtCore
 
 Qt = QtCore.Qt
-from sm4_Browser.sts import STS, curve_units
+from sm4_Browser.sts import STS, curve_units, PipelineState, say, state_record, state_from_record
 from sm4_Browser.averaging import Averages, Selection
-from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero, iv_corrected,
-                                  iv_broadened)
-from sm4_Browser.normalization import normalize_abs
+from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_titles, energy_has_zero)
 from sm4_Browser.drift import DriftWindow
 from sm4_Browser.composer import FigureComposer
-from sm4_Browser.topo import processed_topo, process_topo, average_passes, TOPO_CMAP
+from sm4_Browser.topo import processed_topo, process_topo, average_passes, TOPO_CMAP, TOPO_DIRECTIONS
 
 
 class Map:
@@ -47,9 +46,11 @@ class Map:
     map's energy), and (b) one energy beside the file's own embedded
     topography with energy arrows ('< E', 'E >') and the curve panel (one
     panel, moved between the views).  Maps are the channel (dI/dV, or IETS
-    by the 'channel' radio) through the pipeline (Sm4File.curves,
-    STS.process_arrays: the filter box's Hampel and Savitzky-Golay filters
-    on the current, the division by the broadened I/V with 'Feenstra' on),
+    by the 'channel' radio) through the one pipeline path (Sm4File.view for
+    the window's state, sts.PipelineState: the filter box's Hampel and
+    Savitzky-Golay filters, the pipeline box's denoise, calibrate, gate,
+    locks and normalize rows, the division by the broadened I/V with
+    'Feenstra' on; view(state).shown, memoized by the state),
     every location calibrated against its own I(V) and unit-area normalized
     as the 'calibrate' / 'normalize' box says (both off at open), energy
     ascending, reshaped to (n_lines, n_fast) in the scan frame (self.extent:
@@ -69,9 +70,17 @@ class Map:
     Colour scale: with 'cmap norm' off (the default) every energy slice is
     coloured on one scale, the minimum and maximum over the whole cube, in
     the single view and in every grid map; on, each map has its own minimum
-    and maximum.  Every energy slice has its own 'γ' (the power-law exponent
-    of the colour map, plots.heat_norm): one box under each grid map, and the
-    single view's box edits the current slice's value.
+    and maximum.  The 'clip %' box beside it (0 at open, 0 <= p < 50) clips
+    the colour scale to the p-th and (100 - p)-th percentiles of the
+    values (plots.percentile_range: the whole cube with 'cmap norm' off,
+    each map its own with it on), so that a few extreme pixels do not set
+    the colouring; a pixel beyond the limits takes the end colour, the
+    colour bar spans the clipped limits, and nothing else changes (the map
+    arrays, the marker curves, the companion, the sends and the composer
+    read the same arrays).  Every energy slice has its own 'γ' (the
+    power-law exponent of the colour map, plots.heat_norm, applied on top
+    of the limits): one box under each grid map, and the single view's box
+    edits the current slice's value.
 
     Markers (both views): the Line window's marker method in 2D.  A
     marker is a grid pixel (line, fast); it is drawn as a solid circle as
@@ -114,7 +123,15 @@ class Map:
     fit, as the Line window does (calibrated and normalized, the
     fit's pipeline).  'map → new avg' / 'map → existing avg' put the whole
     map (every acquired pixel's spectrum as one sweep of one entry) into a
-    new or an open averaging window.  'add to plot' under the topo, the
+    new or an open averaging window.  'save' (in the column with 'Send to
+    fit') writes the marker record averages/<file stem>_map_markers.json
+    (marker_record: the file and its sweep view, the pipeline state, the
+    view, the energy step, the gammas, 'cmap norm' and 'clip %', the topo
+    pass and processors, the drift toggles, the contour slice's level and
+    its traces, the marker groups and markers, the stack states), one per
+    file, overwritten; the saved averages window lists it and the browser
+    reopens the map from it with everything restored (restore_markers).
+    'add to plot' under the topo, the
     map and the curve panel sends that panel as shown to the figure
     composer (composer.FigureComposer, one per window); 'new plot' empties
     it.  One topo colour bar sits right of the embedded topo in the single
@@ -213,6 +230,7 @@ class Map:
         self.normalize = False                      # every window that uses Feenstra
         self.gate = calibration.GATE_DEFAULT        # the box's 'gate' row and its 'H' / 'SG' boxes
         self.cmap_norm = False                      # 'cmap norm': each map its own colour scale
+        self.clip_percent = 0.0                     # 'clip %': the colour scale's percentile clip (plots.percentile_range), 0 = none
         held = grid.channels()                      # the maps start on a channel the file holds
         self.channel = channel if channel in held else (held[0] if held else 'didv')
         self.order = np.argsort(grid.energy)
@@ -220,7 +238,7 @@ class Map:
         self.n_e = len(self.V)
         self.e_index = int(np.argmin(np.abs(self.V)))
         self.gammas = np.ones(self.n_e)             # one γ per energy slice
-        self.view = 'single'
+        self.view_mode = 'single'                  # 'single' or 'grid' (the pipeline's view is view(state))
         self.active_procs = list(active_procs)
         self.direction = 'forward'
         self.has_topo = bool(grid.topo_pages)
@@ -273,6 +291,8 @@ class Map:
         self.pipeline.on_change(self._on_pipeline_change)
         self.chk_cmap_norm = controls.make(fig, 'cmap norm', value=self.cmap_norm)
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
+        self.box_clip = controls.Text(fig, 'clip %', f"{self.clip_percent:g}")
+        self.box_clip.on_change(self._on_clip)
         self.chk_auto = controls.make(fig, 'auto drift', value=self.auto_on)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
         self.chk_manual = controls.make(fig, 'manual drift', value=self.manual_on)
@@ -299,6 +319,8 @@ class Map:
         self.stacks.on_change(self._redraw_markers)
         self.btn_send = controls.make(fig, 'Send to fit')
         self.btn_send.on_change(self._send_to_fit)
+        self.btn_save = controls.make(fig, 'save')
+        self.btn_save.on_change(self._on_save)
         # The whole map into an averaging window: 'map → new avg' starts one, 'map → existing avg' lists
         # the open ones (map_selection: every acquired pixel's spectrum as one sweep of one entry).
         self.btn_map_new = controls.make(fig, 'map → new avg')
@@ -365,8 +387,8 @@ class Map:
                                      controls.row(self.chk_stripe, self.btn_stripe_win),
                                      self.groups_ctl.box, orient='v'))
         strip.addWidget(controls.box(self.stacks.chk_average, self.groups_ctl.s_avgs, orient='v'))
-        strip.addWidget(controls.box(self.btn_send, self.stacks.chk_stack, orient='v'))
-        strip.addWidget(controls.box(self.chk_cmap_norm, self.stacks.chk_substack, orient='v'))
+        strip.addWidget(controls.box(self.btn_send, self.btn_save, self.stacks.chk_stack, orient='v'))
+        strip.addWidget(controls.box(controls.row(self.chk_cmap_norm, self.box_clip), self.stacks.chk_substack, orient='v'))
         strip.addWidget(controls.box(self.btn_view, self.steps, self.rad_sweeps, orient='v'))
         root = QtWidgets.QVBoxLayout()
         root.setSpacing(4)
@@ -507,7 +529,26 @@ class Map:
         """'cmap norm': each map its own colour scale (on) or one scale over the whole cube (off)."""
         self.cmap_norm = bool(flag)
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
+            self.draw_grid()
+        self.fig.canvas.draw_idle()
+
+    def _on_clip(self, text):
+        """'clip %': the colour scale's percentile clip, 0 <= p < 50 (plots.percentile_range); an edit outside it, or not a number, is reported and the box put back."""
+        try:
+            p = float(str(text).strip())
+            if not np.isfinite(p) or p < 0.0 or p >= 50.0:
+                raise ValueError("the clip must be a percentage from 0 up to (not including) 50")
+        except ValueError as exc:
+            print(f"clip % box: '{text}' not accepted ({exc}). The box is put back.")
+            self.box_clip.set(f"{self.clip_percent:g}")
+            return
+        if p == self.clip_percent:
+            return
+        self.clip_percent = p
+        self.box_clip.set(f"{p:g}")
+        self.draw_single()
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -889,7 +930,7 @@ class Map:
         self._draw_topo(self.ax_topo)
         self._grid_topo_stale = True
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -908,7 +949,7 @@ class Map:
         self.gammas[self.e_index] = float(value)
         self.grid_gammas[self.e_index].set(value)
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -970,23 +1011,33 @@ class Map:
         if w is not None and w.is_open():
             w.refresh()
 
-    def _cube(self, divide_iv, calibrate=None, normalize=None, gate=None):
+    @property
+    def state(self):
         """
-        The processed cube (n_e, n_lines, n_fast) with the division as given
-        (recompute's reshaping) and the calibrate / normalize flags and the
-        gate settings (the window's unless given: the companion's own).
+        The window's PipelineState (sts.PipelineState.of): the channel, the
+        filter box's four settings, the pipeline box's rows (calibrate,
+        normalize, the gate with its locks and denoise), the window's own
+        'Feenstra' toggle and the Feenstra settings; no energy crop.  Every
+        drawn quantity comes from view(self.state).
         """
-        g = self.grid
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        c = g.curves(hp, sp, divide_iv, self.iv_width(), channel=self.channel, iv_zero_sub=self.iv_zero_sub,
-                     normalize=self.normalize if normalize is None else normalize,
-                     calibrate=self.calibrate if calibrate is None else calibrate,
-                     hampel_didv=hd, sgolay_didv=sd, gate=self.gate if gate is None else gate)[self.order, :]
-        n = g.n_lines * g.n_fast
-        c = c[:, :n].copy()
-        c[:, ~g.acquired[:n]] = np.nan
-        return c.reshape(self.n_e, g.n_lines, g.n_fast)
+        return PipelineState.of(self.filters, {'calibrate': self.calibrate, 'normalize': self.normalize, 'gate': self.gate},
+                                self.feenstra_settings(), self.channel, self.divide_iv)
+
+    def view(self, state=None):
+        """
+        What the window draws for a state (the window's own when None):
+        the grid's view (Sm4File.view: didv, current, ivv, ratio, shown,
+        every spectrum in the file's column order), one computation per
+        state (the memo is dropped when the sweep view changes, _on_sweeps);
+        the pipeline's console lines said once.
+        """
+        state = self.state if state is None else state
+        memo = self.__dict__.setdefault('_view_memo', {})
+        if state not in memo:
+            v = self.grid.view(state)
+            say(v.notes)
+            memo[state] = v
+        return memo[state]
 
     def _cube_of(self, columns):
         """Raw columns (npts, N) of the grid reshaped like the maps (energy ascending, never acquired NaN)."""
@@ -1024,71 +1075,54 @@ class Map:
         return {'ylabel': f"{q} (arb. units)", 'ylabel_offset': f"{q} (arb. units, offset)",
                 'title_markers': f"{q} at markers", 'stack_where': ", blocks by centre (highest y at the top)"}
 
-    def feenstra_view(self, calibrate=True, normalize=True, gate=None):
+    def feenstra_view(self, state=None):
         """
-        The companion's view (feenstra.FeenstraWindow): the map at the current
-        energy in four versions, the dI/dV of the pipeline with the division
-        off, the current in amps as the division works on it (its value at
-        0 V subtracted with '0Vsub'), its I/V in A/V as the division divides
-        by it (broadened with 'broadened'), and the ratio with the division
-        on, with the marker curves of each in the current marker state; a
-        file without the Current channel gives notes for the current, I/V,
-        and ratio panels, the IETS channel a note for the ratio panel.
-        `calibrate`, `normalize` and `gate` are the companion's own flags and
-        gate settings: the dI/dV and the ratio through the pipeline with
-        them; with `normalize` on the current and the I/V are unit area per
-        pixel (normalize_abs).
+        The companion's view (feenstra.FeenstraWindow) for a state (the
+        window's own when None; the companion asks with its own calibrate,
+        normalize and gate rows overriding it): the map at the current
+        energy in four versions, every one a field of view(state) reshaped
+        like the maps (_cube_of): the dI/dV of the pipeline with the
+        division off, the current the division works on (the denoised
+        current I/g with 'denoise' on; its value at 0 V subtracted with
+        '0Vsub'), its I/V as the division divides by it (broadened with
+        'broadened'), and the ratio with the division on, with the marker
+        curves of each in the current marker state; a file without the
+        Current channel gives notes for the current, I/V, and ratio panels,
+        the IETS channel a note for the ratio panel.  With the state's
+        `normalize` on the current and the I/V are unit area per pixel
+        (normalization.normalize_abs); with `calibrate` off the dI/dV is the
+        lock-in output as recorded and the ratio that output divided by the I/V.
         """
+        state = self.state if state is None else state
         g = self.grid
-        gate = self.gate if gate is None else gate
-        q = ("d2I/dV2 (IETS)" if self.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
+        v = self.view(state)
+        calibrate, normalize = state.calibrate, state.normalize
+        q = ("d2I/dV2 (IETS)" if state.channel == 'iets' else "dI/dV") + ("" if calibrate else ", uncalibrated")
         at = f"at {self.V[self.e_index]:.3f} V"
-        zs, width = self.iv_zero_sub, self.iv_width()
-        t = feenstra_titles(zs, self.iv_broadened, self.iv_broadening, energy_has_zero(g.energy))
+        t = feenstra_titles(state.iv_zero_sub, state.iv_broadened, state.iv_broadening, energy_has_zero(g.energy))
         nn = "" if normalize else ", not normalized"
         versions = {
             'didv': {'title': f"{q} (division off){nn} {at}",
-                     'ylabel': f"{q} ({curve_units(self.channel, calibrate, normalize, g.units_lia, g.units_iets, g.units_iv)})"},
+                     'ylabel': f"{q} ({curve_units(state.channel, calibrate, normalize, g.units_lia, g.units_iets, g.units_iv)})"},
             'iv': {'title': f"{t['iv']} {at}", 'ylabel': "I (unit area)" if normalize else "I (A)"},
             'ivv': {'title': f"{t['ivv']} {at}", 'ylabel': "I/V (unit area)" if normalize else "I/V (A/V)"},
             'ratio': {'title': f"{t['ratio']} (division on){nn} {at}", 'ylabel': "(dI/dV)/(I/V) (arb. units)"},
         }
-        # The cubes depend on these settings only, never on the markers: computed once per setting.
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        memo_key = (bool(calibrate), bool(normalize), gate, repr(hp), repr(sp), repr(hd), repr(sd), zs, width, self.channel)
-        memo = getattr(self, '_cube_memo', None)
-        if memo is not None and memo[0] == memo_key:
-            cubes = memo[1]
-        else:
-            cubes = self._feenstra_cubes(calibrate, normalize, zs, width, gate)
-            self._cube_memo = (memo_key, cubes)
-        if g.iv is None:
+        cubes = {'didv': self._cube_of(v.didv)}
+        if v.current is None:
             for key in ('iv', 'ivv', 'ratio'):
                 versions[key]['note'] = "no Current channel in this file"
-        elif self.channel == 'iets':
-            versions['ratio']['note'] = "the division applies to dI/dV only"
+        else:
+            cubes['iv'] = self._cube_of(v.current)
+            cubes['ivv'] = self._cube_of(v.ivv)
+            if state.channel == 'iets':
+                versions['ratio']['note'] = "the division applies to dI/dV only"
+            else:
+                cubes['ratio'] = self._cube_of(v.ratio)
         for key, cube in cubes.items():
             markers, groups = self._curve_items(cube)
             versions[key].update({'top': cube[self.e_index], 'markers': markers, 'groups': groups})
         return self._feenstra_view_dict(g, at, versions, q)
-
-    def _feenstra_cubes(self, calibrate, normalize, zs, width, gate=None):
-        """The companion's cubes (n_e, n_lines, n_fast) per version."""
-        g = self.grid
-        cubes = {'didv': self._cube(False, calibrate, normalize, gate)}
-        if g.iv is not None:
-            hp, sp = self.filters.params()
-            iv_a = iv_corrected(g.energy, g.iv, zs, hp, sp)
-            ivv = iv_broadened(g.energy, g.iv, width, zs, hp, sp)
-            if normalize:
-                iv_a = normalize_abs(g.energy, iv_a)[0]
-                ivv = normalize_abs(g.energy, ivv)[0]
-            cubes['iv'] = self._cube_of(iv_a)
-            cubes['ivv'] = self._cube_of(ivv)
-            if self.channel != 'iets':
-                cubes['ratio'] = self._cube(True, calibrate, normalize, gate)
-        return cubes
 
     def _feenstra_view_dict(self, g, at, versions, q):
         """The feenstra_view dict of kind 'map' (the keys feenstra.FeenstraWindow lists) around the versions."""
@@ -1108,32 +1142,24 @@ class Map:
 
     def recompute(self):
         """
-        The maps: every spectrum of the grid through the pipeline
-        (Sm4File.curves with the filter box's settings, the division when
-        'Feenstra' is on with the Feenstra settings, the channel, and the
-        calibrate / normalize flags), energy ascending, reshaped to (n_e,
-        n_lines, n_fast) with never-acquired pixels NaN; then the single
-        view (and the grid view when shown) redrawn.  A grid that cannot be
-        processed (no Current channel for the division, no such channel)
-        leaves self.maps as it was with the reason printed: the callers
-        test `self.maps is before` to put their control back.
+        The maps: every spectrum of the grid through the one pipeline path
+        for the window's state (view(self.state).shown: the filter box's
+        settings, the pipeline box's rows, the division when 'Feenstra' is
+        on with the Feenstra settings, the channel), energy ascending,
+        reshaped to (n_e, n_lines, n_fast) with never-acquired pixels NaN
+        (_cube_of); then the single view (and the grid view when shown)
+        redrawn.  A grid that cannot be processed (no Current channel for
+        the division, no such channel) leaves self.maps as it was with the
+        reason printed: the callers test `self.maps is before` to put their
+        control back.
         """
-        hp, sp = self.filters.params()
-        hd, sd = self.filters.params_didv()
-        g = self.grid
         try:
-            c = g.curves(hp, sp, self.divide_iv, self.iv_width(), channel=self.channel, hampel_didv=hd, sgolay_didv=sd,
-                         iv_zero_sub=self.iv_zero_sub, normalize=self.normalize,
-                         calibrate=self.calibrate, gate=self.gate)[self.order, :]                  # (n_e, N)
+            self.maps = self._cube_of(self.view().shown)
         except Exception as exc:
             print(f"Map window: {exc}")
             return
-        n = g.n_lines * g.n_fast
-        c = c[:, :n].copy()
-        c[:, ~g.acquired[:n]] = np.nan                        # never acquired: drawn transparent
-        self.maps = c.reshape(self.n_e, g.n_lines, g.n_fast)
         self.draw_single()
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
 
@@ -1142,11 +1168,11 @@ class Map:
         q = ("(dI/dV)/(I/V)" if self.divide_iv else "dI/dV") if self.channel == 'didv' else "d2I/dV2 (IETS)"
         return q + ("" if self.calibrate else ", uncalibrated") + ("" if self.normalize else ", not normalized")
 
-    def _limits(self):
-        """(vmin, vmax) of the colour scale: the whole cube with 'cmap norm' off, None (each map its own) on."""
-        if self.cmap_norm or self.maps is None:
+    def _limits(self, img=None):
+        """(vmin, vmax) of a map's colour scale: with 'cmap norm' off one range over the whole cube, with it on the given map's own; both through the 'clip %' box (plots.percentile_range: the p-th and (100 - p)-th percentiles, the finite range at 0).  The single view, the grid view and update_heatmap all take their limits here."""
+        if self.maps is None:
             return None, None
-        return plots.finite_range(self.maps)
+        return plots.percentile_range(img if self.cmap_norm else self.maps, self.clip_percent)
 
     def draw_single(self):
         """
@@ -1165,7 +1191,7 @@ class Map:
         self.cax_map.clear()
         self._pixel_maps.pop('single', None)
         m = self.maps[self.e_index]
-        lo, hi = self._limits()
+        lo, hi = self._limits(m)
         shift = self._frame_shift(self.e_index)
         if shift is not None:
             im = plots.PixelMap(ax, m, self.extent, self.cmap, gamma=self.gammas[self.e_index], shift=shift,
@@ -1201,17 +1227,18 @@ class Map:
         after (plots.update_heatmap); the map titled by its energy at the
         first draw (_grid_title); each map's colour bar redrawn.  A redrawn topo cell
         loses its markers with its clear: they are drawn again
-        (_draw_marker_artists) in the grid view.
+        (_draw_marker_artists) in the grid view.  Every map's colour limits
+        are _limits (the cube's or its own, through the clip).
         """
         topo_redrawn = self._grid_topo_stale
         if self._grid_topo_stale:
             self._draw_topo(self.grid_topo_ax, small=True)
             self._grid_topo_stale = False
-        if topo_redrawn and self.view == 'grid':
+        if topo_redrawn and self.view_mode == 'grid':
             self._draw_marker_artists()
-        lo, hi = self._limits()
         for e, ax in enumerate(self.grid_axes):
             m = self.maps[e]
+            lo, hi = self._limits(m)
             shift = self._frame_shift(e)
             if shift is not None:
                 old = self._pixel_maps.pop(e, None)
@@ -1262,7 +1289,7 @@ class Map:
     def _place_curve(self):
         """The one curve panel in the view shown: in the single view right of the map's colour bar (the single view's row), in the grid view under the topo cell, as wide as the topo's column and as tall as the rows below it."""
         cell = self._cell_curve
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self._single_layout.removeWidget(cell)
             self._grid_layout.addWidget(cell, 2, 0, 2 * (self._grid_rows - 1), 1)
         else:
@@ -1297,6 +1324,7 @@ class Map:
             self.rad_sweeps.set(self.grid.sweep_mode)
             return
         print(f"Map window: the maps show the {label} sweep(s) of every pixel.")
+        self._view_memo = {}                       # the views by state: the grid changed
         self._drift_res = None
         self._bounds = None
         self._lines_memo = None
@@ -1314,7 +1342,7 @@ class Map:
         self._bounds = None
         self._draw_topo(self.ax_topo)
         self._grid_topo_stale = True
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             self.draw_grid()
         self.draw_single()
         self.fig.canvas.draw_idle()
@@ -1327,7 +1355,7 @@ class Map:
 
     def _apply_view(self):
         """Show the cells, axes and γ boxes of the current view (single or grid), hide the other's; the one curve panel moved into the view shown (_place_curve); the toggle button names the other view."""
-        single = self.view == 'single'
+        single = self.view_mode == 'single'
         self._place_curve()
         for cell in self._single_cells:
             cell.setVisible(single or cell is self._cell_curve)
@@ -1342,8 +1370,8 @@ class Map:
 
     def toggle_view(self):
         """'Grid view' / 'Single view': the other view (the grid drawn when switched to), the markers and the contour slice drawn on its panels (_draw_marker_artists, _draw_contour_artists)."""
-        self.view = 'grid' if self.view == 'single' else 'single'
-        if self.view == 'grid':
+        self.view_mode = 'grid' if self.view_mode == 'single' else 'single'
+        if self.view_mode == 'grid':
             self.draw_grid()
         self._draw_marker_artists()
         self._draw_contour_artists()
@@ -1504,9 +1532,9 @@ class Map:
         cell and every energy's map.  A file without a topo page has no
         topo panel.
         """
-        topo = self.grid_topo_ax if self.view == 'grid' else self.ax_topo
+        topo = self.grid_topo_ax if self.view_mode == 'grid' else self.ax_topo
         panels = [(topo, False, None)] if self.has_topo else []
-        if self.view == 'grid':
+        if self.view_mode == 'grid':
             return panels + [(ax, True, e) for e, ax in enumerate(self.grid_axes)]
         return [(self.ax_map, True, self.e_index)] + panels
 
@@ -1619,7 +1647,7 @@ class Map:
 
     def _contour_panels(self):
         """The map panels the contour slice is drawn on in the view shown: the single view's map, or every grid map (never a topo panel)."""
-        return list(self.grid_axes) if self.view == 'grid' else [self.ax_map]
+        return list(self.grid_axes) if self.view_mode == 'grid' else [self.ax_map]
 
     def _draw_contour_artists(self):
         """The contour slice drawn anew (the old traces removed) on every map panel of the view shown (_contour_panels; plots.draw_contour with the segments of _contour_segments); nothing before the first recompute or without a topo page."""
@@ -1962,6 +1990,220 @@ class Map:
         picker.open(self.btn_map_exist.ax, selection, add_to)
 
     # --- the figure composer ('add to plot' x 3, 'new plot') ---
+
+    # --- the record (averages/<file stem>_map_markers.json) ---
+
+    def marker_record(self):
+        """
+        The marker record of this map (records.MAP_RECORD_FORMAT), every
+        value JSON-plain: the file (path and name), the scale factor the
+        window was made with, the grid's sweep view, the pipeline state
+        (sts.state_record: the channel, the filter boxes and their four on /
+        off states, calibrate, normalize, the gate with the locks and
+        denoise, divide_iv, the Feenstra settings), the view ('single' or
+        'grid'), the energy step (index, and the energy for information),
+        the gammas (one per slice), 'cmap norm' and 'clip %', the topo pass
+        and the processor flags, the drift toggles and the stripe toggle,
+        the contour slice's level as the fraction of the drawn topo's colour
+        range (z_frac; the slice is rebuilt from it at load) with the level
+        in metres and the traces themselves in nm for information (the
+        load compares the rebuilt slice with them and says when they
+        differ), the group sizes, their centres as (line, fast) and the
+        markers as pixels (with their positions in nm for information),
+        the Average / stack / substack states, and the time of writing.
+        """
+        g = self.grid
+        level = self._topo_level()
+        segs = self._contour_segments() if (self.has_topo and self.maps is not None) else np.zeros((0, 2, 2))
+        segs = np.asarray(segs, dtype=np.float64).reshape(-1, 2, 2)
+        centres = self._sync_centres()
+        return {'format': records.MAP_RECORD_FORMAT,
+                'path': os.path.abspath(g.path),
+                'name': g.name,
+                'scalefactor': float(self.scalefactor),
+                'sweeps': getattr(g, 'sweep_mode', None),
+                **state_record(self.state, self.filters.values()),
+                'view': self.view_mode,
+                'e_index': int(self.e_index),
+                'energy_V': float(self.V[self.e_index]),
+                'gammas': [float(v) for v in self.gammas],
+                'cmap_norm': bool(self.cmap_norm),
+                'clip_percent': float(self.clip_percent),
+                'direction': self.direction,
+                'active_procs': [bool(a) for a in self.active_procs],
+                'auto_drift': bool(self.auto_on),
+                'manual_drift': bool(self.manual_on),
+                'stripe': bool(self.chk_stripe.value),
+                'z_frac': float(self.z_frac),
+                'contour_level_m': None if level is None else float(level[1]) * 1e-9,
+                'contour_segments_nm': [[[float(x), float(y)] for x, y in seg] for seg in segs],
+                'group_sizes': [int(v) for v in self.group_sizes],
+                'group_centers': [[float(c[0]), float(c[1])] for c in centres],
+                'markers': [[int(px[0]), int(px[1])] for px in self.marker_px],
+                'markers_nm': [[float(x), float(y)] for x, y in (self.marker_xy(px, True) for px in self.marker_px)],
+                'average': bool(self.avg_on),
+                'stack': bool(self.stack_on),
+                'substack': bool(self.substack_on),
+                'saved': datetime.now().isoformat(timespec='seconds')}
+
+    def _on_save(self):
+        """'save': the marker record averages/<file stem>_map_markers.json (one per file, overwritten; the sweep view inside), its path printed."""
+        try:
+            directory = os.path.dirname(os.path.abspath(self.grid.path))
+            path = records.write_json(records.map_record_path(directory, self.grid.path), self.marker_record())
+        except Exception as exc:
+            print(f"save: {exc}")
+            return
+        print(f"Map window: marker record written: {path}")
+
+    def restore_markers(self, rec):
+        """
+        Put a marker record's state into the open window (the browser's
+        loader, browser.load_map_record, after the window is opened on the
+        record's file and sweep view): the pipeline state through
+        sts.state_from_record into the filter box and the pipeline box
+        (without firing) and the window's attributes; the view, the energy
+        index (refused with a console line when outside the file's axis),
+        the gammas (their count checked), 'cmap norm', 'clip %', the topo
+        pass, the processor flags, the drift toggles and the stripe toggle
+        (through their own handlers, so the drift model's one-state-per-file
+        rules hold; refused as they refuse without a drift model), the
+        contour slice's level, the group sizes, centres and markers (clipped
+        to the grid; a record whose group sizes and markers disagree keeps
+        the window's markers), the stack controls; then the maps recomputed,
+        the topo, the markers, the contour slice and the companion drawn
+        anew, and the rebuilt slice compared with the record's traces (a
+        console line when they differ: the topo's pass, processing or drift
+        state is not what it was at the save).  Every part that cannot be
+        applied is reported and skipped.
+        """
+        st = state_from_record(rec, self.state)
+        hp, sp, hd, sd = st.filters()
+        try:
+            self.filters.set_params(hp, sp, hd, sd)
+            for store, d in ((self.filters._hp, rec.get('hampel')), (self.filters._sp, rec.get('sgolay'))):
+                if isinstance(d, dict):
+                    store.update(d)                       # the box values, as the Line window keeps them
+        except Exception as exc:
+            print(f"restore markers: filter settings not applied ({exc}).")
+        self.calibrate, self.normalize, self.gate = st.calibrate, st.normalize, st.gate
+        self.pipeline.set_state(self.calibrate, self.normalize, self.gate)
+        self.divide_iv = st.divide_iv
+        self.chk_feenstra.set(self.divide_iv)
+        self.iv_zero_sub, self.iv_broadened, self.iv_broadening = st.iv_zero_sub, st.iv_broadened, st.iv_broadening
+        if st.channel != self.channel:
+            if st.channel in self.grid.channels():
+                self.channel = st.channel
+                self.rad_channel.set(STS.CHANNEL_NAMES[st.channel])
+            else:
+                print(f"restore markers: {self.grid.name} has no {st.channel} channel; the window keeps {self.channel}.")
+        want_view = rec.get('view', self.view_mode)
+        if want_view not in ('single', 'grid'):
+            print(f"restore markers: the record's view '{want_view}' is not 'single' or 'grid'; the window keeps its own.")
+            want_view = self.view_mode
+        e = rec.get('e_index')
+        if e is not None:
+            if 0 <= int(e) < self.n_e:
+                self.e_index = int(e)
+            else:
+                print(f"restore markers: the record's energy index {e} is outside the file's {self.n_e} energies; "
+                      f"the window keeps {self.e_index}.")
+        gm = rec.get('gammas')
+        if gm is not None:
+            gm = np.asarray(gm, dtype=np.float64).ravel()
+            if gm.size == self.n_e and np.all(np.isfinite(gm)) and np.all(gm > 0):
+                self.gammas = gm.copy()
+                for box, v in zip(self.grid_gammas, self.gammas):
+                    box.set(v)
+                self.gamma_single.set(self.gammas[self.e_index])
+            else:
+                print(f"restore markers: the record's gammas ({gm.size}) do not fit the file's {self.n_e} energies, "
+                      "or are not positive; the window keeps its own.")
+        if 'cmap_norm' in rec:
+            self.cmap_norm = bool(rec['cmap_norm'])
+            self.chk_cmap_norm.set(self.cmap_norm)
+        cp = rec.get('clip_percent')
+        if cp is not None:
+            try:
+                cp = float(cp)
+                if not (np.isfinite(cp) and 0.0 <= cp < 50.0):
+                    raise ValueError(cp)
+                self.clip_percent = cp
+                self.box_clip.set(f"{cp:g}")
+            except (TypeError, ValueError):
+                print(f"restore markers: the record's clip % {cp!r} is not a percentage from 0 up to 50; the window keeps "
+                      f"{self.clip_percent:g}.")
+        d = rec.get('direction')
+        if d is not None:
+            if d in TOPO_DIRECTIONS and self.grid.topo_pages:
+                self.direction = d
+                self.rad_dir.set(d)
+            elif d not in TOPO_DIRECTIONS:
+                print(f"restore markers: the record's topo pass '{d}' is unknown; the window keeps {self.direction}.")
+        ap = rec.get('active_procs')
+        if ap is not None:
+            if len(ap) == len(self.active_procs):
+                self.active_procs = [bool(a) for a in ap]
+            else:
+                print(f"restore markers: the record's {len(ap)} processor flags do not fit the {len(self.active_procs)} "
+                      "processors; the window keeps its own.")
+        for which, key, chk in (('auto', 'auto_drift', self.chk_auto), ('manual', 'manual_drift', self.chk_manual)):
+            if key in rec:
+                self._on_drift_toggle(which, bool(rec[key]))
+                chk.set(self.auto_on if which == 'auto' else self.manual_on)
+        if 'stripe' in rec and bool(rec['stripe']) != bool(self.chk_stripe.value):
+            self._on_stripe_toggle(bool(rec['stripe']))
+        zf = rec.get('z_frac')
+        if zf is not None:
+            try:
+                zf = float(zf)
+                if not np.isfinite(zf):
+                    raise ValueError(zf)
+                self.z_frac = float(np.clip(zf, 0.0, 1.0))
+                for h in self._level_lines:
+                    h.set_ydata([self.z_frac, self.z_frac])
+            except (TypeError, ValueError):
+                print(f"restore markers: the record's z_frac {zf!r} is not a number; the window keeps {self.z_frac:g}.")
+        sizes = [max(0, int(v)) for v in rec.get('group_sizes', [])]
+        markers = [(int(px[0]), int(px[1])) for px in rec.get('markers', [])]
+        if 'group_sizes' in rec and sum(sizes) == len(markers) and len(sizes) <= self.MAX_GROUPS:
+            self.group_sizes = sizes
+            self.marker_px = [(int(np.clip(line, 0, self.n_lines - 1)), int(np.clip(fast, 0, self.n_fast - 1)))
+                              for line, fast in markers]
+            ctr = rec.get('group_centers')
+            self.group_ctr = ([(float(c[0]), float(c[1])) for c in ctr] if ctr is not None and len(ctr) == len(sizes)
+                              else [None] * len(sizes))
+            self._sync_centres()
+        elif sizes or markers:
+            print("restore markers: the group sizes and the marker positions do not match; markers kept.")
+        self.stacks.chk_average.set(bool(rec.get('average', False)))
+        self.stacks.chk_stack.set(bool(rec.get('stack', False)))
+        self.stacks.chk_substack.set(bool(rec.get('substack', False)))
+        # The window drawn anew: the maps for the state, the topo for the pass and the processors, the
+        # view, the markers, the contour slice and the companion.
+        self._view_memo = {}
+        self._bounds = None
+        self._lines_memo = None
+        self._clear_pixel_maps()
+        self._contour_memo = None
+        self._draw_topo(self.ax_topo)
+        self._grid_topo_stale = True
+        before = self.maps
+        self.recompute()
+        if self.maps is before:
+            print("restore markers: the record's pipeline state could not be applied; the window keeps its own.")
+        if want_view != self.view_mode:
+            self.toggle_view()
+        self._redraw_markers()
+        saved = rec.get('contour_segments_nm')
+        if saved is not None and self.has_topo and self.maps is not None:
+            segs = np.asarray(self._contour_segments(), dtype=np.float64).reshape(-1, 2, 2)
+            sv = np.asarray(saved, dtype=np.float64).reshape(-1, 2, 2)
+            same = segs.shape == sv.shape and (segs.size == 0 or np.allclose(segs, sv, rtol=1e-9, atol=1e-9))
+            if not same:
+                print(f"restore markers: the contour slice rebuilt from the record ({len(segs)} traces) differs from the "
+                      f"saved one ({len(sv)} traces): the topo's pass, processing or drift state is not what it was at "
+                      "the save.")
 
     def _composer(self):
         """The window's figure composer (composer.FigureComposer, titled '<file>: figure'), made at the first use."""
