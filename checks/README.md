@@ -15,8 +15,9 @@ test or smoke scripts somewhere else.**
 2. **Edit the checks here, never a private copy.** When a change needs a new test, extend the check
    module that covers that feature, or add a new `<feature>_check.py` module here. Do not leave a
    one-off script in a scratch folder.
-3. **Register a new check.** Add its name to `CHECKS` in `checks/run.py` and give it an entry in
-   the checks list of the top-level `README.md` (section "The checks").
+3. **Register a new check.** Add its name to `CHECKS` in `checks/run.py`, give it an entry in the
+   checks list of the top-level `README.md` (section "The checks") and a row in the table of the
+   checks below.
 4. **Keep the checks true to the code.** When a change alters behaviour that a check covers, update
    that check in the same piece of work, so the checks always describe the code as it is.
 5. **Commit and push check changes to `main`** together with the change they belong to (Benjamin's
@@ -30,7 +31,8 @@ test or smoke scripts somewhere else.**
   (the runner counts that as a failure, never as a pass). It prints one `[ok]` / `[FAIL]` line per
   sub-check (the runner counts the `[ok]` lines).
 - It runs on synthetic data (`checks/synth.py` experiments, or numpy arrays): no real `.sm4` file,
-  and nothing written outside a temporary folder it removes.
+  and nothing written outside a temporary folder (`tempfile.mkdtemp`; `save_check` removes its own
+  at the end, the other checks leave theirs in the system's temporary directory).
 - It can run on its own: `python -m sm4_Browser.checks.<name>`, or F5 in Spyder.
 - Windows draw on a real screen, never on Qt's offscreen platform (it errs in the browser and freezes
   the processing): the display at hand, or an Xvfb virtual screen started by

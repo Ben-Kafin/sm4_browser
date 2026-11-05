@@ -18,8 +18,10 @@ logical pixels per inch), every panel at its on-screen place, size and shape, ev
 on-screen size (the point size set times qtplot.FONT_SCALE times the window's text zoom,
 Figure.font_zoom); the controls are left out, their places empty, so nothing moves; and below the
 canvas the full info panel (Figure.export_info: the details cut from the titles and the settings
-of the window's controls), every line, wrapped as the panel wraps it on screen (_info_lines,
-_info_block).  Nothing is laid out again and nothing is cropped: the file is the window's width.
+of the window's controls; for one of the browser's canvases, that canvas's own info: the current
+file's head lines and measurement rows, its panels' details and the settings of the controls in
+its column), every line, wrapped as the panel wraps it on screen (_info_lines, _info_block).
+Nothing is laid out again and nothing is cropped: the file is the canvas's width.
 
 qtplot binds this module when it is imported (qtplot._mplexport), so a window always saves with
 the qtplot classes that drew it, whatever a module reloader did since.
@@ -432,7 +434,8 @@ def _info_lines(fig):
     has, the panel's viewport width less its document margin on each side (as
     QPlainTextDocumentLayout lays a block out).  The viewport width is the panel's own when the
     panel is shown inside the saved area (fig.export_root(): a figure window, the browser's right
-    column), else the saved area's width less the panel's frame (the browser's left column).
+    column), else the saved area's width less the panel's width outside its viewport (its frame,
+    and its scroll bar when one is shown: the browser's left column).
     Used by the vector files here and by qtplot.export_vector.  [] when there is no info text.
     """
     panel = getattr(fig, 'export_info_panel', None)

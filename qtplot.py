@@ -4662,7 +4662,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
 
     # (dialog filter, extension, how) for Figure.savefig; every entry saves exactly what this window shows.
     # 'vector': PDF / EPS / SVG through matplotlib (mplexport): the plots at their on-screen places, sizes
-    # and text sizes, the file at the window's size and shape, the controls left out with their places
+    # and text sizes, the canvas at its on-screen size and shape, the controls left out with their places
     # empty, and the full info panel (the settings of the controls among it) below, wrapped as on
     # screen; left out of the dialog without matplotlib.  'qt-svg': the whole window as Qt draws it,
     # controls included, with the full info panel below (export_vector).  'image': the window rendered
@@ -4728,8 +4728,10 @@ class NavigationToolbar(QtWidgets.QToolBar):
 class FigureManager:
     """
     The figure's window (matplotlib's Qt window): the navigation toolbar on top, the canvas, and
-    the info panel docked at the bottom (set_info: the details cut from the titles; hidden while
-    empty, and once closed by hand it stays closed).  The window opens at the canvas's size plus
+    the info panel docked at the bottom (set_info: Figure.info_text, the details cut from the
+    titles, the window's own lines and the settings section of its controls; wrapped at its width;
+    hidden only until its first text, which comes when the window is shown, and once closed by hand
+    it stays closed).  The window opens at the canvas's size plus
     the toolbar, limited to the screen's available area (98 % of its width, 95 % of its height).
     """
 
@@ -4746,8 +4748,9 @@ class FigureManager:
             av = scr.availableGeometry()
             w_px = min(int(w_px), int(av.width() * 0.98))
             h_px = min(int(h_px), int(av.height() * 0.95) - th)
-        # The info panel: the details cut from the panel titles, docked at the bottom, out of the
-        # way (closable; hidden while empty).
+        # The info panel: the details cut from the panel titles, the window's own lines and the
+        # settings of its controls (Figure.info_text), docked at the bottom, out of the way, wrapped
+        # at its width (closable; hidden only until its first text, pushed when the window is shown).
         self.info = QtWidgets.QPlainTextEdit()
         self.info.setReadOnly(True)
         self.info.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -5493,7 +5496,9 @@ class Figure:
     def savefig(self, path, dpi=None, how=None, **kw):
         """
         Save exactly what the window shows, at the window's size and shape, nothing laid out again
-        and nothing cropped.  Returns the path written.  how:
+        and nothing cropped.  Returns the path written.  `dpi` and any other keyword (matplotlib's
+        savefig arguments) are accepted and ignored: the image formats are always at
+        WINDOW_IMAGE_DPI.  how:
           'vector' (default for .pdf .eps .ps .svg): written by matplotlib (mplexport.export): every
                    panel, curve, heatmap, stripe, marker, legend, colour bar and figure text at its
                    on-screen place and size, text at its on-screen size and editable; the controls

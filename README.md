@@ -140,8 +140,10 @@ current, every toggle independent and the row's settings shared), and the `calib
 slider stop at). The information panel lists the file's place, name,
 stamp, kind, site flag and region, the loaded count, and its measurement information (setpoint,
 lock-in and modulation settings, filters, sample time, range and step, points acquired, position,
-notes), then one line per panel with the details cut from the panel titles. Its text can be
-selected and copied: that is where a file name is copied from.
+notes), then one line per panel with the details cut from the panel titles, and last the
+`settings` section, one `label: value` line per control shown (see
+[Saving figures](#saving-figures)). Its text wraps at the panel's width and can be selected and
+copied: that is where a file name is copied from.
 
 **The per-file controls.**
 
@@ -363,8 +365,9 @@ and loses nothing; the settings file is the one thing not to lose.
 ## The windows
 
 Every window has a toolbar (Home, Pan, Zoom, Save, the cursor's coordinates) and an information
-panel docked at its bottom with the details cut from the panel titles (closable, can float; its text
-can be selected and copied). A panel title that is a file name is shown exactly as the file is
+panel docked at its bottom with the details cut from the panel titles and, last, the `settings`
+section of the window's controls (see [Saving figures](#saving-figures); closable, can float; its
+lines wrap at its width and its text can be selected and copied). A panel title that is a file name is shown exactly as the file is
 named.
 
 ### Topo window
@@ -655,8 +658,9 @@ text, a slider its value, a button whose label shows a state its label), in the 
 screen, top to bottom, then left to right, updated as they change. So the vector files, which leave
 the controls out, still carry every setting. The panel wraps its lines at its width (it scrolls);
 the files never get wider than the window. In the browser, each of the two toolbars' Save writes
-only its own canvas: the image and the Qt SVG its column (the scan area with its controls, or the
-spectra with their settings and the information panel), the vector files that canvas's plots, each
+only its own canvas: the image and the Qt SVG its whole column as shown, its toolbar included (the
+scan area with its controls, or the spectra with their settings and the information panel), the
+vector files that canvas's plots, each
 with that canvas's information: the current file's head lines and measurement rows, the details of
 its panels, and the settings of the controls in its column.
 
@@ -766,8 +770,10 @@ controllers the windows share (`FilterControls`, `PipelineBox`, `FeenstraSetting
 `StackControls`, `MarkerGroupControls`, `TopoProcessorBox`, `ResampleControls`, `RunControls`,
 `GammaBox`, `NameBox`, `StepButtons`, `AveragePicker`); the layout helpers (`box`, the box frame;
 `row`, `column`, `FlowLayout`, a row that wraps in a narrow window; `UnderPanel`, controls centred
-under a panel; `RideBand`, boxes that ride with a cursor); and the number boxes' digit stepping
-(`step_text`).
+under a panel; `RideBand`, boxes that ride with a cursor); the number boxes' digit stepping
+(`step_text`); and the settings section of every window's information panel (`settings_text`: one
+`label: value` line per control shown that holds a setting, `Control.setting`, named by its
+`setting_label`, in its place on screen; a change reaches the window through `Control._changed`).
 
 ### `widgets.py`
 
@@ -984,7 +990,7 @@ The checks (described below): small, each doing one thing on synthetic data, all
 command. The tools (`tools/`): scripts that need a real `.sm4` file or an open window to be
 useful, run by hand. `reports/` holds the reports of the changes made so far
 (`averages-topo-report.md`: averages from lines and maps, Δz subtraction, range matching, topo
-rows; `1-unshifted-pins-report.md`; `2-view-path-and-checks-report.md`).
+rows; `1-unshifted-pins-report.md`; `2-view-path-and-checks-report.md`; `3-features-report.md`).
 
 ## The checks
 

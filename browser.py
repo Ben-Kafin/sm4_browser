@@ -147,7 +147,9 @@ setpoint, lock-in and modulation settings, filters, sample time, range and
 step, points acquired, position, notes), one 'name : value' line each, SI
 prefixes on the units, then the details cut from the panels' titles
 (qtplot.short_title keeps a title's essential part; the counts and states
-go here).
+go here), then, after an empty line, the line 'settings' and the settings
+of the window's controls, one 'label: value' line each in their order on
+screen (controls.settings_text), redrawn at every change of a control.
 Below: a file slider (drag anywhere in the directory; the file loads when
 the mouse is released), '< Prev' / 'Next >', the 'Topo Window' button, the
 'scale factor' box (the current file's scale; editing it sets the scale
@@ -2591,8 +2593,8 @@ class _BrowserCore:
 # (a splitter), each with its toolbar on top (qtplot.NavigationToolbar: Home, Pan, Zoom, Save as
 # PDF / EPS / SVG / PNG / TIFF or the curves as CSV);
 # the controls are native Qt widgets in group boxes under them; the info box takes the file's
-# information and the details cut from the panel titles.  A control repaints only itself, and a
-# pan of the scan area never redraws the spectra.
+# information, the details cut from the panel titles and the settings of the window's controls.
+# A control repaints only itself, and a pan of the scan area never redraws the spectra.
 
 import sys
 from sm4_Browser.qtplot import QtWidgets, QtCore, QtGui, NavigationToolbar
@@ -2905,7 +2907,8 @@ class Browser(_BrowserCore):
         self.fig_scan.set_layout(controls.row(cell_scan, cell_ramp, spacing=10))
         self.toolbar_scan = NavigationToolbar2QT(self.canvas_scan, left)
         # Its Save writes only this canvas and its info: the image and Qt routes render the left column
-        # (the scan area's canvas with its controls), the vector files hold the canvas's plots.
+        # as shown (its toolbar, the scan area's canvas and its controls), the vector files hold the
+        # canvas's plots.
         self.fig_scan.export_root_widget = left
         lv.addWidget(self.toolbar_scan)
         lv.addWidget(self.canvas_scan, 1)
@@ -2969,7 +2972,8 @@ class Browser(_BrowserCore):
         self.fig_spec.set_layout(controls.row(*self._spec_cells, spacing=14))
         rv.addWidget(NavigationToolbar2QT(self.canvas_spec, right))
         # Its Save writes only this canvas and its info: the image and Qt routes render the right column
-        # (the spectra canvas with its settings), the vector files hold the canvas's plots.
+        # as shown (its toolbar, the spectra canvas with its settings, the navigation, the info panel
+        # and the per-file controls), the vector files hold the canvas's plots.
         self.fig_spec.export_root_widget = right
         rv.addWidget(self.canvas_spec, 4)
         self.spec_settings = controls.FeenstraSettings(None, self.feenstra_settings())

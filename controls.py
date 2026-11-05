@@ -1,8 +1,8 @@
 """
 The one set of controls of every window, the browser's included, so that a shared feature (the
 calibrate box, the filter box, the step buttons, a number box, ...) works the same everywhere:
-one class per kind (Check, Checks, Radio, Button, Text, Count, Slider, TextPanel) with one
-interface (value, set (never fires), on_change, show, enable, set_short), and the composite
+one class per kind (Check, Checks, Radio, Button, Text, Count, Slider, TextPanel, Label) with one
+interface (value, set (never fires), on_change, show, enable, set_short, setting), and the composite
 controllers several windows share (FilterControls, PipelineBox, FeenstraSettings, StackControls,
 MarkerGroupControls, TopoProcessorBox, ResampleControls, RunControls, GammaBox, NameBox,
 StepButtons, AveragePicker).  widgets.SPECS names every control (its kind, its font size, a text
@@ -24,6 +24,16 @@ up or down by one in the place of the last selected digit, carrying into the dig
 arithmetic does, and the same places stay selected; with nothing selected the digit just left of
 the cursor steps.  Every number in a box steps on its own (a box holding "3,3" or "Vx, Vy"); a
 Count stops at its limits.  Each press applies the new value at once, as Enter does.
+
+Settings: every window's info panel ends with a settings section, settings_text(root)
+(qtplot.Figure.info_text for a figure window; the browser's _draw_info and _canvas_info for its
+window and its columns): one 'label: value' line per control shown inside `root` that holds a
+setting (setting(): a toggle on / off, a Checks one line per row, a choice its option, a box its
+text, the slider its value, a Button only when stateful, its label), named by its setting_label
+(its label, or its name when the label is empty; a composite or a window sets another where a
+label is empty or repeated), in its place on screen, top to bottom, then left to right.  A click,
+an edit, set, show or remove calls _changed, which calls the window's sm4_settings_changed hook,
+so the section follows every change.
 """
 
 if __package__ in (None, ''):
@@ -390,8 +400,11 @@ class Control:
     One control: its Qt widgets in one widget, `qt`, which the window's Qt layout places
     (automatic layout: the one rule for every window).  `fig` is the figure whose window holds it
     (its text zoom and short labels follow the figure), or None (the browser's window sets them).
-    The interface every kind shares: value, set (never fires), on_change(callback), show, enable,
-    set_short, remove; `widget` is the main Qt widget and unknown attributes go to it.
+    The interface every kind shares: value, set (never fires; the info panel still follows it),
+    on_change(callback), show, enable, set_short, remove, and setting(): its line in the info
+    panel's settings section, named setting_label (None for a kind without a setting, and for a
+    Button unless stateful).  A change, set, show or remove calls _changed, which tells the window
+    (sm4_settings_changed).  `widget` is the main Qt widget and unknown attributes go to it.
     """
 
     _all = weakref.WeakSet()      # every control made (the browser's window switches their short labels)

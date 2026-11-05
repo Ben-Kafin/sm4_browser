@@ -55,16 +55,19 @@ Modules
   fit            Fit: the single-point fit (model, sweep, fit history, windows)
   phase          PhaseRotate: lock-in phase rotation files
   fft            NoiseSpectrum: noise power spectrum files
-  mplexport      a qtplot figure rebuilt as a matplotlib figure and saved (PDF, EPS, SVG, PNG, TIFF)
+  mplexport      a qtplot figure rebuilt as a matplotlib figure and saved as a vector file (PDF, EPS, SVG);
+                 PNG / TIFF are the window rendered by Qt (qtplot.Figure.window_image)
   checks/        the checks, one command runs them all (run): synth (synthetic experiments served through
                  the loader), pipeline_check (the one pipeline path), pin_rule_check (the calibration
-                 locks), contour_check, pass_average_check, affine_check, stripe_check, sweeps_check, and
-                 window_smoke (every window on a virtual screen, its drawn arrays against view(state))
+                 locks), contour_check, pass_average_check, affine_check, stripe_check, sweeps_check,
+                 window_smoke (every window on a virtual screen, its drawn arrays against view(state)), and
+                 save_check (the saving of every window: exactly what it shows plus its full info panel);
+                 checks/README.md: use and extend these checks, never test scripts of one's own
   tools/         scripts that need a real file or an open window, run by hand: denoise_stats, diagnose_file
                  (one file step by step), zero_crossing (the current's zero crossing over the saved
                  averages), alignment_windows (the old and the current line placement side by side),
                  perf_layer, background_processes, rebuild_panels (the denoise step's rebuild of
-                 the current and its g on one sweep, read from stages.step, five panels to a .png)
+                 the current and its g, one sweep at a time in a window, read from stages.step, five panels)
   reports/       the reports of the changes made (each with its approved and additional changes)
 
 Every module can be run on its own (its __main__ block); nothing is imported here.

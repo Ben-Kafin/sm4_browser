@@ -673,7 +673,7 @@ class PairMarkers:
     (the drift window: each topo at its own scale); without it a seeded
     partner is placed with the clicked marker's own ratio of drawing units
     to metres (one scale for both panels).  `on_count(n)` is told when a
-    click raised the pair count (the window's 'Markers' slider follows).
+    click raised the pair count (the window's 'Markers' count box follows).
     The markers are a draft: the window applies them.  span() gives (earlier
     path, later path, markers (n, 6): x_A, y_A, t_A, x_B, y_B, t_B) or
     (None, None, None) while a topo has no marker; confirmable() is True
@@ -701,7 +701,7 @@ class PairMarkers:
         # to_display(xy_m, path) -> drawing units of a position on the panel of `path`: each topo at its
         # own scale (the drift window); None: one drawing scale for both panels (a marker's own ratio).
         self.to_display = to_display
-        self.on_count = on_count           # callback(n) when a click raised the pair count (the window's slider)
+        self.on_count = on_count           # callback(n) when a click raised the pair count (the window's 'Markers' box)
         self.n_pairs = min(max(int(n_pairs), 0), MARKER_PAIRS_MAX)
         self.markers = {path: [] for _, path, _ in self.panels}     # path -> [{'xy', 'xy_m', 't', 'px_m', 'seed'}]
         self._arts = []
@@ -954,7 +954,7 @@ class PairMarkers:
             if self.n_pairs >= MARKER_PAIRS_MAX:
                 print(f"drift markers: {name} holds the most markers ({MARKER_PAIRS_MAX}); drag one or clear.")
                 return
-            self.n_pairs += 1                          # every click adds a pair; the window's slider follows
+            self.n_pairs += 1                          # every click adds a pair; the window's 'Markers' box follows
             if self.on_count is not None:
                 self.on_count(self.n_pairs)
         res = self.resolve_on(path, float(xd), float(yd))

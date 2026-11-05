@@ -182,8 +182,9 @@ def draw_heatmap(ax, img, extent, cmap, gamma=1.0, vmin=None, vmax=None, origin=
     An STS heatmap or map into `ax` (imshow): its own finite min and max as
     the colour limits unless vmin / vmax are given, the colour-map gamma
     applied (heat_norm); `extent` None draws at pixel indices;
-    `interpolation` is passed on for the publication export (on screen
-    every data pixel is a block).  Returns the AxesImage.
+    `interpolation` is passed on to imshow, which ignores it (on screen
+    every data pixel is a block, and mplexport writes every image with
+    interpolation 'none').  Returns the AxesImage.
     """
     lo, hi = finite_range(img)
     vmin = lo if vmin is None else float(vmin)
@@ -672,8 +673,9 @@ def draw_topo_absolute(ax, sm4, img, scalefactor, **imshow_kw):
     recorded centre, no drift correction.  Returns the AxesImage.  The
     array is drawn at the resolution it was saved at, each data pixel a
     block (pyqtgraph's ImageItem never smooths); interpolation='none' is
-    recorded for the publication export, so matplotlib's vector output
-    (pdf, svg) receives the raw pixels too.
+    passed as matplotlib's imshow takes it (qtplot ignores it), and mplexport
+    writes every image with interpolation 'none', so matplotlib's vector
+    output (pdf, eps, svg) receives the raw pixels too.
     """
     k = 1e9 / scalefactor
     l, r, b, t = [v * k for v in sm4.frame_extent_m()]
