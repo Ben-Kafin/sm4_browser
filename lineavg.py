@@ -1255,6 +1255,10 @@ class AlignmentEditor:
                 d['g_didv'].on_change(lambda value, k=k: self.draw_member(k))
                 d['g_iv'] = controls.GammaBox(fig)
                 d['g_iv'].on_change(lambda value, k=k: self.draw_member(k))
+                # The settings section's names of the pair (controls.settings_text): member k's channel
+                # heatmap and its current heatmap.
+                d['g_didv'].box.setting_label = f"γ line {k + 1} channel"
+                d['g_iv'].box.setting_label = f"γ line {k + 1} current"
                 grid.addWidget(d['g_didv'].qt, 2 * r + 1, 1, QtCore.Qt.AlignmentFlag.AlignRight)
                 grid.addWidget(d['g_iv'].qt, 2 * r + 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
                 grid.setRowStretch(2 * r, 1)

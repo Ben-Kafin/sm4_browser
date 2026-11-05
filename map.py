@@ -307,6 +307,10 @@ class Map:
         self.btn_stripe_win.on_change(self._on_stripe_window)
         self._sync_stripe_toggle()
         self.btn_view = controls.make(fig, 'Grid view')
+        # Its label names the view a click switches to ('Grid view' / 'Single view', _apply_view): the
+        # settings section lists it (controls.settings_text).
+        self.btn_view.stateful = True
+        self.btn_view.setting_label = 'switch to'
         self.btn_view.on_change(self.toggle_view)
         self.steps = controls.StepButtons(fig, '< E', 'E >')
         self.steps.on_change(self.step)
@@ -440,6 +444,7 @@ class Map:
             self.grid_axes.append(ax)
             self.grid_caxes.append(cax)
             g = controls.GammaBox(fig, gamma=self.gammas[e])
+            g.box.setting_label = f"γ {self.V[e]:.2f} V"        # its map's energy, as the map's title (settings_text)
             g.on_change(lambda value, e=e: self._on_gamma_grid(e, value))
             gl.addWidget(g.qt, 2 * rr + 1, 2 * cc, Qt.AlignmentFlag.AlignRight)
             self.grid_gammas.append(g)

@@ -637,20 +637,36 @@ file records.
 ## Saving figures
 
 The Save button on every window's toolbar opens a dialog; the file type picked there is always the
-one written.
+one written. Every saved figure is exactly what the window shows when it is saved: every panel,
+heatmap, stripe, curve, marker, drift line, legend, colour bar and figure text at its on-screen
+place, size and shape, the file at the window's size and shape, text at its on-screen size. Nothing
+is laid out again for the file and nothing is cropped.
 
 | file type in the dialog | made by | what you get |
 |---|---|---|
-| PDF / EPS / SVG, publication | matplotlib (`mplexport.py`) | vector files at the window's design size whatever its size on screen: every line, marker, heatmap cell and text an editable object, cropped to the plots, the controls left out |
-| PNG / TIFF, publication, 300 dpi | matplotlib | the same figure as a high-resolution image |
-| PNG / SVG, as on screen | pyqtgraph's exporters | what the canvas draws (the PNG at twice the canvas's pixels by default) |
-| PNG, screenshot | Qt | the canvas's pixels, controls included, without the toolbar and the information panel |
+| PDF / EPS / SVG, vector, editable | matplotlib (`mplexport.py`) | the plots as on screen, every line, marker, heatmap cell and text an editable object; the controls left out, their places empty, so nothing moves; below the plots the full information panel, every line, wrapped as the panel wraps it on screen |
+| SVG, the whole window as Qt draws it | Qt (`qtplot.export_vector`) | the window's canvas with its controls and the information panel as shown, and below it the full information panel |
+| PNG / TIFF, the window at 720 dpi | Qt (`Figure.window_image`) | a high-definition screenshot of the window (the canvas with its controls and the information panel as shown, without the toolbar), 7.2 times its pixels |
 | CSV | qtplot | every curve of every panel as x and y columns, headed by panel and label |
 
-matplotlib is imported only at the moment of saving a publication file; without it those types are
-not offered. From code: `fig.savefig('a.pdf')`, `fig.savefig('a.png', how='screen')`,
-`fig.savefig('a.csv')`, or `mplexport.to_matplotlib(fig)` for a matplotlib figure to adjust before
-saving.
+The information panel of every window ends with a `settings` section: one `label: value` line for
+every control shown in the window (a toggle `on` / `off`, a choice its selected option, a box its
+text, a slider its value, a button whose label shows a state its label), in the order they sit on
+screen, top to bottom, then left to right, updated as they change. So the vector files, which leave
+the controls out, still carry every setting. The panel wraps its lines at its width (it scrolls);
+the files never get wider than the window. In the browser, each of the two toolbars' Save writes
+only its own canvas: the image and the Qt SVG its column (the scan area with its controls, or the
+spectra with their settings and the information panel), the vector files that canvas's plots, each
+with that canvas's information: the current file's head lines and measurement rows, the details of
+its panels, and the settings of the controls in its column.
+
+matplotlib is imported only at the moment of saving a vector file; without it the PDF / EPS / SVG
+vector types are not offered, and a vector file asked for from code is written the Qt way. From
+code: `fig.savefig('a.pdf')` (vector), `fig.savefig('a.svg', how='qt-svg')`, `fig.savefig('a.png')`
+(the window at 720 dpi), `fig.savefig('a.csv')`, or `mplexport.to_matplotlib(fig)` for a matplotlib
+figure to adjust before saving. The export is bound to the copy of `qtplot` that drew the window,
+so a window opened before Spyder reloaded the package at a later run still saves everything it
+shows.
 
 ## Layout and controls
 
@@ -663,8 +679,8 @@ always keeps its x:y ratio; the other panels of its row follow it. The matplotli
 module (`subplots`, `add_subplot`) put their panels in an automatic grid of cells the same way.
 Windows never scroll; a panel that holds only text (a readout) scrolls when it holds more lines than
 it shows, and so does the marker box of the Line and Map windows once it is as tall as the panel
-row. The publication export lays a window out at its design size, whatever its size on screen
-(see [Saving figures](#saving-figures)).
+row. A saved figure is the window as it is on screen, at its size (see
+[Saving figures](#saving-figures)).
 
 The controls are one set for every window (`controls.py`), so a shared feature (the `calibrate` /
 `normalize` box, the filters box, the step buttons, a number box, the marker box) looks and works
@@ -723,8 +739,8 @@ pyqtgraph, so every window is written as if for matplotlib (`Figure`, `Axes`, `L
 close events, `NavigationToolbar`, `FigureManager`), plus the automatic layout (`Figure.set_layout`
 installs a window's Qt layout on its canvas; `Figure.cell` makes a panel's cell, `PanelCell`, and an
 axes made with `cell=` takes that cell less its tick axes and title; `subplots` and `add_subplot`
-fill an automatic grid of cells, `Figure.layout_root`; the text fit, `fits_controls`; the export at
-the design size, `Figure.at_design_size`), the row rule
+fill an automatic grid of cells, `Figure.layout_root`; the text fit, `fits_controls`; the saving of
+exactly what the window shows, `Figure.savefig`, `Figure.window_image`, `export_vector`), the row rule
 (`Figure.align_row`: the panels of one row take one height, the one a locked aspect among them
 asks for, spatial panels keeping their aspect and colour bars, ramps and curve panels stretching
 or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row),
@@ -948,9 +964,10 @@ fit window and the edit window.
 
 ### `mplexport.py`
 
-A qtplot figure rebuilt as a matplotlib figure (`to_matplotlib`, with the window laid out at its
-design size while it is read) for the publication file types; `export` writes one and `available`
-says whether matplotlib can be imported.
+A qtplot figure rebuilt as a matplotlib figure (`to_matplotlib`: the canvas as on screen, at its
+size, text at its on-screen size, the controls left out, and the full information panel below it,
+wrapped as on screen) for the vector file types; `export` writes one and `available` says whether
+matplotlib can be imported.
 
 ### `phase.py` and `fft.py`
 
@@ -1041,7 +1058,7 @@ off (`sts.STS.view`), the current and g (g before the soft edge dotted beside it
 line at every turning point of g; under them '< sweep' / 'sweep >' step through the
 acquired columns, and the calibrate rows of the pipeline box (`gate` with its `H` and `SG` boxes,
 `0-lock`, `Vbias lock`) set the step's regression and run the engine again; the toolbar's Save
-writes the figure (EPS among the formats, at the window's design size); the five panels share one
+writes the figure (EPS among the formats, at the window's size on screen, the settings of the rows in the info panel below the panels); the five panels share one
 box width (`Figure.align_column`) and one x range, the sweep's bias range with 3 % on each side; the soft edge's curve
 printed bin by bin; on the built-in synthetic set, a saved `.npz` set or an `.sm4`, the sweep it
 opens on and the soft edge set in its `__main__` block, the gate and the locks only by the rows). `calibration.py`'s own

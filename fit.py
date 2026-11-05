@@ -3124,6 +3124,9 @@ class Fit:
                         continue
                     key, label, value = params[k]
                     row['name'].set_text(label)
+                    # The settings section's names of the row (controls.settings_text): its parameter.
+                    row['box'].setting_label = label
+                    row['chk'].setting_label = f"{label} hold"
                     row['box'].set(self._fmt_param(value))
                     chk.set(key in held)
                 finally:

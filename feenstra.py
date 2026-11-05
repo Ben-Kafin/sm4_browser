@@ -326,6 +326,8 @@ class FeenstraWindow:
         self.stacks.on_change(self.refresh)
         # One gamma box per heatmap column (shown for the 'line' and 'map' kinds).
         self.gammas = {key: controls.GammaBox(self.fig) for key in self.KEYS}
+        for key, g in self.gammas.items():
+            g.box.setting_label = f"γ {self.SIMPLE[key]}"         # its panel's title (settings_text)
         for g in self.gammas.values():
             g.on_change(lambda value: self.refresh())
             g.show(False)

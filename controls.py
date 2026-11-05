@@ -395,12 +395,17 @@ class Control:
     """
 
     _all = weakref.WeakSet()      # every control made (the browser's window switches their short labels)
+    stateful = False              # a Button whose label shows a state (the Line window's 'f' / 'r'): setting() gives its label
 
     def __init__(self, fig, name, label=None):
         self.fig = fig
         self.name = name
         self.spec = dict(SPECS.get(name, {'kind': None, 'w': 1.0, 'h': 0.3, 'fs': 8}))
         self.label = _label_of(name) if label is None else str(label)
+        # The name of this control's line in the info panel's settings section (setting, settings_text):
+        # its label, or its name when the label is empty; a composite box or a window sets another
+        # where a label is empty or repeated in its window.
+        self.setting_label = self.label if self.label.strip() else str(name)
         self._short = False
         self._cb = None
         self._quiet = False
@@ -452,6 +457,7 @@ class Control:
     def show(self, flag):
         self._visible = bool(flag)
         self.qt.setVisible(self._visible)
+        self._changed()
 
     def enable(self, flag):
         """The control takes events (True) or ignores them (False)."""
@@ -462,8 +468,33 @@ class Control:
         self._cb = callback
 
     def _fire(self, *args):
+        self._changed()                # the info panel shows the change, with or without a callback
         if self._cb is not None and not self._quiet and self.eventson:
             self._cb(*args)
+
+    def setting(self):
+        """
+        This control's line in the info panel's settings section: (setting_label, the value as
+        shown), or None for a control that holds no setting (a Button, unless stateful, whose label
+        then is the setting; a Label; a TextPanel).  A Checks gives a list, one (row label, on/off)
+        per row.  Each kind gives its own (Check, Checks, Radio, Text, Count, Slider, Button).
+        """
+        return None
+
+    def _changed(self):
+        """
+        A setting of this control changed (or the control was shown, hidden or removed): its window's
+        hook (sm4_settings_changed: a figure window's coalesced info push, the browser's coalesced
+        _draw_info) is called.  Never raises: a control without a window, or a closed one, is ignored.
+        """
+        try:
+            if self.qt is None:
+                return
+            hook = getattr(self.qt.window(), 'sm4_settings_changed', None)
+            if hook is not None:
+                hook()
+        except Exception:              # the window or its Qt objects are already gone
+            pass
 
     @property
     def ax(self):
@@ -471,6 +502,7 @@ class Control:
         return _Anchor(self)
 
     def remove(self):
+        self._changed()
         if self.fig is not None:
             self.fig._unregister_control(self)
         if self.qt is not None:
@@ -518,6 +550,9 @@ class Check(Control):
     def get_status(self):
         return [self.value]
 
+    def setting(self):
+        return (self.setting_label, 'on' if self.value else 'off')
+
     def set(self, flag):
         if self.value != bool(flag):
             self._quiet = True
@@ -527,6 +562,7 @@ class Check(Control):
             finally:
                 self.widget.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     def set_label_color(self, color):
         self._labels[0].set_color(color)
@@ -611,6 +647,9 @@ class Checks(Control):
     def value(self):
         return [bool(cb.isChecked()) for cb in self.boxes]
 
+    def setting(self):
+        return [(lab, 'on' if cb.isChecked() else 'off') for cb, lab in zip(self.boxes, self.spec['labels'])]
+
     def set(self, i, flag):
         cb = self.boxes[i]
         if cb.isChecked() != bool(flag):
@@ -621,6 +660,7 @@ class Checks(Control):
             finally:
                 cb.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     def set_all(self, flags):
         for i, f in enumerate(flags):
@@ -681,6 +721,10 @@ class Radio(Control):
 
     value_selected = value
 
+    def setting(self):
+        v = self.value
+        return (self.setting_label, '' if v is None else str(v))
+
     def set(self, label):
         if label in self.labels and self.value != label:
             self._quiet = True
@@ -693,6 +737,7 @@ class Radio(Control):
                 for b in self.buttons:
                     b.blockSignals(False)
                 self._quiet = False
+        self._changed()
 
 
 class Button(Control):
@@ -711,9 +756,13 @@ class Button(Control):
     def value(self):
         return self.widget.text()
 
+    def setting(self):
+        return (self.setting_label, self._text) if self.stateful else None
+
     def set_text(self, text):
         self._text = str(text)
         self._apply_labels()
+        self._changed()
 
     def _apply_labels(self):
         self.widget.setText(self.shown(self._text))
@@ -911,6 +960,9 @@ class Text(Control):
     def text(self):
         return self.widget.text()
 
+    def setting(self):
+        return (self.setting_label, self.widget.text())
+
     def set(self, text):
         text = str(text)
         self._last = text
@@ -922,6 +974,7 @@ class Text(Control):
             finally:
                 self.widget.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     set_val = set
 
@@ -1020,7 +1073,7 @@ class Slider(Control):
         lay.addWidget(sl, 1)
         lay.addWidget(self.readout)
         self._release = None
-        sl.valueChanged.connect(self._changed)
+        sl.valueChanged.connect(self._moved)
         sl.sliderReleased.connect(self._released)
         self.widget = sl
         self.qt = w
@@ -1029,7 +1082,7 @@ class Slider(Control):
     def _apply_labels(self):
         self._lab.setText(self.shown(self.label))
 
-    def _changed(self, v):
+    def _moved(self, v):
         self.readout.setText(str(v))
         if self._quiet:
             return
@@ -1048,6 +1101,9 @@ class Slider(Control):
     def value(self):
         return self.slider.value()
 
+    def setting(self):
+        return (self.setting_label, self.readout.text())
+
     def set(self, value):
         v = int(round(value))
         if self.slider.value() != v:
@@ -1059,6 +1115,7 @@ class Slider(Control):
             finally:
                 self.slider.blockSignals(blocked)
                 self._quiet = False
+        self._changed()
 
     def set_range(self, vmin, vmax):
         self._quiet = True
@@ -1191,6 +1248,46 @@ def make(fig, name, **kw):
     return _KINDS[kind](fig, name, **kw)
 
 
+def settings_text(root):
+    """
+    The settings section of a window's info panel: every live control (Control._all) whose Qt widget
+    is visible and inside `root` (a window, or the browser's column), with a setting (setting()),
+    ordered by its place on screen (its widget's top left mapped to `root`: top to bottom, then
+    left to right), one line each, 'label: value' (a Checks one line per row).  '' when there is
+    none.
+    """
+    if root is None:
+        return ''
+    found = []
+    for c in list(Control._all):
+        qt = c.qt
+        if qt is None:
+            continue
+        try:
+            if not qt.isVisible() or not root.isAncestorOf(qt):
+                continue
+            s = c.setting()
+            if s is None:
+                continue
+            pos = qt.mapTo(root, QtCore.QPoint(0, 0))
+        except RuntimeError:           # its Qt widget is already deleted
+            continue
+        found.append(((pos.y(), pos.x()), s))
+    found.sort(key=lambda item: item[0])
+    lines = []
+    for _, s in found:
+        for lab, val in (s if isinstance(s, list) else [s]):
+            lines.append(f"{lab}: {val}")
+    return "\n".join(lines)
+
+
+# qtplot.Figure.info_text lists a figure window's settings through this module's settings_text,
+# bound to the qtplot this module imported: a window's info panel then always reads the controls of
+# the copy of this module that made them (a module reloader that drops the package from sys.modules
+# cannot split them).
+plt._settings_text = settings_text
+
+
 # ---------------------------------------------------------------------- #
 #  Composite controllers                                                   #
 # ---------------------------------------------------------------------- #
@@ -1287,6 +1384,12 @@ class FilterControls:
         self.box_po = Text(fig, 'polyorder', self._fmt(self._sp['polyorder']), label='polyorder', width=36)
         self.box_win = Text(fig, 'window', self._fmt(self._hp['window']), label='window', width=36)
         self.box_nsig = Text(fig, 'n_sigma', self._fmt(self._hp['n_sigma']), label='nσ', width=36)
+        # The settings section's names of the parts (settings_text): the toggles have no label of their
+        # own (the headers and row names say what they are) and both rows have a 'window' box.
+        for c, lab in ((self.chk_sd, 'SG dI/dV'), (self.chk_s, 'SG I(V)'), (self.chk_hd, 'Hampel dI/dV'),
+                       (self.chk_h, 'Hampel I(V)'), (self.box_wl, 'SG window'), (self.box_po, 'SG polyorder'),
+                       (self.box_win, 'Hampel window'), (self.box_nsig, 'Hampel nσ')):
+            c.setting_label = lab
         self._labels_w = [self._hdr_d, self._hdr_i, self._name_s, self._name_h]
         grid.addWidget(self._hdr_d, 0, 0)
         grid.addWidget(self._hdr_i, 0, 1)
@@ -1860,6 +1963,7 @@ class MarkerGroupControls:
         self.box = _MarkerBox()
         for r in range(self.max_groups):
             s = Count(fig, 'Markers', value=1, vmax=markers_max)
+            s.setting_label = f"Markers, group {r + 1}"       # its row, counted from the top (settings_text)
             b_new = Button(fig, 'add new')
             b_exist = Button(fig, 'add existing')
             w = widget_of(row(s, b_new, b_exist, spacing=3, stretch=True))

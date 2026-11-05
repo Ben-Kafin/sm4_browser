@@ -1281,6 +1281,11 @@ class Line:
             lab = controls.Label(fig, 'row label', text=f"row {k + 1}", fs=8)
             box = controls.make(fig, 'rows', value=str(self._int_topo_lines[k][0]))
             btn = controls.make(fig, 'f')
+            # The settings section's lines of row k (controls.settings_text): its line box, and its
+            # f / r button, whose label is the row's pass.
+            box.setting_label = f"topo row {k + 1} line"
+            btn.stateful = True
+            btn.setting_label = f"topo row {k + 1} pass"
             btn.set_text(self.TOPO_PASS_LETTER[self._int_topo_lines[k][1]])
             prof = controls.make(fig, 'profile')
             box.on_change(lambda text, k=k: self._int_on_topo_row_edit(k, text))
@@ -2812,6 +2817,11 @@ class Line:
             box = controls.make(fig, 'rows', value='')
             btn = controls.make(fig, 'f')
             prof = controls.make(fig, 'profile')
+            # The settings section's lines of row k (controls.settings_text): its line box, and its
+            # f / r button, whose label is the row's pass.
+            box.setting_label = f"topo row {k + 1} line"
+            btn.stateful = True
+            btn.setting_label = f"topo row {k + 1} pass"
             box.show(False)
             btn.show(False)
             prof.show(False)

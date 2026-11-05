@@ -63,10 +63,11 @@ gain line is printed with the engine's other notes.  When the step cannot be app
 regression it cannot determine, a lock it cannot pin), the panels are left empty and the reason
 is drawn in the first one and printed.
 
-Saving: the toolbar's Save writes the figure in any of qtplot's formats, EPS among them
-(publication files through mplexport, at the window's design size DESIGN whatever its size on
-screen; the controls are not part of the file); OUT below writes one publication file at open as
-well.  EPS has no transparency: the faint lines (alpha) come out opaque.
+Saving: the window opens at its design size DESIGN; the toolbar's Save writes the figure in any of
+qtplot's formats, EPS among them, at the window's size on screen, exactly as it shows it (the
+vector files through mplexport, the controls left out and the full info panel, the settings of the
+rows among it, below the panels); OUT below writes one file at open as well.  EPS has no
+transparency: the faint lines (alpha) come out opaque.
 
 Colours: recorded = black, the step = red, the ratio = green.
 
@@ -94,7 +95,7 @@ from sm4_Browser.sts import STS, PipelineState
 
 COL_REC, COL_STEP, COL_RATIO = "black", "tab:red", "tab:green"
 N_SYNTHETIC = 32         # the synthetic set's sweeps (seeds 0 .. N_SYNTHETIC - 1), the soft edge's curve measured on them
-DESIGN = (11, 21)        # the window's design size (inches): the size it opens with and the size the publication files have
+DESIGN = (11, 21)        # the window's design size (inches): the size it opens with; a saved file has the window's size on screen
 
 
 # ----------------------------------------------------------------------------------------------
@@ -497,8 +498,8 @@ if __name__ == "__main__":
     #   python -m sm4_Browser.tools.rebuild_panels [SOURCE] [SWEEP] [OUT]
     #   SOURCE     'synthetic', a .npz synthetic set, or an .sm4 file
     #   SWEEP      the file column the window opens on, an acquired one (ignored for 'synthetic', which opens on column 0)
-    #   OUT        a publication file written at open as well, of the sweep the window opens on (.eps, .pdf,
-    #              .svg, .png by its extension); None = the window only
+    #   OUT        a file written at open as well, of the window as it opens on its sweep (.eps, .pdf,
+    #              .svg vector, .png the window at 720 dpi, by its extension); None = the window only
     #   SOFT_EDGE  the step's soft edge for the whole session (on at open in the other windows; no row for it here)
     SOURCE = 'C:/path/to/spectra_file_1.sm4'
     #SOURCE = 'C:/path/to/spectra_file_2.sm4'
@@ -514,6 +515,6 @@ if __name__ == "__main__":
     fig = open_window(data, 0 if SOURCE == "synthetic" else SWEEP, gate_at_open(SOFT_EDGE))
     if OUT:
         plt.show(block=False)
-        fig.savefig(OUT, how="publication")
+        fig.savefig(OUT)
         print(f"wrote {OUT}")
     plt.show()

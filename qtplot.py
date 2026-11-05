@@ -57,8 +57,8 @@ subplots) put their axes in an automatic grid of cells (Figure.layout_root);
 an axes given an explicit rect keeps that figure fraction.  When a window is
 too small for its controls' text, the text shrinks to CONTROL_FIT_MIN of its
 zoom (Figure._fit_controls, fits_controls) and then the window's smallest
-size is raised, so nothing overlaps and no window scrolls.  The publication
-export lays a window out at its design size (Figure.at_design_size).
+size is raised, so nothing overlaps and no window scrolls.  A saved figure is
+the window as it is on screen: nothing is laid out again for the file.
 
 Text size: every window declares its design size as a DESIGN constant
 (inches, the figsize it opens with, at DPI logical pixels per inch) and
@@ -75,10 +75,15 @@ window.
 
 Also here: the events the windows connect to (FigureCanvas.mpl_connect:
 MouseEvent, KeyEvent, PickEvent, CloseEvent), the navigation toolbar
-(NavigationToolbar: Home, Pan, Zoom, Save), the saving of a figure
-(Figure.savefig: publication files through mplexport, pyqtgraph's own
-exporters, a screenshot, or the curves as CSV; export_vector writes PDF /
-SVG / EPS through Qt when matplotlib is missing), the registry of the Qt
+(NavigationToolbar: Home, Pan, Zoom, Save), the saving of a figure, exactly
+what the window shows (Figure.savefig: PDF / EPS / SVG through mplexport, the
+plots at their on-screen places and sizes and the full info panel below them,
+the controls left out with their places empty; an SVG of the whole window as
+Qt draws it, controls included, with the full info panel below
+(export_vector, also the Qt route for PDF / EPS when matplotlib is missing);
+PNG / TIFF, the window rendered at WINDOW_IMAGE_DPI (Figure.window_image);
+or the curves as CSV), the info panel's settings section (the settings of the
+window's controls, controls.settings_text), the registry of the Qt
 controls in a figure's layout (Figure._register_control, used by controls.py),
 and the crash log (CRASH_LOG, log_note, watchdog) for hangs and native
 crashes inside Qt.
@@ -251,6 +256,7 @@ _check_qt_binding()
 WINDOW_BG = '#f0f0f0'     # the window colour around the white panels
 FONT_SCALE = 1.25         # every text (plots, legends, controls) this much larger than matplotlib's points
 DPI = 100.0               # logical pixels per inch: figure sizes, widget sizes, and font points as matplotlib's
+WINDOW_IMAGE_DPI = 720    # the resolution of the image formats (Figure.window_image): the window rendered at WINDOW_IMAGE_DPI / DPI
 ANTIALIAS = True          # antialiased curves (False draws faster, with jagged lines)
 ZOOM_MIN, ZOOM_MAX = 0.5, 4.0   # the text zoom of any window: its size relative to its design size, within these
 CONTROL_FIT_MIN = 0.75          # the controls' text shrinks to at most this fraction of the zoom to fit its window (every window: Figure._fit_controls, browser._WindowZoom)
@@ -4627,7 +4633,8 @@ class NavigationToolbar(QtWidgets.QToolBar):
         self.a_zoom.toggled.connect(lambda on: self._mode('zoom rect' if on else ''))
         self.addSeparator()
         a = self.addAction(st.standardIcon(sp.SP_DialogSaveButton), 'Save')
-        a.setToolTip('Save the figure: PDF / EPS / SVG / PNG / TIFF for publication (matplotlib), PNG / SVG as on screen, or the curves as CSV')
+        a.setToolTip('Save exactly what the window shows: PDF / EPS / SVG (vector, editable) with the full info panel, '
+                     'an SVG of the whole window as Qt draws it, PNG / TIFF of the window at 720 dpi, or the curves as CSV')
         a.triggered.connect(self._save)
         spacer = QtWidgets.QWidget()
         spacer.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
@@ -4653,18 +4660,21 @@ class NavigationToolbar(QtWidgets.QToolBar):
         for ax in self.figure._axes:
             ax._apply_toolbar_mode(mode)
 
-    # (dialog filter, extension, how) for Figure.savefig: 'publication' through matplotlib (mplexport; left
-    # out of the dialog without matplotlib), 'screen' through pyqtgraph's exporters, 'screenshot' the
-    # canvas's pixels, 'csv' the curves' data (export_csv).
+    # (dialog filter, extension, how) for Figure.savefig; every entry saves exactly what this window shows.
+    # 'vector': PDF / EPS / SVG through matplotlib (mplexport): the plots at their on-screen places, sizes
+    # and text sizes, the file at the window's size and shape, the controls left out with their places
+    # empty, and the full info panel (the settings of the controls among it) below, wrapped as on
+    # screen; left out of the dialog without matplotlib.  'qt-svg': the whole window as Qt draws it,
+    # controls included, with the full info panel below (export_vector).  'image': the window rendered
+    # at WINDOW_IMAGE_DPI (Figure.window_image), the info panel as shown.  'csv': the curves' data
+    # (export_csv).
     SAVE_FORMATS = [
-        ("PDF, publication (vector, editable) (*.pdf)", '.pdf', 'publication'),
-        ("EPS, publication (vector, editable) (*.eps)", '.eps', 'publication'),
-        ("SVG, publication (vector, editable) (*.svg)", '.svg', 'publication'),
-        ("PNG, publication, 300 dpi (*.png)", '.png', 'publication'),
-        ("TIFF, publication, 300 dpi (*.tif)", '.tif', 'publication'),
-        ("PNG, as on screen (pyqtgraph) (*.png)", '.png', 'screen'),
-        ("SVG, as on screen (pyqtgraph) (*.svg)", '.svg', 'screen'),
-        ("PNG, screenshot of the window (*.png)", '.png', 'screenshot'),
+        ("PDF, vector, editable: the plots as on screen and the full info panel (*.pdf)", '.pdf', 'vector'),
+        ("EPS, vector, editable: the plots as on screen and the full info panel (*.eps)", '.eps', 'vector'),
+        ("SVG, vector, editable: the plots as on screen and the full info panel (*.svg)", '.svg', 'vector'),
+        ("SVG, the whole window as Qt draws it, controls included, full info panel (*.svg)", '.svg', 'qt-svg'),
+        ("PNG, the window at 720 dpi (*.png)", '.png', 'image'),
+        ("TIFF, the window at 720 dpi (*.tif)", '.tif', 'image'),
         ("CSV, the curves' data (*.csv)", '.csv', 'csv'),
     ]
 
@@ -4673,7 +4683,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
         name = ''.join(ch if ch.isalnum() or ch in '._- ' else '_' for ch in (title or 'figure')).strip() or 'figure'
         formats = list(self.SAVE_FORMATS)
         if not _have_matplotlib():
-            formats = [f for f in formats if f[2] != 'publication']
+            formats = [f for f in formats if f[2] != 'vector']
         last = getattr(NavigationToolbar, '_last_filter', None)
         filters = [f[0] for f in formats]
         path, flt = QtWidgets.QFileDialog.getSaveFileName(
@@ -4688,7 +4698,7 @@ class NavigationToolbar(QtWidgets.QToolBar):
             path = (root if given.lower() in {f[1] for f in formats} else path) + ext
         QtWidgets.QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            out = self.figure.savefig(path, how=how, dpi=300 if how == 'publication' else None)
+            out = self.figure.savefig(path, how=how)
             print(f"saved: {out}")
         except Exception as exc:
             traceback.print_exc()
@@ -4740,7 +4750,7 @@ class FigureManager:
         # way (closable; hidden while empty).
         self.info = QtWidgets.QPlainTextEdit()
         self.info.setReadOnly(True)
-        self.info.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.info.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.info.setFont(qfont(7.5))
         self.info.setFixedHeight(int(pt2px(7.5) * FONT_SCALE * 4.2))
         self.dock = QtWidgets.QDockWidget('info', self.window)
@@ -4754,6 +4764,9 @@ class FigureManager:
         self.window.resize(int(w_px), int(h_px) + th)
         self._title = f"Figure {figure.number}"
         self.window.setWindowTitle(self._title)
+        # The hook a control of this window calls when its setting changes (controls.Control._changed):
+        # the info panel's settings section updated.
+        self.window.sm4_settings_changed = figure._settings_changed
 
     def set_window_title(self, title):
         self._title = str(title)
@@ -4790,6 +4803,7 @@ class FigureManager:
         self.window.raise_()
         self.window.activateWindow()
         self.figure._shown = True
+        self.figure._settings_changed()        # the info panel's settings section, once the controls are on screen
 
     def _closed(self):
         self.figure._on_close()
@@ -4828,6 +4842,12 @@ class _EmbeddedManager:
 
 _figures = {}
 
+# controls.settings_text, set by controls.py when it is imported: bound to the qtplot module that
+# controls.py imported, so a window's info panel lists its controls' settings through the copy of
+# controls that made them (a module reloader that drops the package from sys.modules cannot split
+# them); None until controls.py is imported (no controls, no settings).
+_settings_text = None
+
 
 class Figure:
     """
@@ -4835,7 +4855,8 @@ class Figure:
     the Qt controls of controls.py in the same layout, and (in its own window) a navigation toolbar
     and an info panel.  Its text zoom (font_zoom) and shape
     (portrait) follow the canvas (_relayout, on every resize); the design size it was opened with
-    (_design_px) is the reference of both and the size of the publication export.
+    (_design_px) is the reference of both.  A saved file is the window at its size on screen
+    (savefig).
     """
 
     def __init__(self, figsize=(6.4, 4.8), num=None, embed=False):
@@ -4865,8 +4886,7 @@ class Figure:
         self._texts = []
         self._qt_controls = []         # the controls of widgets.py on this figure (short labels, text zoom)
         self._layout = None            # the window's Qt layout on the canvas's viewport (set_layout)
-        self._size_override = None     # (W, H) while the layout is applied at another size (at_design_size)
-        self._title_cell = None        # the layout cell of the figure's title (set_title_cell)
+        self._title_cell = None       # the layout cell of the figure's title (set_title_cell)
         self._fitting = False
         self._fit_zoom = None          # the control zoom the last fit settled on
         self.control_zoom = 1.0        # the controls' text zoom: font_zoom, reduced to fit (_fit_controls)
@@ -4883,6 +4903,9 @@ class Figure:
             self.manager = FigureManager(self, self.canvas, w_px, h_px)
             _figures[self.number] = self
         self.canvas.manager = self.manager
+        # The info panel whose font and width the saved files' info text takes (_mplexport._info_lines):
+        # the window's own panel; a figure inside another window is given that window's (the browser's).
+        self.export_info_panel = getattr(self.manager, 'info', None)
 
     # --- the info panel: the details cut from the titles ---
 
@@ -4895,6 +4918,10 @@ class Figure:
             info[key] = text
         else:
             info.pop(key, None)
+        self._settings_changed()
+
+    def _settings_changed(self):
+        """The info panel brought up to date once (_push_info), however many changes come in one event: a line set here, or a control's setting (controls.Control._changed, through the window's sm4_settings_changed)."""
         if not getattr(self, '_info_pending', False):
             self._info_pending = True
             QtCore.QTimer.singleShot(50, self._push_info)
@@ -4904,11 +4931,21 @@ class Figure:
         self._set_info(('line', str(key)), text)
 
     def info_text(self):
-        """The details of every panel's title, one line each (panels in their order on the figure), then the window's own lines (set_info_line) in the order they were first set."""
+        """
+        The details of every panel's title, one line each (panels in their order on the figure), then
+        the window's own lines (set_info_line) in the order they were first set; in a window of its
+        own (a FigureManager), then an empty line, the line 'settings' and the settings of the
+        window's controls (controls.settings_text).  A figure inside another window (the browser's)
+        leaves the settings to that window.
+        """
         info = getattr(self, '_info', {})
         order = ((['suptitle'] if 'suptitle' in info else []) + [ax for ax in self._axes if ax in info]
                  + [k for k in info if isinstance(k, tuple) and k[0] == 'line'])
-        return "\n".join(" ".join(info[k].split()) for k in order)
+        text = "\n".join(" ".join(info[k].split()) for k in order)
+        if isinstance(self.manager, FigureManager):
+            settings = _settings_text(self.manager.window) if _settings_text is not None else ''
+            text = (text + "\n" if text else "") + "\nsettings" + ("\n" + settings if settings else "")
+        return text
 
     def _push_info(self):
         self._info_pending = False
@@ -4931,8 +4968,6 @@ class Figure:
     # --- size ---
 
     def _canvas_size(self):
-        if self._size_override is not None:
-            return float(self._size_override[0]), float(self._size_override[1])
         if self._shown and (not self._embedded or self.canvas.isVisible()):
             vp = self.canvas.viewport()
             return float(max(vp.width(), 1)), float(max(vp.height(), 1))
@@ -5061,7 +5096,7 @@ class Figure:
         canvas's smallest size is raised to what the layout needs, so nothing overlaps.
         """
         lay = self._layout
-        if lay is None or self._fitting or self._size_override is not None:
+        if lay is None or self._fitting:
             return
         if not (self._shown and self.canvas.isVisible()):
             return                             # measured once the window is on screen (its viewport has its size)
@@ -5103,43 +5138,6 @@ class Figure:
             self._fit_zoom = zc
         finally:
             self._fitting = False
-
-    @contextlib.contextmanager
-    def at_design_size(self):
-        """
-        The window's layout applied at its design size with every text at zoom 1, while the block
-        runs (the publication export lays a window out at its design size, whatever its size on
-        screen); the window's own size, zoom and layout come back afterwards.
-        """
-        if self._layout is None:
-            yield
-            return
-        W0, H0 = self._design_px
-        z_old, zc_old = self.font_zoom, self.control_zoom
-        old_geo = self._layout.geometry()
-        self._size_override = (float(W0), float(H0))
-        try:
-            self._apply_zoom(1.0)
-            self._set_control_zoom(1.0)
-            QtWidgets.QApplication.sendPostedEvents()
-            self._layout.invalidate()
-            self._layout.setGeometry(QtCore.QRect(0, 0, int(W0), int(H0)))
-            for ax in self._axes:
-                ax._place()
-            for t in self._texts:
-                t._place()
-            yield
-        finally:
-            self._size_override = None
-            self._apply_zoom(z_old)
-            self._set_control_zoom(zc_old)
-            QtWidgets.QApplication.sendPostedEvents()
-            self._layout.invalidate()
-            self._layout.setGeometry(old_geo)
-            for ax in self._axes:
-                ax._place()
-            for t in self._texts:
-                t._place()
 
     def _axes_at(self, px, py):
         for ax in reversed(self._axes):
@@ -5494,53 +5492,108 @@ class Figure:
 
     def savefig(self, path, dpi=None, how=None, **kw):
         """
-        Save the figure (the plots and texts; the controls are left out of every format but the
-        screenshot).  Returns the path written.  how:
-          'publication' (default for .pdf .eps .ps .svg .tif .tiff, and for any extension with
-                         dpi given): rebuilt and written by matplotlib (mplexport), vector files
-                         with editable text, raster files at dpi (300 by default);
-          'screen'      : as pyqtgraph draws it (pyqtgraph's SVGExporter for .svg, ImageExporter
-                         otherwise, at dpi / DPI times the canvas's pixels, twice them by default);
-          'screenshot'  : the canvas's pixels, controls included, toolbar and info panel not
-                         (default for every other extension, e.g. .png .jpg .bmp);
-          'csv'         : the curves' data, one column pair per curve (export_csv).
-        Without matplotlib a 'publication' request writes .pdf / .eps / .ps / .svg through Qt
-        (export_vector: QPdfWriter / QSvgGenerator, EPS through Ghostscript) and the raster
-        formats as 'screen', after a console note.
+        Save exactly what the window shows, at the window's size and shape, nothing laid out again
+        and nothing cropped.  Returns the path written.  how:
+          'vector' (default for .pdf .eps .ps .svg): written by matplotlib (mplexport.export): every
+                   panel, curve, heatmap, stripe, marker, legend, colour bar and figure text at its
+                   on-screen place and size, text at its on-screen size and editable; the controls
+                   left out with their places empty; the full info panel (its settings section
+                   among it) below the plots, wrapped as on screen.  Without matplotlib a console
+                   note and the Qt route (export_vector) instead;
+          'qt-svg' : the whole window as Qt draws it, controls included, with the full info panel
+                   below it (export_vector; PDF and, through Ghostscript, EPS as well);
+          'image'  (default for every other extension, e.g. .png .tif .tiff .jpg .bmp): the window
+                   rendered at WINDOW_IMAGE_DPI, the info panel as shown (window_image);
+          'csv'    (default for .csv): the curves' data, one column pair per curve (export_csv).
         """
         path = str(path)
         ext = os.path.splitext(path)[1].lower()
         if how is None:
-            if ext == '.csv':
+            if ext in ('.pdf', '.eps', '.ps', '.svg'):
+                how = 'vector'
+            elif ext == '.csv':
                 how = 'csv'
-            elif ext in ('.pdf', '.eps', '.ps', '.svg', '.tif', '.tiff') or dpi is not None:
-                how = 'publication'
             else:
-                how = 'screenshot'
+                how = 'image'
         if how == 'csv':
             return export_csv(self, path)
-        if how == 'publication':
-            from sm4_Browser import mplexport
-            if mplexport.available():
-                return mplexport.export(self, path, dpi=dpi or 300)
-            print("matplotlib is not installed: the file is written by Qt instead (pip install matplotlib for "
-                  "publication output).")
-            if ext in ('.pdf', '.eps', '.ps', '.svg'):
-                return export_vector(self, path)
-            how = 'screen'
-        if how == 'screen':
-            import pyqtgraph.exporters as pex
-            QuadItem.EXPORTING = ext == '.svg'
-            try:
-                ex = (pex.SVGExporter if ext == '.svg' else pex.ImageExporter)(self.canvas.scene())
-                if ext != '.svg':
-                    W, H = self._canvas_size()
-                    ex.parameters()['width'] = int(W * max(1, (dpi or 2 * DPI) / DPI))
-                ex.export(path)
-            finally:
-                QuadItem.EXPORTING = False
-            return path
-        self.canvas.grab().save(path)
+        if how == 'vector':
+            if _mplexport.available():
+                return _mplexport.export(self, path)
+            print("matplotlib is not installed: the file is written by Qt instead, the whole window as Qt "
+                  "draws it (pip install matplotlib for the editable plots).")
+            return export_vector(self, path)
+        if how == 'qt-svg':
+            return export_vector(self, path)
+        return self.window_image(path)
+
+    def export_root(self):
+        """
+        The widget the image and Qt routes render (window_image, export_vector): the widget a window
+        set as fig.export_root_widget (the browser: the column of each canvas), else this figure's
+        window, of which the central area (the canvas with its controls) and the info panel's dock
+        as shown are saved, the toolbar not (_export_rect); a figure without a window of its own
+        and no export_root_widget: its canvas.
+        """
+        w = getattr(self, 'export_root_widget', None)
+        if w is not None:
+            return w
+        return self.manager.window if self.manager.window is not None else self.canvas
+
+    def _export_rect(self):
+        """
+        The part of export_root() that is saved, in its own coordinates: for this figure's own
+        window, the canvas (the central widget, below the toolbar) and, when it is shown docked,
+        the info panel's dock; else the whole widget.
+        """
+        root = self.export_root()
+        win = self.manager.window
+        if win is None or root is not win:
+            return root.rect()
+        r = self.canvas.geometry()
+        dock = self.manager.dock
+        if dock.isVisible() and not dock.isFloating():
+            r = r.united(dock.geometry())
+        return r
+
+    def export_info(self):
+        """
+        The full text of the info for the saved files: the text a window gives through
+        fig.export_info_fn (the browser: that canvas's info), else this window's info panel as it
+        is (which holds the settings section, info_text); '' when there is none.
+        """
+        fn = getattr(self, 'export_info_fn', None)
+        if fn is not None:
+            return str(fn() or '')
+        info = getattr(self.manager, 'info', None)
+        return info.toPlainText() if info is not None else ''
+
+    def window_image(self, path, dpi=WINDOW_IMAGE_DPI):
+        """
+        A high-definition screenshot of the window: export_root() (its saved part, _export_rect)
+        rendered with its children into a QImage of its size times dpi / DPI (a QPainter scaled by
+        that factor), the info panel as shown, saved by Qt's image writer (the format from the
+        extension) with dpi as its resolution.  Returns the path.
+        """
+        root, rect = self.export_root(), self._export_rect()
+        k = float(dpi) / DPI
+        img = QtGui.QImage(max(1, int(round(rect.width() * k))), max(1, int(round(rect.height() * k))),
+                           QtGui.QImage.Format.Format_ARGB32)
+        img.fill(QtGui.QColor('white'))
+        p = QtGui.QPainter(img)
+        try:
+            p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+            p.scale(k, k)
+            root.render(p, QtCore.QPoint(0, 0), QtGui.QRegion(rect),
+                        QtWidgets.QWidget.RenderFlag.DrawWindowBackground | QtWidgets.QWidget.RenderFlag.DrawChildren)
+        finally:
+            p.end()
+        dpm = int(round(float(dpi) / 0.0254))         # dots per metre
+        img.setDotsPerMeterX(dpm)
+        img.setDotsPerMeterY(dpm)
+        if not img.save(path):
+            raise OSError(f"Qt could not write {path} (no image writer for {os.path.splitext(path)[1] or 'that type'})")
         return path
 
     def show(self):
@@ -5590,8 +5643,13 @@ def export_csv(fig, path):
     return path
 
 
-def _render_scene(fig, painter, W, H):
-    """Draw the figure's scene (no Qt controls) into a painter over (0, 0, W, H), caches off."""
+def _render_scene(fig, painter):
+    """
+    Draw the saved part of the window (fig.export_root(), its area fig._export_rect(): the canvas
+    with its controls and the info panel as shown) into a painter at (0, 0), with its children,
+    the scene's item caches off (every item drawn as vectors, none from a cached pixmap) and
+    QuadItem.EXPORTING set (each cell edged by a hairline of its colour).
+    """
     scene = fig.canvas.scene()
     cached = []
     for it in scene.items():
@@ -5600,9 +5658,9 @@ def _render_scene(fig, painter, W, H):
             it.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.NoCache)
     QuadItem.EXPORTING = True
     try:
-        if not fig._embedded:
-            painter.fillRect(QtCore.QRectF(0, 0, W, H), QtGui.QColor(WINDOW_BG))
-        scene.render(painter, QtCore.QRectF(0, 0, W, H), QtCore.QRectF(0, 0, W, H))
+        fig.export_root().render(painter, QtCore.QPoint(0, 0), QtGui.QRegion(fig._export_rect()),
+                                 QtWidgets.QWidget.RenderFlag.DrawWindowBackground
+                                 | QtWidgets.QWidget.RenderFlag.DrawChildren)
     finally:
         QuadItem.EXPORTING = False
         for it, mode in cached:
@@ -5630,35 +5688,66 @@ def _ghostscript():
 
 def export_vector(fig, path):
     """
-    The figure as a vector file: PDF (QPdfWriter, page = the figure's size), SVG
-    (QSvgGenerator), or EPS (the PDF converted by Ghostscript, which must be installed;
-    without it a PDF is written beside the requested name and the reason printed: Illustrator
-    opens the PDF and SVG directly with every object editable).
+    The whole window as Qt draws it, as a vector file: export_root() (its saved part,
+    fig._export_rect(): the canvas with its controls and the info panel as shown) rendered through
+    Qt's own vector writers (_render_scene), and below it the full info text (fig.export_info()) in
+    the info panel's on-screen font, wrapped exactly as the panel wraps it (_mplexport._info_lines),
+    so the page is the window's width and its height plus the info lines.  PDF (QPdfWriter: the
+    window recorded in a QPicture first and the picture played into the PDF, since Qt paints
+    widgets into a pixmap when they are rendered straight into a printer-type device), SVG
+    (QSvgGenerator), or EPS (the PDF converted by Ghostscript, which must be installed; without it
+    a PDF is written beside the requested name and the reason printed: Illustrator opens the PDF
+    and SVG directly with every object editable).
     """
-    W, H = fig._canvas_size()
+    rect = fig._export_rect()
+    W, H = float(rect.width()), float(rect.height())
+    lines = _mplexport._info_lines(fig)
+    font, line_h, ascent, margin, H_info = _mplexport._info_geometry(fig, lines)
+    H_all = H + H_info
     ext = os.path.splitext(path)[1].lower()
+
+    def paint(p):
+        """The window, then the info text below it (white, the panel's margins, one line per line height)."""
+        _render_scene(fig, p)
+        if H_info:
+            p.fillRect(QtCore.QRectF(0, H, W, H_info), QtGui.QColor('white'))
+            p.setFont(font)
+            p.setPen(QtGui.QColor('black'))
+            for i, line in enumerate(lines):
+                p.drawText(QtCore.QPointF(margin, H + margin + i * line_h + ascent), line)
+
     if ext == '.svg':
         from pyqtgraph.Qt import QtSvg
         gen = QtSvg.QSvgGenerator()
         gen.setFileName(path)
-        gen.setSize(QtCore.QSize(int(W), int(H)))
-        gen.setViewBox(QtCore.QRectF(0, 0, W, H))
+        gen.setSize(QtCore.QSize(int(round(W)), int(round(H_all))))
+        gen.setViewBox(QtCore.QRectF(0, 0, W, H_all))
         gen.setResolution(int(DPI))
         gen.setTitle(fig.manager.get_window_title() if fig.manager is not None else 'figure')
         p = QtGui.QPainter(gen)
-        _render_scene(fig, p, W, H)
-        p.end()
+        try:
+            paint(p)
+        finally:
+            p.end()
         return path
+    pic = QtGui.QPicture()
+    p = QtGui.QPainter(pic)
+    try:
+        paint(p)
+    finally:
+        p.end()
     pdf = path if ext == '.pdf' else os.path.splitext(path)[0] + '.pdf'
     w = QtGui.QPdfWriter(pdf)
     w.setResolution(int(DPI))
-    w.setPageSize(QtGui.QPageSize(QtCore.QSizeF(W / DPI * 72.0, H / DPI * 72.0), QtGui.QPageSize.Unit.Point))
+    w.setPageSize(QtGui.QPageSize(QtCore.QSizeF(W / DPI * 72.0, H_all / DPI * 72.0), QtGui.QPageSize.Unit.Point))
     w.setPageMargins(QtCore.QMarginsF(0, 0, 0, 0))
     p = QtGui.QPainter(w)
-    sx = w.width() / W
-    p.scale(sx, sx)
-    _render_scene(fig, p, W, H)
-    p.end()
+    try:
+        sx = w.width() / W
+        p.scale(sx, sx)
+        p.drawPicture(QtCore.QPointF(0, 0), pic)
+    finally:
+        p.end()
     if ext == '.pdf':
         return path
     gs = _ghostscript()
@@ -5847,3 +5936,10 @@ rcParams = {'axes.prop_cycle': _Cycler(TAB10), 'figure.dpi': DPI, 'font.size': 1
 # The main windows that embed qtplot figures (browser.Browser appends its QMainWindow): kept
 # referenced, and show() blocks while one of them is visible.
 _figures_main_windows = []
+
+# The export (Figure.savefig's 'vector' route, the info lines of export_vector), bound to this copy
+# of qtplot: a window always saves with the classes that drew it.  A module reloader that drops the
+# package from sys.modules (Spyder's, at every run) would otherwise give a later save a fresh
+# mplexport, whose isinstance tests against a fresh qtplot's classes skip every artist of a window
+# opened before.  mplexport imports matplotlib only inside its functions, so this adds no import cost.
+from sm4_Browser import mplexport as _mplexport     # noqa: E402

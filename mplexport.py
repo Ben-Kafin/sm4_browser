@@ -1,7 +1,7 @@
 """
 mplexport: a qtplot figure (what a window shows) rebuilt as a matplotlib figure and saved by
-matplotlib, for publication files: PDF, EPS, SVG (vector, every line and text an editable object,
-e.g. in Adobe Illustrator), and PNG / TIFF at a chosen dpi.
+matplotlib as a vector file: PDF, EPS, SVG (every line and text an editable object, e.g. in Adobe
+Illustrator).  The image formats are the window itself, rendered by Qt (qtplot.Figure.window_image).
 
 matplotlib is used here and only here, at the moment of saving: the windows draw and interact
 with pyqtgraph (fast marker dragging, panning, many curves), and matplotlib's renderers make
@@ -10,15 +10,21 @@ figure-fraction position with its current limits, labels, title, ticks, aspect, 
 curve with its style; images with their colour map and norm (and the rotation of a placed
 topography); quad meshes (the Line window's sheared rows, the Map window's shifted pixels, the
 grid stripes) as filled polygons; reference lines, spans, line collections, texts, annotations,
-colour bars, and the figure's texts.  The controls (buttons, boxes) are not part of the figure,
-nor are the readout texts in the control strip below the panels, hidden axes, or hidden artists.
+colour bars, and every visible figure text.  Hidden axes and hidden artists are not part of the
+figure.
 
-The matplotlib figure has the window's design size (the window's DESIGN constant, at qtplot.DPI),
-whatever the window's size on screen, and every text its point size as set (the window's text
-zoom, qtplot.window_zoom, is not applied); the panels keep the figure fractions they have on
-screen.  The file is cropped to what is drawn (savefig with bbox_inches='tight').
+The file holds exactly what the window shows: the canvas at its size on screen (qtplot.DPI
+logical pixels per inch), every panel at its on-screen place, size and shape, every text at its
+on-screen size (the point size set times qtplot.FONT_SCALE times the window's text zoom,
+Figure.font_zoom); the controls are left out, their places empty, so nothing moves; and below the
+canvas the full info panel (Figure.export_info: the details cut from the titles and the settings
+of the window's controls), every line, wrapped as the panel wraps it on screen (_info_lines,
+_info_block).  Nothing is laid out again and nothing is cropped: the file is the window's width.
 
-    export(fig, path, dpi=300)       the figure into `path` (format from the extension)
+qtplot binds this module when it is imported (qtplot._mplexport), so a window always saves with
+the qtplot classes that drew it, whatever a module reloader did since.
+
+    export(fig, path)                the figure into `path` (pdf, eps, ps, svg, from the extension)
     to_matplotlib(fig)               the matplotlib Figure itself (to adjust before saving)
     available()                      whether matplotlib can be imported (qtplot.Figure.savefig
                                      falls back to Qt's own writers when it cannot)
@@ -87,22 +93,21 @@ def _axis_hidden_ticks(axis):
 
 def to_matplotlib(fig):
     """
-    The qtplot figure as a matplotlib Figure (no GUI backend: Figure + savefig), at the window's
-    design size, white, holding every visible axes at its figure fraction (_axes), the colour bars
-    (_colorbar), and the figure texts of the plot area.  A window arranged by its Qt layout
-    (automatic layout: the one rule for every window) is laid out at its design size for the
-    rebuild (Figure.at_design_size), so the file does not depend on the window's size on screen;
-    every spatial panel keeps its x:y ratio and every row its one height there as on screen.
+    The qtplot figure as a matplotlib Figure (no GUI backend: Figure + savefig), white, the
+    canvas at its size on screen with the info block under it: every visible axes at its
+    on-screen rectangle (_axes), the colour bars (_colorbar), every visible figure text, and the
+    full info text (_info_block).  Nothing is laid out again for the file.
     """
-    with fig.at_design_size():
-        return _to_matplotlib(fig)
+    return _to_matplotlib(fig)
 
 
 def _to_matplotlib(fig):
-    """to_matplotlib's rebuild, at the figure's current layout."""
+    """to_matplotlib's rebuild: a figure of (W, H + H_info) logical pixels at q.DPI, the canvas the top W x H."""
     from matplotlib.figure import Figure
-    W0, H0 = fig._design_px
-    mfig = Figure(figsize=(W0 / q.DPI, H0 / q.DPI), dpi=q.DPI)
+    W, H = fig._canvas_size()
+    lines = _info_lines(fig)
+    H_info = _info_geometry(fig, lines)[4]
+    mfig = Figure(figsize=(W / q.DPI, (H + H_info) / q.DPI), dpi=q.DPI)
     mfig.patch.set_facecolor('white')
     axes = [ax for ax in fig._axes if ax._visible]
     cbar_axes = {id(ax) for ax in axes if getattr(ax, '_colorbar', None) is not None}
@@ -117,20 +122,26 @@ def _to_matplotlib(fig):
     for ax in axes:                      # shared y: the second axes shows no y values (as on screen)
         if ax._shared_y is not None and id(ax) in made:
             made[id(ax)].tick_params(axis='y', labelleft=False)
-    # Figure texts of the plot area only: a figure text below the lowest panel (by more than 2 % of the
-    # height) sits in the control strip, a window's readout line beside its controls, and is left out.
-    bottom = min((_pos(ax)[1] for ax in axes), default=0.0)
+    # Every visible figure text at its place: its figure fraction is a fraction of the canvas, the top
+    # H of the figure (the info block below it).
+    from matplotlib.transforms import Bbox, BboxTransformTo
+    canvas = BboxTransformTo(Bbox.from_extents(0.0, H_info / (H + H_info), 1.0, 1.0)) + mfig.transFigure
     for t in fig._texts:
-        if t.get_visible() and t.get_text() and t.figure_xy()[1] >= bottom - 0.02:
-            _text(t, transform=mfig.transFigure, target=mfig)
+        if t.get_visible() and t.get_text():
+            _text(t, transform=canvas, target=mfig)
+    _info_block(mfig, fig, H, H_info)
     return mfig
 
 
-def _pos(ax):
-    """The axes' rectangle as shown (after the aspect, colour-bar clearance, ...), in figure fractions."""
+def _pos(ax, mfig):
+    """
+    The axes' rectangle as shown (after the aspect, colour-bar clearance, ...), in fractions of the
+    matplotlib figure `mfig`: x as on the canvas, y measured within the canvas, the top H of a
+    figure H + H_info tall (the info block below it).
+    """
     x0, y0, w, h = ax._px_rect()
-    W, H = ax.figure._canvas_size()
-    return [x0 / W, 1.0 - (y0 + h) / H, w / W, h / H]
+    Wf, Hf = mfig.get_figwidth() * mfig.dpi, mfig.get_figheight() * mfig.dpi
+    return [x0 / Wf, 1.0 - (y0 + h) / Hf, w / Wf, h / Hf]
 
 
 def _axes(mfig, ax):
@@ -139,9 +150,11 @@ def _axes(mfig, ax):
     straight into its view, the limits as shown (inverted axes included), the aspect, the labels
     (short_label, as on screen), tick sizes and hidden ticks, the grid, frame and axis state, the
     title, the secondary y axes (side by side at the right, none over another: _side_right_edge),
-    and the legend as on screen.  Text sizes are the points set on the qtplot axes.
+    and the legend as on screen.  Every text at its on-screen size: the points set on the qtplot
+    axes times q.FONT_SCALE times the window's text zoom (Figure.font_zoom).
     """
-    m = mfig.add_axes(_pos(ax))
+    k = q.FONT_SCALE * ax.figure.font_zoom        # the on-screen size of a text of 1 pt as set
+    m = mfig.add_axes(_pos(ax, mfig))
     m.set_facecolor('white')
     handle_map = {}
     for a in ax._children:
@@ -167,11 +180,11 @@ def _axes(mfig, ax):
     # labels, ticks, title
     xi, yi = ax.xaxis_item, ax.yaxis_item
     if ax._xlabel:
-        m.set_xlabel(q.short_label(ax._xlabel), fontsize=xi._label_pt)
+        m.set_xlabel(q.short_label(ax._xlabel), fontsize=xi._label_pt * k)
     if ax._ylabel:
-        m.set_ylabel(q.short_label(ax._ylabel), fontsize=yi._label_pt)
-    m.tick_params(axis='x', labelsize=xi._tick_pt)
-    m.tick_params(axis='y', labelsize=yi._tick_pt)
+        m.set_ylabel(q.short_label(ax._ylabel), fontsize=yi._label_pt * k)
+    m.tick_params(axis='x', labelsize=xi._tick_pt * k)
+    m.tick_params(axis='y', labelsize=yi._tick_pt * k)
     if _axis_hidden_ticks(xi):
         m.set_xticks([])
     if _axis_hidden_ticks(yi):
@@ -191,7 +204,7 @@ def _axes(mfig, ax):
     elif not ax._frame:
         m.set_frame_on(False)
     if ax._title is not None and ax._title.get_text():
-        m.set_title(ax._title.get_text(), fontsize=ax._title._size)
+        m.set_title(ax._title.get_text(), fontsize=ax._title._size * k)
     # The secondary y axes (qtplot's right-hand axes in 'func' mode) side by side at the right, in
     # their on-screen order: the first at the axes' right edge, each further one SIDE_GAP_PT right
     # of where the one before it ends in the file, its tick marks, tick values, offset text and
@@ -202,7 +215,7 @@ def _axes(mfig, ax):
     for i, side in enumerate(sides):
         sec = m.secondary_yaxis(loc, functions=(side._mode[1], side._mode[2]))
         if side.labelText:
-            sec.set_ylabel(q.short_label(side.labelText), fontsize=side._label_pt)
+            sec.set_ylabel(q.short_label(side.labelText), fontsize=side._label_pt * k)
         if i + 1 < len(sides):
             loc = _side_right_edge(mfig, m, sec, loc)
     # legend as on screen
@@ -210,7 +223,7 @@ def _axes(mfig, ax):
         args, kw = ax._legend_args
         loc = kw.get('loc', 'best')
         loc = 'upper right' if loc in ('best', 0, 1) else loc
-        lk = dict(loc=loc, frameon=kw.get('frameon', True), fontsize=q.font_pt(kw.get('fontsize'), 10.0),
+        lk = dict(loc=loc, frameon=kw.get('frameon', True), fontsize=q.font_pt(kw.get('fontsize'), 10.0) * k,
                   ncol=kw.get('ncol', 1))
         if len(args) >= 2:
             hs = [handle_map.get(id(h)) for h in args[0]]
@@ -327,7 +340,8 @@ def _artist(m, a):
         return c
     if isinstance(a, q.Annotation):
         p = a._ann
-        kw = dict(color=p['color'], fontsize=q.font_pt(p['fontsize'], 10.0), fontweight=p['fontweight'],
+        kw = dict(color=p['color'], fontsize=q.font_pt(p['fontsize'], 10.0) * q.FONT_SCALE * a.figure.font_zoom,
+                  fontweight=p['fontweight'],
                   ha=p['ha'], va=p['va'], zorder=a.zorder)
         if p['arrowprops'] is not None:
             kw['arrowprops'] = p['arrowprops']
@@ -360,12 +374,14 @@ def _quads(m, item, zorder=None):
 
 def _text(t, transform=None, target=None):
     """
-    A qtplot Text as matplotlib text on `target` (a matplotlib Axes or Figure): size in points,
-    alignment, colour, rotation, weight, a monospace family, the bbox keys matplotlib takes,
+    A qtplot Text as matplotlib text on `target` (a matplotlib Axes or Figure): its on-screen size
+    (the points set times q.FONT_SCALE times the window's text zoom, Figure.font_zoom), alignment,
+    colour, rotation, weight, a monospace family, the bbox keys matplotlib takes,
     `transform` (axes or figure coordinates; None for data), and the qtplot pixel offset as an
     offset in points.
     """
-    kw = dict(fontsize=t._size, ha=t._ha, va=t._va, color=t._color, rotation=t._rotation)
+    kw = dict(fontsize=t._size * q.FONT_SCALE * t.figure.font_zoom, ha=t._ha, va=t._va, color=t._color,
+              rotation=t._rotation)
     if t._weight:
         kw['fontweight'] = t._weight
     if t._family in ('monospace', 'mono', 'courier'):
@@ -389,33 +405,131 @@ def _colorbar(mfig, cax):
     """
     The colour bar held by the qtplot axes `cax` (cax._colorbar) as a matplotlib colour bar in an
     axes at the same position: the mappable's colour map and norm (so a gamma spaces the ticks as
-    on screen), the label (short_label) and the tick size in points.
+    on screen), the label (short_label) and the tick values at their on-screen size (the points set
+    times q.FONT_SCALE times the window's text zoom, Figure.font_zoom).
     """
     from matplotlib.cm import ScalarMappable
+    k = q.FONT_SCALE * cax.figure.font_zoom
     cb = cax._colorbar
-    m = mfig.add_axes(_pos(cax))
+    m = mfig.add_axes(_pos(cax, mfig))
     sm = ScalarMappable(norm=_mpl_norm(getattr(cb.mappable, 'norm', None)), cmap=_mpl_cmap(cb.mappable.cmap))
     mcb = mfig.colorbar(sm, cax=m)
     if cb._label:
-        mcb.set_label(q.short_label(cb._label), fontsize=cb._axis._label_pt)
-    m.tick_params(labelsize=cb._axis._tick_pt)
+        mcb.set_label(q.short_label(cb._label), fontsize=cb._axis._label_pt * k)
+    m.tick_params(labelsize=cb._axis._tick_pt * k)
     return mcb
+
+
+# ---------------------------------------------------------------------- #
+#  The info block                                                          #
+# ---------------------------------------------------------------------- #
+
+def _info_lines(fig):
+    """
+    The lines of fig.export_info() wrapped exactly as the on-screen info panel wraps them
+    (fig.export_info_panel, a QPlainTextEdit): each paragraph laid out with QTextLayout in the
+    panel's font and its document's text option (its word wrap), at the width the panel's text
+    has, the panel's viewport width less its document margin on each side (as
+    QPlainTextDocumentLayout lays a block out).  The viewport width is the panel's own when the
+    panel is shown inside the saved area (fig.export_root(): a figure window, the browser's right
+    column), else the saved area's width less the panel's frame (the browser's left column).
+    Used by the vector files here and by qtplot.export_vector.  [] when there is no info text.
+    """
+    panel = getattr(fig, 'export_info_panel', None)
+    text = fig.export_info()
+    if not text or panel is None:
+        return []
+    QtGui = q.QtGui
+    font = QtGui.QFont(panel.font())
+    root = fig.export_root()
+    vp = panel.viewport()
+    if panel.isVisible() and (panel is root or root.isAncestorOf(panel)):
+        width = float(vp.width())
+    else:
+        width = float(fig._export_rect().width() - (panel.width() - vp.width()))
+    width = max(1.0, width - 2.0 * panel.document().documentMargin())
+    option = panel.document().defaultTextOption()
+    lines = []
+    for para in text.split('\n'):
+        layout = QtGui.QTextLayout(para, font)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLeadingIncluded(True)
+            line.setLineWidth(width)
+        layout.endLayout()
+        if layout.lineCount() == 0:
+            lines.append('')
+        for i in range(layout.lineCount()):
+            ln = layout.lineAt(i)
+            lines.append(para[ln.textStart():ln.textStart() + ln.textLength()].rstrip())
+    return lines
+
+
+def _info_geometry(fig, lines):
+    """
+    The info block's measures for `lines` (_info_lines) in the panel's on-screen font
+    (fig.export_info_panel): (font, line height, ascent, margin, H_info) in logical pixels, the
+    line height the font's line spacing (a line's height with its leading, as the panel lays its
+    lines out), the margin the panel's document margin plus its frame, and H_info the number of
+    lines times the line height plus the margin above and below; (None, 0, 0, 0, 0) when there is
+    no info text.  Used here (_to_matplotlib, _info_block) and by qtplot.export_vector.
+    """
+    panel = getattr(fig, 'export_info_panel', None)
+    if not lines or panel is None:
+        return None, 0.0, 0.0, 0.0, 0.0
+    font = q.QtGui.QFont(panel.font())
+    fm = q.QtGui.QFontMetricsF(font)
+    margin = float(panel.document().documentMargin() + panel.frameWidth())
+    return font, fm.lineSpacing(), fm.ascent(), margin, len(lines) * fm.lineSpacing() + 2.0 * margin
+
+
+def _info_block(mfig, fig, H, H_info):
+    """
+    The info text (_info_lines) written into `mfig` under the canvas (the top H of the figure,
+    H_info the block's height, _info_geometry): one text per line, left aligned at the panel's
+    margin, from the top of the block down, one line per line height (each line's baseline at its
+    top plus the font's ascent, as Qt draws it), in the info panel's on-screen font size (its
+    pixel size on screen as points at q.DPI: the same rule as every other text of the file), its
+    family first and the matching generic family after it.  Nothing when H_info is 0.
+    """
+    if not H_info:
+        return
+    lines = _info_lines(fig)
+    font, line_h, ascent, margin, _ = _info_geometry(fig, lines)
+    info = q.QtGui.QFontInfo(font)
+    size = info.pixelSize() * 72.0 / q.DPI
+    family = [info.family(), 'monospace' if info.fixedPitch() else 'sans-serif']
+    Wf, Hf = mfig.get_figwidth() * mfig.dpi, mfig.get_figheight() * mfig.dpi
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        y = H + margin + i * line_h + ascent           # the baseline, in pixels from the figure's top
+        mfig.text(margin / Wf, 1.0 - y / Hf, line, fontsize=size, family=family, color='black',
+                  ha='left', va='baseline')
 
 
 # ---------------------------------------------------------------------- #
 #  Saving                                                                  #
 # ---------------------------------------------------------------------- #
 
-def export(fig, path, dpi=300):
+def export(fig, path):
     """
-    Save `fig` through matplotlib: the format from the extension (pdf, eps, ps, svg, png, tif,
-    jpg); text stays text in the vector formats (TrueType fonts embedded in PDF and PS / EPS, text
-    elements in SVG; editable in Illustrator); raster formats at `dpi`.  The file is cropped to
-    what is drawn, with a 0.05 inch margin.  Returns `path`.
+    Save `fig` through matplotlib as a vector file, the format from the extension (pdf, eps, ps,
+    svg): exactly the figure of to_matplotlib, the canvas as on screen with the info block below
+    it, nothing cropped and no margin added.  Text stays text (TrueType fonts embedded in PDF and
+    PS / EPS, text elements in SVG; editable in Illustrator).  The image formats are not written
+    here: they are the window itself (qtplot.Figure.window_image).  Returns `path`.
     """
+    import os
     import matplotlib
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in ('.pdf', '.eps', '.ps', '.svg'):
+        raise ValueError(f"mplexport writes vector files only (.pdf, .eps, .ps, .svg), not {ext or 'a file without extension'}")
     mfig = to_matplotlib(fig)
     with matplotlib.rc_context({'pdf.fonttype': 42, 'ps.fonttype': 42, 'svg.fonttype': 'none'}):
-        # Cropped to what is drawn (the window's control strip is empty in the figure).
-        mfig.savefig(path, dpi=dpi, facecolor='white', bbox_inches='tight', pad_inches=0.05)
+        mfig.savefig(path, facecolor='white')
     return path

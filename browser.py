@@ -2904,6 +2904,9 @@ class Browser(_BrowserCore):
         self.fig_scan.align_row(self.ax_scan, self.ax_topo_cbar)
         self.fig_scan.set_layout(controls.row(cell_scan, cell_ramp, spacing=10))
         self.toolbar_scan = NavigationToolbar2QT(self.canvas_scan, left)
+        # Its Save writes only this canvas and its info: the image and Qt routes render the left column
+        # (the scan area's canvas with its controls), the vector files hold the canvas's plots.
+        self.fig_scan.export_root_widget = left
         lv.addWidget(self.toolbar_scan)
         lv.addWidget(self.canvas_scan, 1)
         self.view = widgets.ViewNavigator(self.fig_scan, self.ax_scan)
@@ -2965,6 +2968,9 @@ class Browser(_BrowserCore):
         self.fig_spec.align_row(self.ax_spec, self.ax_spec_iv, self.ax_spec_ivv, self.ax_spec_ratio)
         self.fig_spec.set_layout(controls.row(*self._spec_cells, spacing=14))
         rv.addWidget(NavigationToolbar2QT(self.canvas_spec, right))
+        # Its Save writes only this canvas and its info: the image and Qt routes render the right column
+        # (the spectra canvas with its settings), the vector files hold the canvas's plots.
+        self.fig_spec.export_root_widget = right
         rv.addWidget(self.canvas_spec, 4)
         self.spec_settings = controls.FeenstraSettings(None, self.feenstra_settings())
         self.spec_settings.on_change(self.set_feenstra_settings)
@@ -3001,6 +3007,11 @@ class Browser(_BrowserCore):
         self.info.setFont(font)
         self._zoomer.track(self.info, font)
         rv.addWidget(self.info, 1)
+        # The info of each canvas's saved files (qtplot.Figure.export_info, _info_lines): wrapped in
+        # this panel's font at its column's width.
+        for fig, column in ((self.fig_scan, left), (self.fig_spec, right)):
+            fig.export_info_panel = self.info
+            fig.export_info_fn = lambda fig=fig, column=column: self._canvas_info(fig, column)
 
         self.btn_line, self.btn_map = controls.Button(None, 'Line'), controls.Button(None, 'Map')
         self.btn_add_new, self.btn_add_existing = controls.Button(None, 'add new'), controls.Button(None, 'add existing')
@@ -3051,6 +3062,13 @@ class Browser(_BrowserCore):
         self._zoomer.track_figures(self.fig_scan, self.fig_spec)
         # The details cut from the panel titles go into this window's info panel.
         self.fig_scan.on_info = self.fig_spec.on_info = lambda text: self._draw_info()
+        # A control's change (controls.Control._changed) redraws the info panel's settings section,
+        # once however many changes come in one event (one single-shot timer, as a figure window's).
+        self._info_timer = QtCore.QTimer(self.win)
+        self._info_timer.setSingleShot(True)
+        self._info_timer.setInterval(50)
+        self._info_timer.timeout.connect(self._draw_info)
+        self.win.sm4_settings_changed = lambda: self._info_timer.isActive() or self._info_timer.start()
         self._picker = controls.AveragePicker(None, self.averages)
 
         self.btn_prev.on_change(lambda: self._step(-1))
@@ -3101,8 +3119,8 @@ class Browser(_BrowserCore):
         super()._draw_spectra()
         # The settings rows under the panels are Qt widgets: no figure space to keep for them.
 
-    def _draw_info(self):
-        """The info panel as selectable text: the head lines, then one 'name: value' per row."""
+    def _head_lines(self):
+        """The current file's head lines and its measurement rows, one 'name: value' per row (the info panel's top, and each canvas's saved info)."""
         f = self.current
         path = self.files[self.index]
         lines = [f"[{self.index + 1} / {len(self.files)}]  {f.name}",
@@ -3115,10 +3133,31 @@ class Browser(_BrowserCore):
         width = max(len(str(name)) for name, _ in rows) if rows else 0
         for name, value in rows:
             lines.append(f"{str(name):<{width}} : {' | '.join(str(value).splitlines())}")
+        return lines
+
+    def _draw_info(self):
+        """The info panel as selectable text: the head lines, then one 'name: value' per row, the details cut from the titles, then the settings of the window's controls."""
+        lines = self._head_lines()
         panels = [t for t in (self.fig_scan.info_text(), self.fig_spec.info_text()) if t]
         if panels:
             lines += [""] + panels
+        lines += ["", "settings"]
+        settings = controls.settings_text(self.win)
+        if settings:
+            lines.append(settings)
         self.info.setPlainText("\n".join(lines))
+
+    def _canvas_info(self, fig, column):
+        """The info of one canvas's saved files (fig.export_info_fn): the head lines, that figure's own details (info_text), then the settings of the controls in its column."""
+        lines = self._head_lines()
+        own = fig.info_text()
+        if own:
+            lines += ["", own]
+        lines += ["", "settings"]
+        settings = controls.settings_text(column)
+        if settings:
+            lines.append(settings)
+        return "\n".join(lines)
 
 
 def main(argv=None):
