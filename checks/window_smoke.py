@@ -107,6 +107,7 @@ def run():
         if screen is not None:
             screen.terminate()
             screen.wait()
+            os.environ.pop('DISPLAY', None)        # the virtual screen started here is gone (a later check starts its own)
     print(f"\n{fails} failure(s)")
     return fails
 

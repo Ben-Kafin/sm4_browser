@@ -10,7 +10,7 @@ parallelism, no retries: a check is small because it does one thing on synthetic
 
 from the parent directory of a folder named sm4_Browser; with names given, only those modules run.
 The checks need no .sm4 file (checks/synth.py experiments or numpy arrays); window_smoke drives the
-windows on a virtual screen.  Scripts that need a real file or an open window are tools
+windows on a virtual screen, and save_check saves them (in a child process with its own screen).  Scripts that need a real file or an open window are tools
 (sm4_Browser/tools/), run by hand, not here.
 """
 
@@ -26,7 +26,7 @@ import traceback
 # The order the checks run in (the table of the stage-2 document): the pipeline first, then the
 # calibration's pin rule, the numpy-only geometry checks, the stripe matching, the sweeps, the windows.
 CHECKS = ('pipeline_check', 'pin_rule_check', 'contour_check', 'pass_average_check', 'affine_check', 'stripe_check',
-          'sweeps_check', 'window_smoke')
+          'sweeps_check', 'window_smoke', 'save_check')
 
 
 class _Tee(io.TextIOBase):

@@ -1037,6 +1037,17 @@ the runner's order:
   platform (which errs in the browser and freezes the processing): the display at hand, or an Xvfb
   virtual screen the check starts itself (4200 x 2600, every window at twice its design size) and
   stops at the end; without a display and without Xvfb the check reports itself as not run.
+* `save_check`: the saving of every window, exactly what it shows plus its full information panel,
+  on one synthetic experiment: the `rebuild_panels` window, the browser's two canvases, a Map and a
+  Line window. For each: the information panel ends with a `settings` section with no label twice;
+  the vector PDF and SVG are the canvas at its size on screen with the information block below it,
+  the SVG holding the plotted paths and every line of the information block; the Qt SVG is the saved
+  area with the information block below it; the PNG is the saved area at 720 dpi. Once: a box's
+  change shows in the browser's settings section, each browser toolbar saves its own column, the
+  EPS, CSV and TIFF are written, a `rebuild_panels` save right after it opens holds the settings,
+  and a window opened before Spyder's module reloader dropped the package still saves everything it
+  shows and still lists its settings. It runs in a child process with its own screen (as
+  `window_smoke`: never Qt's offscreen platform), the files in a temporary folder removed at the end.
 
 ## The tools
 
