@@ -991,7 +991,9 @@ rows; `1-unshifted-pins-report.md`; `2-view-path-and-checks-report.md`).
 The checks run on synthetic experiments (`checks/synth.py`: empty `.sm4` placeholder files with
 their stamps and a registry of synthetic pages, installed in place of the loader, so every other
 line of the package runs as on real files; the surface and the drift are known) or on numpy
-arrays; none needs a real file, and nothing is written outside a temporary directory. From the
+arrays; none needs a real file, and nothing is written outside a temporary directory. Every change
+is verified with these checks, and a new test extends them (`checks/README.md`: the rules, the
+conventions of a check module, and what a fresh Linux container needs to run them). From the
 parent directory of the package folder (named `sm4_Browser`):
 
 ```

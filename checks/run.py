@@ -9,6 +9,10 @@ parallelism, no retries: a check is small because it does one thing on synthetic
     python -m sm4_Browser.checks.run [names]
 
 from the parent directory of a folder named sm4_Browser; with names given, only those modules run.
+
+Every change to the package is verified with these checks, and they are kept up to date: a new test
+extends a check here (registered in CHECKS below and in the top-level README's checks list), never a
+script of its own elsewhere; check changes are pushed to main with the change (checks/README.md).
 The checks need no .sm4 file (checks/synth.py experiments or numpy arrays); window_smoke drives the
 windows on a virtual screen, and save_check saves them (in a child process with its own screen).  Scripts that need a real file or an open window are tools
 (sm4_Browser/tools/), run by hand, not here.
