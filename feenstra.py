@@ -294,6 +294,16 @@ class FeenstraWindow:
                  marker_diameter: a pixel's diagonal (the markers' size,
                  plots.draw_map_marker)
       cmap     : the heatmap / map colour map
+      blend, height, z_range, aspect : 'map', Height shading (the Map
+                 window's 'Height' toggle; every one None with it off): the
+                 window's TopoLdosBlend, the height fraction under every
+                 pixel of the map (the maps' shape), the heights (lo, hi) of
+                 the topo drawn in nm, and a map panel's shape (height over
+                 width).  With them the four maps are drawn shaded, each with
+                 its legend under it in place of its colour bar, and the
+                 colour square with its topo bar and value bar ('low' /
+                 'high': each of the four has its own scale) stands in a
+                 column in front of them (_build_axes, shaded)
     """
 
     KEYS = ('didv', 'iv', 'ivv', 'ratio')
@@ -314,6 +324,9 @@ class FeenstraWindow:
         self.kind = None
         self.cols = []
         self._topo_cbar = None
+        self._shaded = False               # the 'map' kind laid out for Height shading (the main window's 'Height' toggle)
+        self._key = None                   # Height shading's colour square with its two bars (plots.BlendKey)
+        self._key_fp = None                # what the key was last drawn for
         # This window's own pipeline rows (top right, as in every window; calibrate and normalize off at
         # open, the gate on, the locks and denoise off): they override the main window's state (refresh).
         self.pipeline = controls.PipelineBox(self.fig, calibrate=False, normalize=False)
@@ -400,7 +413,7 @@ class FeenstraWindow:
         k = min(cuts, key=lambda i: abs(i - mid))
         return title[:k + 1].rstrip() + "\n" + title[k + 1:].lstrip()
 
-    def _build_axes(self, kind):
+    def _build_axes(self, kind, shaded=False):
         """
         The axes of the four columns for a view kind, replacing the previous
         ones, each in a cell of the window's layout grid (automatic layout:
@@ -410,8 +423,13 @@ class FeenstraWindow:
         it, and for 'line' a topo stripe left of the top panel sharing its y
         axis, plus one topo colour bar at the right; the gamma boxes under the
         top panels; the settings under the current column, 'stack' /
-        'substack' under the last.  Sets self.cols (one dict of axes per
-        column) and self.kind.
+        'substack' under the last.  With `shaded` (the 'map' kind while
+        the main window's 'Height' is on) Height shading's colour square
+        with its topo bar and value bar (plots.BlendKey) takes a column of
+        its own in front of the four maps, every map's colour bar is
+        hidden with its cell, and a legend is attached under every map
+        (qtplot Figure.attach) in its place.  Sets self.cols (one dict of
+        axes per column), self.kind and self._shaded.
         """
         for ax in self.axes:
             try:
@@ -425,6 +443,8 @@ class FeenstraWindow:
                 pass
             self._topo_cbar = None
         self.axes = []
+        self._key = None                   # its axes went with self.axes above
+        self._key_fp = None
         fig = self.fig
         grid = self._grid
         # The grid emptied: the old cells go (their axes are gone above), the controls are put back below.
@@ -439,8 +459,15 @@ class FeenstraWindow:
         for r in range(grid.rowCount()):
             grid.setRowStretch(r, 0)
         cols = []
+        off = 3 if shaded else 0              # shaded: the colour square's column group in front of the four
+        if shaded:
+            kc = fig.cell()
+            grid.addWidget(kc, 0, 1)
+            self._key = plots.BlendKey(fig, kc)
+            self.axes.append(self._key.ax)    # its two bars are removed with it
+            grid.setColumnStretch(1, 1)
         for c, key in enumerate(self.KEYS):
-            base = 3 * c                      # the column's grid columns: stripe, top panel, colour bar
+            base = 3 * c + off                # the column's grid columns: stripe, top panel, colour bar
             if kind == 'sweeps':
                 cell = fig.cell()
                 grid.addWidget(cell, 0, base, 3, 3)
@@ -464,6 +491,11 @@ class FeenstraWindow:
             d['cbar'] = fig.add_axes(cell=cc)
             d['curves'] = fig.add_axes(cell=cu)
             self.axes.extend([d['top'], d['cbar'], d['curves']])
+            if shaded:
+                # The map's legend under it in place of its colour bar (removed with the map's axes).
+                cc.setVisible(False)
+                d['cbar'].set_visible(False)
+                d['legend'] = fig.attach(d['top'], 'bottom', plots.BLEND_LEGEND, plots.BLEND_GAP)
             cols.append(d)
             grid.addWidget(self.gammas[key].qt, 1, base + 1, Qt.AlignmentFlag.AlignRight)   # under its heatmap
             self.gammas[key].show(True)
@@ -474,19 +506,22 @@ class FeenstraWindow:
             self._topo_cbar = plots.draw_topo_cbar(fig, cell=tc)
         grid.setRowStretch(0, 1)
         grid.setRowStretch(2, 1)
-        grid.addWidget(self.settings.qt, 3, 3, 1, 3, Qt.AlignmentFlag.AlignLeft)      # under the current column
-        grid.addWidget(self._stack_row, 3, 9, 1, 3, Qt.AlignmentFlag.AlignRight)      # under the last column
+        grid.addWidget(self.settings.qt, 3, 3 + off, 1, 3, Qt.AlignmentFlag.AlignLeft)      # under the current column
+        grid.addWidget(self._stack_row, 3, 9 + off, 1, 3, Qt.AlignmentFlag.AlignRight)      # under the last column
         # The top row across the columns (the maps or heatmaps, their colour bars, the stripes and
         # the topo ramp): one height, a map's aspect setting it (qtplot Figure.align_row).
         top_row = [a for d in cols for a in (d.get('stripe'), d.get('top'), d.get('cbar'), d.get('panel')) if a is not None]
         if self._topo_cbar is not None:
             top_row.append(self._topo_cbar)
+        if self._key is not None:
+            top_row.append(self._key.ax)
         self.fig.align_row(*top_row)
         curves_row = [d['curves'] for d in cols if 'curves' in d]
         if curves_row:
             self.fig.align_row(*curves_row)              # the curve panels: one row too
         self.cols = cols
         self.kind = kind
+        self._shaded = bool(shaded)
 
     @staticmethod
     def _sig(a):
@@ -516,7 +551,8 @@ class FeenstraWindow:
                 self._sig(view.get('shear')), self._sig(view.get('shift')), self._sig(view.get('stripe')),
                 self._sig(view.get('pos')), self._sig(view.get('kept')), tuple(view.get('extent') or ()),
                 str(view.get('cmap')), tuple(view.get('e_range') or ()),
-                tuple(view.get('limits') or ()))
+                tuple(view.get('limits') or ()),
+                view.get('blend') is not None, self._sig(view.get('height')), tuple(view.get('z_range') or ()))
 
     def _draw_top(self, view, v, key, col, kind):
         """The heatmap (line) or map of one column with its colour bar (and the stripe)."""
@@ -539,11 +575,20 @@ class FeenstraWindow:
             top.set_ylim(y0, y1)
         elif view.get('shift') is not None:
             im = plots.PixelMap(top, img, view['extent'], view.get('cmap', 'jet'), gamma=self.gammas[key].value,
-                                shift=view['shift'])
+                                shift=view['shift'], blend=view.get('blend') if self._shaded else None,
+                                height=view.get('height') if self._shaded else None)
+        elif self._shaded:
+            # Height shading (the main window's 'Height'): the map coloured by its value and the topo's height.
+            im = plots.BlendImage(top, img, view['height'], view['extent'], view['blend'], view.get('cmap', 'jet'),
+                                  gamma=self.gammas[key].value)
         else:
             im = plots.draw_heatmap(top, img, view['extent'], view.get('cmap', 'jet'), gamma=self.gammas[key].value,
                                     aspect='equal', origin='lower', interpolation='none')
         plots.draw_colorbar(self.fig, im, cax)
+        if self._shaded and 'legend' in col:
+            # The map's own scale under it (each of the four has its own), in place of its colour bar.
+            col['legend'].set_visible(True)
+            plots.draw_blend_legend(col['legend'], view['blend'], im.norm, None, labelsize=6)
         col['im'] = im                                   # the drawn image (its array is what the panel shows)
         top.set_title(f"{self._simple(key, v)}: " + v.get('title', ''), fontsize=8)
         if kind == 'line':
@@ -591,9 +636,19 @@ class FeenstraWindow:
         if view is None:
             return
         kind = view['kind']
-        if kind != self.kind:
-            self._build_axes(kind)
+        # Height shading: the main window's view carries its blend and the heights under the map's pixels.
+        shaded = kind == 'map' and view.get('blend') is not None and view.get('height') is not None
+        if kind != self.kind or shaded != self._shaded:
+            self._build_axes(kind, shaded)
         self.settings.sync(self._settings())
+        if self._key is not None:
+            fp = (id(view.get('blend')), tuple(view.get('z_range') or ()), view.get('aspect'))
+            if fp != self._key_fp:
+                # The colour square, the topo bar over the topo's heights, and the value bar with 'low' and
+                # 'high' (each of the four maps has its own scale, shown by its legend).
+                self._key_fp = fp
+                self._key.draw(view['blend'], view.get('z_range') or (0.0, 1.0), None, None,
+                               aspect=view.get('aspect'), labelsize=6)
         for col, key in zip(self.cols, self.KEYS):
             v = view['versions'].get(key) or {}
             note = v.get('note')
@@ -623,6 +678,8 @@ class FeenstraWindow:
                     col['stripe'].clear()
                 if note:
                     axc.clear()
+                    if 'legend' in col:
+                        col['legend'].set_visible(False)      # a panel with a note has no map and no legend
                     top.text(0.5, 0.5, note, ha='center', va='center', transform=top.transAxes, wrap=True)
                     top.set_xticks([])
                     top.set_yticks([])

@@ -44,6 +44,8 @@ Modules
   map            Map: per-energy maps of a grid
   composer       the Map window's figure composer ('add to plot' / 'new plot')
   contour        the Map window's contour slice: the iso-line of a topography at one level (marching squares)
+  topo_ldos_blend  TopoLdosBlend: the colours of a map's value and the topography's height shown together
+                 (the Map window's 'Height' shading; the STM_from_DFT simulator's file, as it is)
                  and its placement at the pixels as drawn
   drift          Drift: the auto drift (consecutive topo pairs tracked by feature-point matching, Diao et al.
                  2023 with KAZE), the manual drift (the drift window: marker pairs seeded by the auto velocity,

@@ -89,6 +89,15 @@ def _axis_hidden_ticks(axis):
     return lev is not None and all(len(level) == 0 for level in lev)
 
 
+def _axis_given_ticks(axis):
+    """The ticks a qtplot tick axis was given with their labels (set_xticks / set_yticks: pyqtgraph's _tickLevels), [(value, label)]; None when the axis chooses its own or was given none."""
+    lev = getattr(axis, '_tickLevels', None)
+    if lev is None:
+        return None
+    given = [(float(v), str(s)) for level in lev for v, s in level]
+    return given or None
+
+
 # ---------------------------------------------------------------------- #
 #  The rebuild                                                             #
 # ---------------------------------------------------------------------- #
@@ -191,6 +200,14 @@ def _axes(mfig, ax):
         m.set_xticks([])
     if _axis_hidden_ticks(yi):
         m.set_yticks([])
+    # Ticks given with their labels (the scales of Height shading's value bar and legends): as given.
+    gx, gy = _axis_given_ticks(xi), _axis_given_ticks(yi)
+    if gx:
+        m.set_xticks([v for v, _ in gx])
+        m.set_xticklabels([s for _, s in gx])
+    if gy:
+        m.set_yticks([v for v, _ in gy])
+        m.set_yticklabels([s for _, s in gy])
     if not xi.style['showValues']:
         m.tick_params(axis='x', labelbottom=False)
     if not yi.style['showValues']:

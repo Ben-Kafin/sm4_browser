@@ -2813,7 +2813,8 @@ class Axes:
     window; the cell holds the box with its tick axes and title), or at a
     figure-fraction rectangle (`rect`, or a SubplotSpec `spec`; the
     standalone drawings that keep matplotlib's own placement), or inside
-    `inset_parent` (matplotlib's axes box, framed), its x and y tick axes outside the box
+    `inset_parent` (matplotlib's axes box, framed), or at the side of another axes
+    (Figure.attach: the attached rule), its x and y tick axes outside the box
     (_Axis: every tick drawn where the view box maps its value),
     the title above it.  The plotting methods return artists with
     matplotlib's interface (remove, set_visible, get_label, ...).  sharex /
@@ -2830,6 +2831,8 @@ class Axes:
         self._cell = cell              # the PanelCell of the window's layout holding this axes (None: rect / spec)
         self._inset_parent = inset_parent
         self._insets = []
+        self._attach = None            # (host, side, size, gap) of a panel attached to another's side (Figure.attach)
+        self._attached = []            # the panels attached to this axes' sides
         scene = fig.canvas.scene()
         self.vb = _ViewBox(self)
         self.vb.setBorder(pg.mkPen('k', width=max(pt2px(0.8), 1)))
@@ -2987,6 +2990,8 @@ class Axes:
         The axes' cell in canvas pixels from the top left, (x0, y0, w, h): the box's room in its
         layout cell (the cell less _decor_px), or its figure-fraction rectangle.
         """
+        if self._attach is not None:
+            return self._attached_px()
         if self._cell is not None:
             cell = self._cell
             cx, cy, cw, ch = cell.rect_px()
@@ -3000,10 +3005,60 @@ class Axes:
                 bw = cell.inner_w * self.figure.font_zoom
                 off = max(0.5 * (cw - (left + bw + right)), 0.0)
                 return (cx + off + left, cy + top, max(bw, 1.0), max(ch - top - bottom, 1.0))
-            return (cx + left, cy + top, max(cw - left - right, 1.0), max(ch - top - bottom, 1.0))
+            x, y, w, h = cx + left, cy + top, max(cw - left - right, 1.0), max(ch - top - bottom, 1.0)
+            if self._attached:
+                # The attached rule (Figure.attach): the box leaves room in its cell for the panels at
+                # its sides, their sizes and gaps fractions of the box's own height.
+                add_left, add_bottom, f_left, f_bottom = self._attached_room(left)
+                h = max(h - add_bottom, 1.0) / (1.0 + f_bottom)
+                x += add_left + f_left * h
+                w = max(w - add_left - f_left * h, 1.0)
+            return (x, y, w, h)
         W, H = self.figure._canvas_size()
         x, y, w, h = self.get_position().bounds
         return (x * W, (1.0 - y - h) * H, w * W, h * H)
+
+    def _attached_room(self, left):
+        """
+        The room the visible panels attached to this axes (Figure.attach) take in its layout cell,
+        (left pixels, bottom pixels, left fraction, bottom fraction): the fractions are the panels'
+        sizes and gaps, in units of this box's height; the pixels are their own tick axes (the y
+        tick axis of a panel at the left, the x tick axis of a panel at the bottom), plus what the
+        y tick axis of a panel at the bottom needs left of the box beyond `left`, the room this
+        axes' own y tick axis already takes there.
+        """
+        add_left = add_bottom = f_left = f_bottom = need_left = 0.0
+        for a in self._attached:
+            if not a._visible or a._attach is None:
+                continue
+            side, size, gap = a._attach[1], a._attach[2], a._attach[3]
+            aw = float(a.yaxis_item.maximumWidth()) if a.yaxis_item.isVisible() else 0.0
+            ah = float(a.xaxis_item.maximumHeight()) if a.xaxis_item.isVisible() else 0.0
+            if side == 'bottom':
+                f_bottom += size + gap
+                add_bottom += ah
+                need_left = max(need_left, aw)
+            else:
+                f_left += size + gap
+                add_left += aw
+        add_left += max(need_left - left - add_left, 0.0)
+        return add_left, add_bottom, f_left, f_bottom
+
+    def _attached_px(self):
+        """
+        The box of a panel attached to another axes' side (Figure.attach), (x0, y0, w, h) in canvas
+        pixels from the top left, from the host's box as drawn (_px_rect): at the 'bottom', as wide
+        as the host's box, `size` of its height tall, `gap` of its height under its x tick axis; at
+        the 'left', as tall as the host's box, `size` of its height wide, `gap` of its height left
+        of its y tick axis.
+        """
+        host, side, size, gap = self._attach
+        x0, y0, w, h = host._px_rect()
+        if side == 'bottom':
+            ah = float(host.xaxis_item.maximumHeight()) if host.xaxis_item.isVisible() else 0.0
+            return (x0, y0 + h + ah + gap * h, max(w, 1.0), max(size * h, 1.0))
+        aw = float(host.yaxis_item.maximumWidth()) if host.yaxis_item.isVisible() else 0.0
+        return (x0 - aw - gap * h - size * h, y0, max(size * h, 1.0), max(h, 1.0))
 
     def set_box_aspect(self, aspect=None):
         """matplotlib's box aspect: the box's height over its width fixed at `aspect` whatever the limits (None frees it); the box shrinks in its cell to it."""
@@ -3279,6 +3334,13 @@ class Axes:
             QtCore.QTimer.singleShot(0, self.keep_legend_clear)
         if getattr(self.figure, '_closed', False):
             return                                     # a placement queued before the window closed: nothing follows it
+        if self._attach is not None:
+            # An attached panel (Figure.attach): its host leaves room for it and its tick axes; when
+            # those changed size, or the panel was shown or hidden, the host is placed again.
+            sig = (round(float(ah), 1), round(float(aw), 1), self._visible)
+            if sig != getattr(self, '_attach_sig', None):
+                self._attach_sig = sig
+                self._attach[0]._request_place()
         for cb in list(getattr(self, '_placed_cbs', [])):
             try:
                 cb()
@@ -3354,6 +3416,8 @@ class Axes:
         return True
 
     def remove(self):
+        if getattr(self, '_detached', False):
+            return                                 # an attached panel already removed with its host (Figure.clf walks every axes)
         fig = self.figure
         sc = fig.canvas.scene()
         row = getattr(self, '_row', None)
@@ -3376,6 +3440,20 @@ class Axes:
                 m._request_place()
         for ins in list(self._insets):
             ins.remove()
+        self._removing = True
+        for a in list(self._attached):             # the panels attached to this axes go with it
+            a.remove()
+        if self._attach is not None:               # an attached panel leaves its host, which takes its room back
+            host = self._attach[0]
+            self._attach = None
+            self._detached = True
+            for held in (host._attached, getattr(host, '_dependents', [])):
+                try:
+                    held.remove(self)
+                except ValueError:
+                    pass
+            if not getattr(host, '_removing', False):   # a host that is itself being removed is not placed again
+                host._request_place()
         if self._legend is not None:
             self._remove_legend()
         for it in self._all_items():
@@ -5490,6 +5568,27 @@ class Figure:
         for ax in col:
             ax._request_place()
         return col
+
+    def attach(self, to, side='bottom', size=0.1, gap=0.0):
+        """
+        The attached rule: a new axes at the side of the axes `to` (a panel in a layout cell), with
+        no cell of its own.  `side` 'bottom': as wide as `to`'s box, `size` of that box's height
+        tall, `gap` of that height under `to`'s x tick axis; 'left': as tall as `to`'s box, `size`
+        of its height wide, `gap` of its height left of `to`'s y tick axis.  `to` leaves the room
+        in its own cell (Axes._cell_px: the fractions and the new axes' own tick axes), so the
+        window's layout stays automatic and nothing overlaps; the new axes follows every placement
+        of `to`, takes no room while hidden (set_visible), and is removed with it.  Returns the
+        new axes.
+        """
+        if side not in ('bottom', 'left'):
+            raise ValueError(f"attach: side must be 'bottom' or 'left' (got {side!r})")
+        ax = Axes(self, rect=[0.0, 0.0, 0.01, 0.01])
+        ax._attach = (to, side, float(size), float(gap))
+        to._attached.append(ax)
+        to._dependents = getattr(to, '_dependents', []) + [ax]
+        to._request_place()
+        ax._place()
+        return ax
 
     # --- output, closing ---
 

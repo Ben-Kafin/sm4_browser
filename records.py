@@ -21,12 +21,14 @@ subfolder (AVG_SUBDIR), which also holds the fit histories
     was made with, and the alignment; lineavg.py); a record is a line
     average by its 'members' key, not by its name (is_lineavg_record);
   - the Map window's marker records <file stem>_map_markers.json
-    (MAP_RECORD_FORMAT 1, one per file: the file and its sweep view, the
+    (MAP_RECORD_FORMAT 2, one per file: the file and its sweep view, the
     pipeline state, the view, the energy step, the gammas, the colour
     scale's settings, the topo pass and processors, the drift toggles, the
-    contour slice's level and its traces, the marker groups and markers,
-    the stack states, the scale factor, the time of saving;
-    map.Map.marker_record).
+    contour slice's level and its traces, the 'Height' and 'Contour'
+    toggles, the marker groups and markers, the stack states, the scale
+    factor, the time of saving; map.Map.marker_record.  Format 1 had no
+    'height' and 'contour' keys: such a record opens with Height off and
+    Contour on).
 A record that carries a scale factor keeps the one it was made with; on
 reload the browser applies the scale timeline's and reports a difference
 (browser._record_scale).  Here live the paths, the name-to-stem rule
@@ -55,7 +57,7 @@ RECORD_FORMAT = 6          # 1: removed sweeps indexed among all of a file's swe
 #                            6: the window's sweep view ('sweeps'; a single point with several sweeps per location)
 LINE_RECORD_FORMAT = 1     # the Line window's marker records
 LINEAVG_RECORD_FORMAT = 1  # the line-average records
-MAP_RECORD_FORMAT = 1      # the Map window's marker records
+MAP_RECORD_FORMAT = 2      # the Map window's marker records (2: the 'height' and 'contour' toggles)
 
 RECORD_RE = re.compile(r'^(.+)_average\.json$')          # group 1: the stem (the name cleaned as a file name)
 LINE_RECORD_RE = re.compile(r'^(.+)_line(\d+)_markers\.json$')

@@ -3,9 +3,12 @@ Per-energy maps of a grid file: the Map window (a tiled grid of every energy,
 or one energy beside the file's embedded topography with energy arrows and a
 curve panel), its marker groups (the Line window's method in 2D), its own
 'Feenstra' toggle and Feenstra companion, the 'calibrate' / 'normalize' box,
-the 'cmap norm' colour-scale toggle, one 'γ' box per energy slice, and the
+the 'cmap norm' colour-scale toggle, one 'γ' box per energy slice, the
 contour slice (a draggable level line on the topo colour bars; the topo's
-iso-line at that height on every map, contour.py).
+iso-line at that height on every map, contour.py) with its 'Contour' toggle,
+and Height shading with its 'Height' toggle (every map coloured by its value
+and the topo's height together, topo_ldos_blend.TopoLdosBlend, with the
+colour square, its two bars and the maps' legends).
 Also in the window: the 'channel' radio (dI/dV or IETS), the 'topo pass'
 radio of the embedded topo, the 'sweeps' radio of a file with several
 sweeps per pixel, the filter box, the window's own 'auto drift' / 'manual
@@ -36,6 +39,50 @@ from sm4_Browser.feenstra import (FeenstraWindow, feenstra_width, feenstra_title
 from sm4_Browser.drift import DriftWindow
 from sm4_Browser.composer import FigureComposer
 from sm4_Browser.topo import processed_topo, process_topo, average_passes, TOPO_CMAP, TOPO_DIRECTIONS
+
+
+def height_source(height, centres, pitch):
+    """
+    The topography as drawn, made ready for the height lookup of Height shading (heights_at):
+    `height` (ny, nx) the height fraction of every topo pixel (NaN: not drawn), `centres` (ny, nx, 2)
+    the pixels' centres as drawn (the frame's units), `pitch` (x, y) one topo pixel's size.  Returns
+    (tree, values, points, pitch): a scipy cKDTree over the centres of the pixels with a finite height,
+    in units of the pixel pitch, their heights, the same points and the pitch; None when no pixel has
+    a finite height.
+    """
+    from scipy.spatial import cKDTree
+    h = np.asarray(height, dtype=np.float64).ravel()
+    c = np.asarray(centres, dtype=np.float64).reshape(-1, 2)
+    p = np.array([abs(float(pitch[0])) or 1.0, abs(float(pitch[1])) or 1.0])
+    ok = np.isfinite(h) & np.all(np.isfinite(c), axis=1)
+    if not ok.any():
+        return None
+    pts = c[ok] / p
+    return cKDTree(pts), h[ok], pts, p
+
+
+def heights_at(source, at):
+    """
+    The height fraction of the topography as drawn under the points `at` (..., 2; the frame's units):
+    for every point the height of the nearest drawn topo pixel (by its centre, the distance counted
+    in pixel pitches; `source` from height_source).  A point that is not finite, or whose nearest
+    topo pixel's centre is more than one pixel pitch away along x or along y (the point lies outside
+    the topography as drawn), has no height: NaN.  Shape at.shape[:-1].
+    """
+    at = np.asarray(at, dtype=np.float64)
+    out = np.full(at.shape[:-1], np.nan)
+    if source is None:
+        return out
+    tree, values, pts, p = source
+    q = at.reshape(-1, 2) / p
+    ok = np.all(np.isfinite(q), axis=1)
+    if not ok.any():
+        return out
+    _, idx = tree.query(q[ok])
+    near = np.all(np.abs(pts[idx] - q[ok]) <= 1.0 + 1e-9, axis=1)
+    flat = out.reshape(-1)
+    flat[np.flatnonzero(ok)] = np.where(near, values[idx], np.nan)
+    return out
 
 
 class Map:
@@ -154,8 +201,39 @@ class Map:
     a drift source on); the same traces on every energy's map, since the
     surface does not move with the energy while the maps' pixels do.  A
     never-acquired pixel bounds no trace.  The traces go to the publication
-    files with the maps (mplexport: a line collection).  The drift
-    toggles and the drift window are described at __init__.
+    files with the maps (mplexport: a line collection).  The 'Contour'
+    toggle (on at open) shows or hides the slice: off, no trace is drawn
+    and the level lines are hidden.  The drift toggles and the drift
+    window are described at __init__.
+
+    Height shading ('Height', off at open; both views; display only,
+    nothing is recomputed): on, a map is no longer coloured by the maps'
+    colour map alone; every pixel's colour is blend(s, t) of the window's
+    TopoLdosBlend (topo_ldos_blend.py, made from the topo colour map and
+    the maps' colour map as they are): s the map's value through the norm
+    it has without the shading ('cmap norm', 'clip %' and the slice's γ),
+    t the height of the topo under the pixel as a fraction of the drawn
+    topo's own range (_heights: the pass on top, the image the contour
+    slice reads; the topo pixel drawn nearest where the map pixel is drawn
+    at that energy, so with a drift source on the heights follow the shift
+    within the sweep; a map pixel drawn outside the topography as drawn
+    has no height and is not drawn).  The lowest height shows the maps'
+    colour map exactly.  'Height' and 'Contour' are never on together:
+    turning one on turns the other off; both may be off.  The topo panels
+    keep the topo colour map.  With 'Height' on (_draw_height_panels) the
+    colour square (value left to right, height bottom to top) sits between
+    the topo's ramp and the map in the single view and in the first map
+    position of the grid view (the maps one place on, _arrange_grid), in a
+    map panel's shape, with the topo bar at its left (the heights in nm)
+    and the value bar under it; with one scale for every map shown ('cmap
+    norm' off; in the grid view also every slice at the same γ) the value
+    bar carries that scale and the maps have no colour bar of their own,
+    otherwise it shows 'low' and 'high' and every map has its legend under
+    it in place of its colour bar (the blend over the map's own scale,
+    'Topo' written vertically at its left).  The sizes are plots.BLEND_BAR,
+    BLEND_GAP and BLEND_LEGEND, fractions of a map panel's height (qtplot
+    Figure.attach).  The Feenstra companion's four maps and a map sent to
+    the figure composer are shaded the same way (_shading_view).
     """
 
     MAX_GROUPS = 10
@@ -260,6 +338,16 @@ class Map:
         self._contour_artists = []                  # the slice's traces on the maps of the view shown
         self._level_lines = []                      # the slice's level line on each topo colour bar (single view, grid view)
         self._topo_im = None                        # drift off: the single view's topo image (its colour range scales the slice)
+        # Height shading and the contour slice's toggle ('Height', off at open; 'Contour', on at open;
+        # never on together, _on_height / _on_contour): with 'Height' on every map is coloured by its
+        # value and the height of the topo drawn under each of its pixels (plots.blend_colors with the
+        # window's TopoLdosBlend of the topo colour map and the maps' colour map; _heights).
+        self.height_on = False
+        self.contour_on = True
+        self.blend = plots.make_blend(TOPO_CMAP, self.cmap)
+        self._height_memo = {}                      # the heights of the maps' pixels per energy slice, and the lookup source (dropped with the topo)
+        self._height_vis = None                     # the state the Height panels' visibility was last set for (_draw_height_panels)
+        self._grid_legends = {}                     # the legend under each grid map (energy index -> axes), made at the first need
 
         # Marker state: one group of two markers at the grid's centre.
         self.n_lines, self.n_fast = int(grid.n_lines), int(grid.n_fast)
@@ -293,6 +381,10 @@ class Map:
         self.chk_cmap_norm.on_change(self._on_cmap_norm)
         self.box_clip = controls.Text(fig, 'clip %', f"{self.clip_percent:g}")
         self.box_clip.on_change(self._on_clip)
+        self.chk_height = controls.make(fig, 'Height', value=self.height_on)
+        self.chk_height.on_change(self._on_height)
+        self.chk_contour = controls.make(fig, 'Contour', value=self.contour_on)
+        self.chk_contour.on_change(self._on_contour)
         self.chk_auto = controls.make(fig, 'auto drift', value=self.auto_on)
         self.chk_auto.on_change(lambda flag: self._on_drift_toggle('auto', flag))
         self.chk_manual = controls.make(fig, 'manual drift', value=self.manual_on)
@@ -355,6 +447,8 @@ class Map:
         # 'E >' buttons at the bottom right.
         self._cell_topo = fig.cell()
         self._cell_topo_cbar = fig.cell(inner_w=9)
+        self._cell_square = fig.cell()                       # Height shading's colour square (shown with 'Height' on)
+        self._cell_square.setVisible(False)
         self._cell_map = fig.cell()
         self._cell_cbar = fig.cell(inner_w=14)
         self._cell_curve = fig.cell()
@@ -370,14 +464,17 @@ class Map:
         sg.setContentsMargins(0, 0, 0, 0)
         sg.setHorizontalSpacing(8)
         sg.setVerticalSpacing(2)
-        for c, cell in enumerate(self._single_cells):
+        # Columns: the topo, its ramp, the colour square of Height shading (column 2: hidden, and without
+        # stretch, until 'Height' is on, _draw_height_panels), the map, its colour bar, the curves.
+        for c, cell in zip((0, 1, 3, 4, 5), self._single_cells):
             sg.addWidget(cell, 0, c)
-        sg.addWidget(self._grid_page, 0, 0, 1, 5)            # the grid view takes the single view's place
+        sg.addWidget(self._cell_square, 0, 2)
+        sg.addWidget(self._grid_page, 0, 0, 1, 6)            # the grid view takes the single view's place
         left = Qt.AlignmentFlag.AlignLeft
         sg.addWidget(self.btn_plot_topo.qt, 1, 0, left)
-        sg.addLayout(controls.row(self.btn_plot_map, 'stretch', self.gamma_single), 1, 2)
-        sg.addWidget(self.btn_plot_curve.qt, 1, 4, left)
-        for c, s in ((0, 28), (2, 28), (4, 26)):
+        sg.addLayout(controls.row(self.btn_plot_map, 'stretch', self.gamma_single), 1, 3)
+        sg.addWidget(self.btn_plot_curve.qt, 1, 5, left)
+        for c, s in ((0, 28), (3, 28), (5, 26)):
             sg.setColumnStretch(c, s)
         sg.setRowStretch(0, 1)
         # The columns of controls in one row that wraps onto more rows in a narrow window
@@ -392,7 +489,8 @@ class Map:
                                      self.groups_ctl.box, orient='v'))
         strip.addWidget(controls.box(self.stacks.chk_average, self.groups_ctl.s_avgs, orient='v'))
         strip.addWidget(controls.box(self.btn_send, self.btn_save, self.stacks.chk_stack, orient='v'))
-        strip.addWidget(controls.box(controls.row(self.chk_cmap_norm, self.box_clip), self.stacks.chk_substack, orient='v'))
+        strip.addWidget(controls.box(controls.row(self.chk_cmap_norm, self.box_clip),
+                                     controls.row(self.chk_height, self.chk_contour), self.stacks.chk_substack, orient='v'))
         strip.addWidget(controls.box(self.btn_view, self.steps, self.rad_sweeps, orient='v'))
         root = QtWidgets.QVBoxLayout()
         root.setSpacing(4)
@@ -411,9 +509,16 @@ class Map:
         self.ax_curve = fig.add_axes(cell=self._cell_curve)
         self.ax_curve.keep_clear_of(self.cax_map)        # the curves never run into the colour bar's labels
         self.ax_topo_cbar = plots.draw_topo_cbar(fig, cell=self._cell_topo_cbar)
+        # Height shading's panels of the single view (hidden until 'Height' is on, _draw_height_panels): the
+        # colour square with its topo bar and value bar (plots.BlendKey) in its cell between the topo's ramp
+        # and the map, and the legend attached under the map (Figure.attach; shown with 'cmap norm' on).
+        self.key_single = plots.BlendKey(fig, self._cell_square)
+        self.key_single.set_visible(False)
+        self.ax_map_legend = fig.attach(self.ax_map, 'bottom', plots.BLEND_LEGEND, plots.BLEND_GAP)
+        self.ax_map_legend.set_visible(False)
         # One row: the topo and the map keep their aspect (the frame, or the drift's wider box) and set
-        # the height; the two colour bars and the curve panel take it (qtplot Figure.align_row).
-        fig.align_row(self.ax_topo, self.ax_topo_cbar, self.ax_map, self.cax_map, self.ax_curve)
+        # the height; the two colour bars, the colour square and the curve panel take it (qtplot Figure.align_row).
+        fig.align_row(self.ax_topo, self.ax_topo_cbar, self.key_single.ax, self.ax_map, self.cax_map, self.ax_curve)
         # Grid view axes (built once, on their page until toggled): the topo in the first column's top
         # cell with the curve panel under it (the single view's panel, moved there while the grid view is
         # shown: _place_curve), the maps in the columns to their right in order of energy (grid_shape,
@@ -431,10 +536,13 @@ class Map:
         gl.addWidget(tcell, 0, 1)
         self.grid_topo_cbar = plots.draw_topo_cbar(fig, cell=tcell)
         self.grid_axes, self.grid_caxes, self.grid_gammas = [], [], []
+        self._grid_cells, self._grid_ccells = [], []         # every map's cell and its colour bar's cell (_arrange_grid moves them)
         for e in range(self.n_e):
             rr, cc = self._grid_slot(e)
             cell = fig.cell(min_px=(20, 20))
             ccell = fig.cell(min_px=(4, 20), inner_w=5)
+            self._grid_cells.append(cell)
+            self._grid_ccells.append(ccell)
             gl.addWidget(cell, 2 * rr, 2 * cc)
             gl.addWidget(ccell, 2 * rr, 2 * cc + 1)
             ax = fig.add_axes(cell=cell)
@@ -452,13 +560,16 @@ class Map:
             gl.setColumnStretch(2 * cc, 1)
         for rr in range(self._grid_rows):
             gl.setRowStretch(2 * rr, 1)
+        # Height shading's colour square of the grid view (plots.BlendKey): its cell is kept on the grid's
+        # page, outside the layout and hidden, until 'Height' is on; it then takes the first map position
+        # and the maps move one place on (_arrange_grid).
+        self._grid_square_cell = fig.cell(min_px=(20, 20))
+        self._grid_square_cell.setParent(self._grid_page)
+        self._grid_square_cell.setVisible(False)
+        self.key_grid = plots.BlendKey(fig, self._grid_square_cell)
+        self.key_grid.set_visible(False)
         # Each row of cells is one row: the maps (and the topo) set the height, their colour bars take it.
-        for rr in range(self._grid_rows):
-            members = [self.grid_topo_ax, self.grid_topo_cbar] if rr == 0 else []
-            for e in range(self.n_e):
-                if self._grid_slot(e)[0] == rr:
-                    members += [self.grid_axes[e], self.grid_caxes[e]]
-            fig.align_row(*members)
+        self._align_grid_rows()
         self.grid_ims = [None] * self.n_e
         self.maps = None
         self.fig.canvas.mpl_connect('pick_event', self._on_pick)
@@ -556,6 +667,57 @@ class Map:
         if self.view_mode == 'grid':
             self.draw_grid()
         self.fig.canvas.draw_idle()
+
+    # --- 'Height' and 'Contour' (never on together; display only, nothing is recomputed) ---
+
+    def _on_height(self, flag):
+        """'Height': Height shading on or off (the maps coloured by their value and the topo's height, _heights; the colour square and the legends shown, _draw_height_panels); turning it on turns 'Contour' off.  Refused, the toggle put back, without a topo page."""
+        flag = bool(flag)
+        if flag and not self.has_topo:
+            print("Map window: no topography page in this file; 'Height' stays off.")
+            self.chk_height.set(False)
+            self.fig.canvas.draw_idle()
+            return
+        if flag == self.height_on:
+            return
+        self.height_on = flag
+        if flag and self.contour_on:
+            self.contour_on = False
+            self.chk_contour.set(False)
+        self._apply_shading()
+
+    def _on_contour(self, flag):
+        """'Contour': the contour slice on or off (its traces on the maps and its level line on the topo colour bars); turning it on turns 'Height' off."""
+        flag = bool(flag)
+        if flag == self.contour_on:
+            return
+        self.contour_on = flag
+        if flag and self.height_on:
+            self.height_on = False
+            self.chk_height.set(False)
+        self._apply_shading()
+
+    def _apply_shading(self):
+        """The 'Height' / 'Contour' state applied to the window (the toggles' handlers, restore_markers): the level lines shown with 'Contour', the maps' images dropped (made again shaded or not), the grid view's cells arranged for the state (_arrange_grid), the maps of the view shown drawn anew (the contour slice and the Height panels with them), and the panels of the view shown or hidden (_apply_view).  The maps themselves are not recomputed."""
+        for h in self._level_lines:
+            h.set_visible(self.contour_on)
+        self._drop_map_images()
+        self._arrange_grid()
+        if self.maps is not None:
+            self.draw_single()
+            if self.view_mode == 'grid':
+                self.draw_grid()
+        self._apply_view()
+
+    def _drop_map_images(self):
+        """Every drawn map of the grid view removed from its panel, images and PixelMaps alike, and forgotten: the next draw makes them again (the single view's map is made anew at every draw)."""
+        for im in self.grid_ims:
+            if im is not None and not isinstance(im, plots.PixelMap):
+                try:
+                    im.remove()
+                except Exception:
+                    pass
+        self._clear_pixel_maps()
 
     # --- the drift (the window's own 'auto drift' / 'manual drift' toggles, the drift window) ---
 
@@ -770,6 +932,7 @@ class Map:
                 pass
         ax.clear()
         self._contour_memo = None
+        self._height_memo = {}
         g = self.grid
         fs = 7 if small else 9
         if not self.has_topo:
@@ -1143,7 +1306,17 @@ class Map:
                 'marker_points': [(self.marker_xy(px, True), self.marker_color(i)) for i, px in enumerate(self.marker_px)],
                 'marker_diameter': self.pixel_diagonal(),
                 'centers': [self.group_center_xy(m, g) for g, m in enumerate(self.groups())],
-                'cmap': self.cmap}
+                'cmap': self.cmap,
+                **self._shading_view()}
+
+    def _shading_view(self):
+        """Height shading as the companion and the composer take it, for the shown energy: {'blend': the window's TopoLdosBlend, 'height': the height fraction under every pixel (_heights), 'z_range': the heights (lo, hi) of the topo drawn in nm, 'aspect': a map panel's shape}; every value None with 'Height' off or without heights."""
+        height = self._heights(self.e_index) if self.height_on else None
+        src = self._topo_level() if height is not None else None
+        if height is None or src is None:
+            return {'blend': None, 'height': None, 'z_range': None, 'aspect': None}
+        return {'blend': self.blend, 'height': height, 'z_range': plots.finite_range(src[0]),
+                'aspect': self._frame_aspect()}
 
     def recompute(self):
         """
@@ -1198,21 +1371,22 @@ class Map:
         m = self.maps[self.e_index]
         lo, hi = self._limits(m)
         shift = self._frame_shift(self.e_index)
+        height = self._heights(self.e_index) if self.height_on else None      # 'Height': the topo's height under every pixel
         if shift is not None:
             im = plots.PixelMap(ax, m, self.extent, self.cmap, gamma=self.gammas[self.e_index], shift=shift,
-                                vmin=lo, vmax=hi)
+                                vmin=lo, vmax=hi, blend=self.blend if height is not None else None, height=height)
             self._pixel_maps['single'] = im
             ax.set_aspect('equal', adjustable='box')
+        elif height is not None:
+            im = plots.BlendImage(ax, m, height, self.extent, self.blend, self.cmap, gamma=self.gammas[self.e_index],
+                                  vmin=lo, vmax=hi)
         else:
             im = plots.draw_heatmap(ax, m, self.extent, self.cmap, gamma=self.gammas[self.e_index], vmin=lo, vmax=hi,
                                     origin='lower', aspect='equal', interpolation='none')
         self._single_im = im
         self._frame_limits(ax)
         q = self._quantity()
-        units = ("arb. units" if self.divide_iv and self.channel == 'didv'
-                 else curve_units(self.channel, self.calibrate, self.normalize, self.grid.units_lia,
-                                  self.grid.units_iets, self.grid.units_iv))
-        plots.draw_colorbar(self.fig, im, self.cax_map, label=f"{q} ({units})")
+        plots.draw_colorbar(self.fig, im, self.cax_map, label=self._cbar_label())
         ax.set_title(f"{q.split(',')[0]} map at {self.V[self.e_index]:.3f} V: {q}, energy {self.e_index + 1} of {self.n_e}"
                      + ("" if self.cmap_norm else ", one colour scale for every energy")
                      + (self._drift_tag() if shift is not None else ""), fontsize=10)
@@ -1222,6 +1396,15 @@ class Map:
         # The contour slice, the markers and the curve panel follow the maps (the topo panel is _draw_topo's).
         self._draw_contour_artists()
         self._redraw_markers()
+        if self.height_on and self.view_mode == 'single':
+            self._draw_height_panels()
+
+    def _cbar_label(self):
+        """The label of the maps' colour bar: the displayed quantity (_quantity) and its units; with 'Height' on the label of the value bar and of the single view's legend."""
+        units = ("arb. units" if self.divide_iv and self.channel == 'didv'
+                 else curve_units(self.channel, self.calibrate, self.normalize, self.grid.units_lia,
+                                  self.grid.units_iets, self.grid.units_iv))
+        return f"{self._quantity()} ({units})"
 
     def draw_grid(self):
         """
@@ -1245,6 +1428,15 @@ class Map:
             m = self.maps[e]
             lo, hi = self._limits(m)
             shift = self._frame_shift(e)
+            height = self._heights(e) if self.height_on else None             # 'Height': the topo's height under every pixel
+            if shift is None and self.grid_ims[e] is not None \
+                    and isinstance(self.grid_ims[e], plots.BlendImage) != (height is not None):
+                # The image kept is not of the form wanted now (shaded or not): it is made again below.
+                try:
+                    self.grid_ims[e].remove()
+                except Exception:
+                    pass
+                self.grid_ims[e] = None
             if shift is not None:
                 old = self._pixel_maps.pop(e, None)
                 if old is not None:
@@ -1255,7 +1447,8 @@ class Map:
                     except Exception:
                         pass
                     self.grid_ims[e] = None
-                pm = plots.PixelMap(ax, m, self.extent, self.cmap, gamma=self.gammas[e], shift=shift, vmin=lo, vmax=hi)
+                pm = plots.PixelMap(ax, m, self.extent, self.cmap, gamma=self.gammas[e], shift=shift, vmin=lo, vmax=hi,
+                                    blend=self.blend if height is not None else None, height=height)
                 self._pixel_maps[e] = pm
                 if self.grid_ims[e] is None:
                     self._frame_limits(ax)
@@ -1263,14 +1456,22 @@ class Map:
                     self._grid_title(ax, f"{self.V[e]:.2f} V")
                 self.grid_ims[e] = pm
             elif self.grid_ims[e] is None:
-                self.grid_ims[e] = plots.draw_heatmap(ax, m, self.extent, self.cmap, gamma=self.gammas[e],
-                                                      vmin=lo, vmax=hi, origin='lower', aspect='equal',
-                                                      interpolation='none')
+                if height is not None:
+                    self.grid_ims[e] = plots.BlendImage(ax, m, height, self.extent, self.blend, self.cmap,
+                                                        gamma=self.gammas[e], vmin=lo, vmax=hi)
+                else:
+                    self.grid_ims[e] = plots.draw_heatmap(ax, m, self.extent, self.cmap, gamma=self.gammas[e],
+                                                          vmin=lo, vmax=hi, origin='lower', aspect='equal',
+                                                          interpolation='none')
                 self._frame_limits(ax)
                 self._grid_title(ax, f"{self.V[e]:.2f} V")
             else:
+                if height is not None:
+                    self.grid_ims[e].height = height                          # the topo drawn may have changed
                 plots.update_heatmap(self.grid_ims[e], m, gamma=self.gammas[e], vmin=lo, vmax=hi)
             plots.draw_colorbar(self.fig, self.grid_ims[e], self.grid_caxes[e], labelsize=5)
+        if self.height_on and self.view_mode == 'grid':
+            self._draw_height_panels()
 
     GRID_TITLE_PT = 7      # the grid view's cell titles: one size, so every row of cells has one title band
 
@@ -1288,18 +1489,59 @@ class Map:
         return k, r
 
     def _grid_slot(self, e):
-        """The grid view cell (row, column) of energy e's map: in order of energy, row by row, in the map columns right of the topo's column (column 0: the topo, the curve panel under it)."""
-        return e // self._grid_cols, e % self._grid_cols + 1
+        """The grid view cell (row, column) of energy e's map: in order of energy, row by row, in the map columns right of the topo's column (column 0: the topo, the curve panel under it); with 'Height' on one place on, the first map position being the colour square's (_arrange_grid)."""
+        k = int(e) + (1 if self.height_on else 0)
+        return k // self._grid_cols, k % self._grid_cols + 1
+
+    def _align_grid_rows(self):
+        """Each row of the grid view's cells made one row (qtplot Figure.align_row): the maps (and in the first row the topo and Height shading's colour square) set the height, their colour bars take it."""
+        for rr in range(self._grid_rows):
+            members = [self.grid_topo_ax, self.grid_topo_cbar, self.key_grid.ax] if rr == 0 else []
+            for e in range(self.n_e):
+                if self._grid_slot(e)[0] == rr:
+                    members += [self.grid_axes[e], self.grid_caxes[e]]
+            self.fig.align_row(*members)
+
+    def _arrange_grid(self):
+        """
+        The grid view's cells placed for the 'Height' state: off, the maps in order of energy from the
+        first map position (grid_shape of n_e, as the window opens); on, Height shading's colour square
+        in the first map position and the maps one place on (grid_shape of n_e + 1).  Every map's cell,
+        its colour bar's cell and its γ box are taken out of the page's grid and put at their slots
+        (_grid_slot), the column and row stretches set for the new shape, the rows made rows again
+        (_align_grid_rows).  The curve panel's place follows at the next _place_curve (_apply_view).
+        """
+        gl = self._grid_layout
+        for c in range(gl.columnCount()):
+            gl.setColumnStretch(c, 0)
+        for r in range(gl.rowCount()):
+            gl.setRowStretch(r, 0)
+        self._grid_cols, self._grid_rows = self.grid_shape(self.n_e + (1 if self.height_on else 0))
+        gl.removeWidget(self._grid_square_cell)
+        if self.height_on:
+            gl.addWidget(self._grid_square_cell, 0, 2)       # the first map position: row 0, the first map column
+        for e in range(self.n_e):
+            rr, cc = self._grid_slot(e)
+            for w in (self._grid_cells[e], self._grid_ccells[e], self.grid_gammas[e].qt):
+                gl.removeWidget(w)
+            gl.addWidget(self._grid_cells[e], 2 * rr, 2 * cc)
+            gl.addWidget(self._grid_ccells[e], 2 * rr, 2 * cc + 1)
+            gl.addWidget(self.grid_gammas[e].qt, 2 * rr + 1, 2 * cc, Qt.AlignmentFlag.AlignRight)
+        for cc in range(self._grid_cols + 1):
+            gl.setColumnStretch(2 * cc, 1)
+        for rr in range(self._grid_rows):
+            gl.setRowStretch(2 * rr, 1)
+        self._align_grid_rows()
 
     def _place_curve(self):
         """The one curve panel in the view shown: in the single view right of the map's colour bar (the single view's row), in the grid view under the topo cell, as wide as the topo's column and as tall as the rows below it."""
         cell = self._cell_curve
+        self._single_layout.removeWidget(cell)               # out of both first: placed again in the same view too (_apply_shading)
+        self._grid_layout.removeWidget(cell)
         if self.view_mode == 'grid':
-            self._single_layout.removeWidget(cell)
             self._grid_layout.addWidget(cell, 2, 0, 2 * (self._grid_rows - 1), 1)
         else:
-            self._grid_layout.removeWidget(cell)
-            self._single_layout.addWidget(cell, 0, 4)
+            self._single_layout.addWidget(cell, 0, 5)
 
     def _on_channel(self, label):
         """The 'channel' radio: the maps are recomputed from the chosen channel; a file without it puts the radio back."""
@@ -1370,6 +1612,8 @@ class Map:
             ax.set_visible(single)
         for ax in [self.grid_topo_ax, self.grid_topo_cbar] + self.grid_axes + self.grid_caxes:
             ax.set_visible(not single)
+        self._height_vis = None                     # the loops above showed every colour bar of the view: set anew
+        self._draw_height_panels()
         self.btn_view.set_text('Grid view' if single else 'Single view')
         self.fig.canvas.draw_idle()
 
@@ -1655,14 +1899,14 @@ class Map:
         return list(self.grid_axes) if self.view_mode == 'grid' else [self.ax_map]
 
     def _draw_contour_artists(self):
-        """The contour slice drawn anew (the old traces removed) on every map panel of the view shown (_contour_panels; plots.draw_contour with the segments of _contour_segments); nothing before the first recompute or without a topo page."""
+        """The contour slice drawn anew (the old traces removed) on every map panel of the view shown (_contour_panels; plots.draw_contour with the segments of _contour_segments); nothing before the first recompute, without a topo page or with 'Contour' off."""
         for art in self._contour_artists:
             try:
                 art.remove()
             except (ValueError, NotImplementedError):
                 pass
         self._contour_artists = []
-        if self.maps is None or not self.has_topo:
+        if self.maps is None or not self.has_topo or not self.contour_on:
             return
         segs = self._contour_segments()
         if not len(segs):
@@ -1701,6 +1945,136 @@ class Map:
             return None
         return (float(event.y) - y0) / h
 
+    # --- Height shading (the heights under the maps' pixels, the colour square, the bars and the legends) ---
+
+    def _heights(self, e):
+        """
+        The height fraction of the topography under every pixel of energy
+        slice e's map, (n_lines, n_fast), for Height shading: the topo is
+        the one the contour slice reads (_topo_level: the pass on top as
+        the single view's topo draws it, in nm, with its chained pixel
+        shifts), its heights as fractions of its own finite range
+        (plots.height_fraction: 0 the lowest, 1 the highest); a map pixel
+        takes the height of the topo pixel drawn nearest where the map
+        pixel itself is drawn at that energy (its centre plus
+        _frame_shift(e); height_source / heights_at), so with a drift
+        source on the heights follow the shift within the sweep; a map
+        pixel drawn outside the topography as drawn (more than one topo
+        pixel pitch from the nearest drawn topo pixel) has no height (NaN)
+        and is not drawn.  Without pixel shifts every energy has the same
+        heights.  Memoized until the topo is drawn again (_height_memo,
+        dropped by _draw_topo).  None without a topo page or before the
+        topo is drawn.
+        """
+        if not self.has_topo:
+            return None
+        shift = self._frame_shift(e)
+        key = int(e) if shift is not None else -1
+        memo = self._height_memo
+        if key in memo:
+            return memo[key]
+        src = self._topo_level()
+        if src is None:
+            return None
+        img, _, tshift = src
+        img = np.asarray(img, dtype=np.float64)
+        if 'source' not in memo:
+            centres = self._pixel_centres(img.shape)
+            if tshift is not None and np.shape(tshift)[:2] == img.shape:
+                centres = centres + np.where(np.isfinite(tshift), tshift, 0.0)     # as plots.PixelMap places the pixels
+            l, r, b, t = self.extent
+            pitch = (abs(r - l) / img.shape[1], abs(t - b) / img.shape[0])
+            memo['source'] = height_source(plots.height_fraction(img), centres, pitch)
+        at = self._pixel_centres((self.n_lines, self.n_fast))
+        if shift is not None:
+            at = at + np.where(np.isfinite(shift), shift, 0.0)
+        memo[key] = heights_at(memo['source'], at)
+        return memo[key]
+
+    def _one_scale(self):
+        """Whether one colour scale applies to every map of the grid view: 'cmap norm' off and every energy slice at the same γ (a slice's γ is part of its scale)."""
+        return (not self.cmap_norm) and float(np.max(self.gammas)) == float(np.min(self.gammas))
+
+    def _frame_aspect(self):
+        """The shape of a map panel, its height over its width: of the limits _frame_limits sets (the frame, or the box of everything drawn with a placement on); None for an empty frame."""
+        l, r, b, t = self._drift_bounds() if self._drift_result() is not None else self.extent
+        w, h = abs(r - l), abs(t - b)
+        return (h / w) if (w > 0 and h > 0) else None
+
+    def _grid_legend(self, e):
+        """The legend's axes under grid map e (attached under the map, qtplot Figure.attach: plots.BLEND_LEGEND tall, plots.BLEND_GAP under it), made at the first need."""
+        ax = self._grid_legends.get(e)
+        if ax is None:
+            ax = self.fig.attach(self.grid_axes[e], 'bottom', plots.BLEND_LEGEND, plots.BLEND_GAP)
+            self._grid_legends[e] = ax
+        return ax
+
+    def _draw_height_panels(self):
+        """
+        The panels of Height shading for the window's state, shown or
+        hidden and (with 'Height' on) drawn for the view shown.  On: the
+        colour square with the topo bar at its left and the value bar under
+        it (plots.BlendKey): in the single view between the topo's ramp and
+        the map, in the grid view in the first map position; a square has a
+        map panel's shape (_frame_aspect); the topo bar carries the heights
+        of the topo drawn in nm.  With one scale for every map shown
+        ('cmap norm' off; in the grid view also every slice at the same γ,
+        _one_scale) the value bar carries that scale with the maps'
+        colour-bar label (_cbar_label) and the maps have no colour bar of
+        their own; otherwise the value bar shows 'low' and 'high' and every
+        map has its legend under it in place of its colour bar
+        (plots.draw_blend_legend: the single view's attached under its map,
+        a grid map's made at the first need, _grid_legend).  Off: none of
+        it is shown and the maps' colour bars are as without it.  The
+        visibility is set only when the state changed (_height_vis;
+        _apply_view sets it anew).
+        """
+        single = self.view_mode == 'single'
+        on = bool(self.height_on and self.has_topo and self.maps is not None)
+        per_single = on and self.cmap_norm
+        per_grid = on and not self._one_scale()
+        state = (single, on, per_single, per_grid)
+        if state != self._height_vis:
+            self._height_vis = state
+            self._cell_square.setVisible(single and on)
+            self._single_layout.setColumnStretch(2, 28 if (single and on) else 0)
+            self.key_single.set_visible(single and on)
+            self.ax_map_legend.set_visible(single and per_single)
+            self._cell_cbar.setVisible(single and not on)
+            self.cax_map.set_visible(single and not on)
+            self._grid_square_cell.setVisible(on)
+            self.key_grid.set_visible((not single) and on)
+            for e in range(self.n_e):
+                self._grid_ccells[e].setVisible(not on)
+                self.grid_caxes[e].set_visible((not single) and not on)
+            for lg in self._grid_legends.values():
+                lg.set_visible((not single) and per_grid)
+        if not on:
+            return
+        src = self._topo_level()
+        z_range = plots.finite_range(src[0]) if src is not None else (0.0, 1.0)
+        aspect = self._frame_aspect()
+        label = self._cbar_label()
+        if single:
+            im = self._single_im
+            if im is None:
+                return
+            self.key_single.draw(self.blend, z_range, None if per_single else im.norm, None if per_single else label,
+                                 aspect=aspect, labelsize=8)
+            if per_single:
+                plots.draw_blend_legend(self.ax_map_legend, self.blend, im.norm, label, labelsize=8)
+        else:
+            drawn = [im for im in self.grid_ims if im is not None]
+            norm = drawn[0].norm if (drawn and not per_grid) else None
+            self.key_grid.draw(self.blend, z_range, norm, label if norm is not None else None, aspect=aspect, labelsize=5)
+            if per_grid:
+                for e in range(self.n_e):
+                    if self.grid_ims[e] is None:
+                        continue
+                    lg = self._grid_legend(e)
+                    lg.set_visible(True)
+                    plots.draw_blend_legend(lg, self.blend, self.grid_ims[e].norm, None, labelsize=5, nbins=3)
+
     # --- dragging ---
 
     def _on_pick(self, event):
@@ -1718,6 +2092,8 @@ class Map:
         if not isinstance(label, str):
             return
         if label == '_zlevel':
+            if not self.contour_on:
+                return                                  # 'Contour' off: the level lines are hidden and take no press
             # The contour slice's level line: the drag follows the cursor's height on the bar it was picked on.
             self._active_obj = ('zlevel', artist.axes)
             self._pick_dist = 0.0
@@ -2009,6 +2385,7 @@ class Map:
         'grid'), the energy step (index, and the energy for information),
         the gammas (one per slice), 'cmap norm' and 'clip %', the topo pass
         and the processor flags, the drift toggles and the stripe toggle,
+        the 'Height' and 'Contour' toggles,
         the contour slice's level as the fraction of the drawn topo's colour
         range (z_frac; the slice is rebuilt from it at load) with the level
         in metres and the traces themselves in nm for information (the
@@ -2040,6 +2417,8 @@ class Map:
                 'manual_drift': bool(self.manual_on),
                 'stripe': bool(self.chk_stripe.value),
                 'z_frac': float(self.z_frac),
+                'height': bool(self.height_on),
+                'contour': bool(self.contour_on),
                 'contour_level_m': None if level is None else float(level[1]) * 1e-9,
                 'contour_segments_nm': [[[float(x), float(y)] for x, y in seg] for seg in segs],
                 'group_sizes': [int(v) for v in self.group_sizes],
@@ -2075,7 +2454,9 @@ class Map:
         rules hold; refused as they refuse without a drift model), the
         contour slice's level, the group sizes, centres and markers (clipped
         to the grid; a record whose group sizes and markers disagree keeps
-        the window's markers), the stack controls; then the maps recomputed,
+        the window's markers), the stack controls, the 'Height' and
+        'Contour' toggles (a record without them, format 1, leaves Height
+        off and Contour on; _apply_shading); then the maps recomputed,
         the topo, the markers, the contour slice and the companion drawn
         anew, and the rebuilt slice compared with the record's traces (a
         console line when they differ: the topo's pass, processing or drift
@@ -2199,6 +2580,14 @@ class Map:
             print("restore markers: the record's pipeline state could not be applied; the window keeps its own.")
         if want_view != self.view_mode:
             self.toggle_view()
+        if 'height' in rec or 'contour' in rec:
+            # The 'Height' and 'Contour' toggles (a format 1 record has neither key: the window keeps
+            # Height off and Contour on); never both on, and no Height without a topo page.
+            self.height_on = bool(rec.get('height', False)) and self.has_topo
+            self.contour_on = bool(rec.get('contour', True)) and not self.height_on
+            self.chk_height.set(self.height_on)
+            self.chk_contour.set(self.contour_on)
+            self._apply_shading()
         self._redraw_markers()
         saved = rec.get('contour_segments_nm')
         if saved is not None and self.has_topo and self.maps is not None:
@@ -2221,7 +2610,10 @@ class Map:
         'add to plot' under a panel: that panel as shown goes to the figure
         composer (composer.FigureComposer).  'map': the shown slice with its
         colour limits, gamma, the axes limits and its drift shift, at its
-        bias; 'topo': the embedded topo as drawn (the quads with their
+        bias, and with 'Height' on its shading (_shading_view: the blend,
+        the heights under its pixels, the topo's heights and the map's
+        colour-bar label for the composer's colour square);
+        'topo': the embedded topo as drawn (the quads with their
         shifts with a drift source on); 'spectra': every marker's spectrum
         (Average off) or every group's average (Average on), each with the
         marker's pixel centre or the group's centre, and the curve panel's
@@ -2237,8 +2629,11 @@ class Map:
                 e = self.e_index
                 im = self._single_im
                 vmin, vmax = (im.norm.vmin, im.norm.vmax) if im is not None else (None, None)
+                shading = self._shading_view()
                 c.add_map(self.maps[e], self.extent, [*self.ax_map.get_xlim(), *self.ax_map.get_ylim()],
-                          vmin, vmax, self.gammas[e], self.cmap, self.V[e], shift=self._frame_shift(e))
+                          vmin, vmax, self.gammas[e], self.cmap, self.V[e], shift=self._frame_shift(e),
+                          blend=shading['blend'], height=shading['height'], z_range=shading['z_range'],
+                          label=self._cbar_label())
             elif which == 'topo':
                 if not self.has_topo:
                     raise ValueError("no topography page in this file")

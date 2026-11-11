@@ -70,6 +70,8 @@ SPECS = {
     'stripe match': _spec('button', 1.2, 0.36),                   # grids: opens the stripe window (stripe.StripeWindow)
     'anchor to topo': _spec('check', 1.45, 0.38),                 # the MATLAB "drift for first point" (rigid shift): the browser's and the Topo window's toggle
     'cmap norm': _spec('check', 1.4, 0.38),
+    'Height': _spec('check', 0.9, 0.38),                          # the Map window: Height shading (topo_ldos_blend), never on together with 'Contour'
+    'Contour': _spec('check', 0.95, 0.38),                        # the Map window: the contour slice on / off
     'overlapping': _spec('check', 0.85, 0.38, fs=7),              # the line-average window: average only where every member covers a pixel
     'WKB background': _spec('check', 1.7, 0.32),
     'hold': _spec('check', 0.3, 0.26, fs=7, labels=['']),           # the fit edit window's hold rows (unlabeled)

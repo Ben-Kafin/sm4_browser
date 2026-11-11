@@ -438,7 +438,7 @@ spectrum, to an averaging window. `save` (in the column with `Send to fit`) writ
 marker record `averages/<file stem>_map_markers.json`, one per file, overwritten: the file and its
 sweep view, the pipeline state, the view, the energy step, the gammas, `cmap norm` and `clip %`,
 the topo pass and processors, the drift and stripe toggles, the contour slice's level (and its
-traces, for information) and the marker groups, markers and stack states; the saved-records window
+traces, for information), the `Height` and `Contour` toggles and the marker groups, markers and stack states; the saved-records window
 lists it, and `load` reopens the map on the file with everything put back (the slice rebuilt from
 the level, and compared with the saved traces: a console line says when the topography's pass,
 processing or drift state is no longer what it was at the save). With a drift source on every pixel sits at its spectrum's chained
@@ -470,7 +470,37 @@ never on the topography panel itself. The height is the line's fraction of the d
 colour range (the pass on top, on its own range), half the range at open; the traces sit at the
 topography pixels' positions as drawn (with a drift source on, the pass's chained pixel shifts), the
 same on every energy's map, since the surface does not move with the energy while the maps' pixels
-do; a never-acquired pixel bounds no trace. They go to the publication files with the map.
+do; a never-acquired pixel bounds no trace. They go to the publication files with the map. The `Contour` toggle (beside `cmap norm`, on at
+open) shows or hides the slice: off, no trace is drawn and the level lines are hidden.
+
+Height shading (the STM_from_DFT simulator's, `topo_ldos_blend.py`): with the `Height` toggle on (beside
+`Contour`, off at open) a map is no longer coloured by the maps' colour map alone. Each pixel's colour
+is looked up from two numbers together: the map's value at the pixel, through the scale the map has
+without the shading (`cmap norm`, `clip %` and the slice's `γ`), and the topography's height under the
+pixel, as a fraction of the drawn topography's own range (the pass on top, the image the contour slice
+reads). The lookup combines the topo colour map and the maps' colour map, both as they are: the lowest
+height shows the maps' colour map exactly, and as the height rises the colours turn toward the topo
+colour map's. The height of a map pixel is that of the topography pixel drawn nearest where the map
+pixel itself is drawn at that energy, so with a drift source on the heights follow the map's shift
+within the sweep while the surface stays put, as the contour slice's traces do; a map pixel drawn
+outside the topography as drawn (more than one topography pixel from the nearest one drawn) has no
+height and is not drawn, and neither is a pixel that was never acquired. `Height` and `Contour` are
+never on together: turning one on turns the other off, and both may be off. It is display only:
+nothing is recomputed, the map arrays, the marker curves and the sends are the same, and the
+topography panels keep the topo colour map. While it is on, the colour square (the map's value left
+to right, the height bottom to top, in a map panel's shape) sits between the topography's ramp and the
+map in the single view and in the first map position of the grid view, the maps one place on; the
+topo bar at its left carries the heights in nm and the value bar under it the maps' scale. With one
+scale for every map shown (`cmap norm` off; in the grid view also every slice at the same `γ`) the
+value bar carries that scale with the colour bars' label and the maps have no colour bar of their
+own; otherwise the value bar shows only `low` and `high`, and every map has a legend under it in
+place of its colour bar: the blend over the map's own scale, with `Topo` written vertically at its
+left. The bars are 0.054 of a map panel's height thick and 0.038 of it away, a legend 0.125 of it
+tall. The Feenstra companion's four maps follow the toggle (each has its own scale, so each has its
+legend, and the colour square stands in a column in front of them), and a map sent to the figure
+composer while it is on is drawn shaded, the figure then showing the colour square with its two bars
+in front of the maps. The toolbar's readout over a map is the cursor's x and y, as without the
+shading. The saved files show the shaded maps and the legends as on screen.
 
 ### Averaging windows (avg1, avg2, ...)
 
@@ -603,7 +633,8 @@ it with the toggle off, the current, its I/V, and the ratio, following the main 
 `0Vsub`, `broadened` and `width (V)` boxes are the main window's Feenstra settings, and its own
 `calibrate` / `normalize` box governs the four panels. Its top row (the maps or heatmaps, their
 colour bars, the stripes and the topo ramp) is one row: a map's aspect sets the height, the rest
-take it.
+take it. The Map window's `Height` toggle shades the companion's four maps too (see
+[Map window](#map-window-and-the-figure-composer)).
 
 ## Files the package writes and reads
 
@@ -617,7 +648,7 @@ take it.
 | `averages/<stem>_fits.pkl` | the `averages` subfolder | the fit history of an average sent to the fit, with everything a refit needs | your results |
 | `averages/<stem>_fit<K>.json`, `.csv` | the `averages` subfolder (next to the data file for a file fitted directly) | a saved fit: its parameters, and V, data, background, components, model | your results |
 | `averages/<file stem>_line<k>_markers.json` | the `averages` subfolder | a Line window's marker record: groups, markers, E-markers, ranges, the scale it was made with | your results |
-| `averages/<file stem>_map_markers.json` | the `averages` subfolder | a Map window's marker record: the pipeline state, the view and energy step, the colour scale's settings, the topo pass and processors, the drift toggles, the contour level and traces, groups and markers, the scale it was made with | your results |
+| `averages/<file stem>_map_markers.json` | the `averages` subfolder | a Map window's marker record: the pipeline state, the view and energy step, the colour scale's settings, the topo pass and processors, the drift toggles, the contour level and traces, the `Height` and `Contour` toggles, groups and markers, the scale it was made with | your results |
 | `averages/lineavg<N>_average.json` | the `averages` subfolder | a line-average record: members (each with the scale it was made with), alignment, markers | your results |
 | `<date_time>_fits.pkl` | next to a data file fitted directly | that file's fit history | your results |
 | `~/sm4_browser_crash.log` | the home directory | where Qt or a C extension crashed the kernel, with the last file the browser went to | yes |
@@ -750,7 +781,11 @@ asks for, spatial panels keeping their aspect and colour bars, ramps and curve p
 or squishing to it, each centred on its cell; a `fig.colorbar(im, ax=ax)` bar joins its axes' row),
 the column rule (`Figure.align_column`: the panels of one column take one left and one right edge,
 the band all of them have room for beside their y tick axes and right-hand axes, so their boxes
-share one width and their x axes line up) and the tick rule (`_Axis`: a tick is a value of the panel's range, labelled from that value, and
+share one width and their x axes line up), the attached rule (`Figure.attach`: a panel with no
+cell of its own at the bottom or the left of another panel, as wide or as tall as that panel's
+box, its size and its gap fractions of that box's height; the host leaves the room for it and for
+its tick axes inside its own cell, so nothing overlaps, and gives the room back while the attached
+panel is hidden; the bars and legends of the Map window's Height shading) and the tick rule (`_Axis`: a tick is a value of the panel's range, labelled from that value, and
 its mark and label are drawn where the panel's view box maps the value, read when the axis is
 painted and drawn straight into the painter, with no cached drawing, so the ticks sit on the data
 on every monitor whatever its display scaling; pyqtgraph's own axis replays a `QPicture`, which Qt
@@ -789,7 +824,13 @@ Every drawing of data into axes, so a window only decides what to show: heatmaps
 curves, topographies at absolute positions (`draw_topo_absolute`) or in their own frame
 (`draw_topo_frame`), drift lines and markers, point sweeps, profiles, the section path
 (`draw_section_path`), a topography's recorded outline (`draw_topo_outline`) and the Map window's
-contour slice (`draw_contour`); the colour constants (`MARKER_COLORS`, the drift line colours,
+contour slice (`draw_contour`); Height shading (`make_blend`, the `TopoLdosBlend` of two colour maps'
+tables; `height_fraction`; `blend_colors`, a map's colours from its value through its own norm and
+the height under each pixel; `BlendImage` and `PixelMap` with a blend, the two shaded map drawings,
+which keep the map's array, norm and colour map; `BlendKey`, the colour square with its topo bar and
+value bar; `draw_blend_legend`, the legend under a map; `scale_ticks` and `scale_label`, a scale's
+tick values along a bar with their power of ten in the label; the sizes `BLEND_BAR`, `BLEND_GAP`,
+`BLEND_LEGEND`); the colour constants (`MARKER_COLORS`, the drift line colours,
 `PARTNER_FRAME_COLOR`, the contour slice's `CONTOUR_COLOR` and `CONTOUR_LEVEL_COLOR`) and the two
 colour maps (`TOPO_CMAP` for every topography, `MAP_CMAP` for the Map window's maps).
 
@@ -939,13 +980,25 @@ alignment` window. `align.py` is the alignment on arrays alone: the common energ
 
 The Map window (`Map`): the per-energy maps, the grid view and the single view, the colour scales
 (`_limits`, through the `clip %` percentile clip), the markers in two dimensions, the drift within
-a sweep, the contour slice, the sends, `add to plot`, and the marker record (`marker_record`,
+a sweep, the contour slice, Height shading (`_on_height` / `_on_contour`, the two toggles that are
+never on together; `_heights`, the height under every map pixel, through `height_source` and
+`heights_at`, the nearest drawn topography pixel; `_draw_height_panels`, the colour square, its bars
+and the legends; `_arrange_grid`, the grid view's cells for the state), the sends, `add to plot`, and the marker record (`marker_record`,
 `restore_markers`). `composer.FigureComposer` is the figure composer: the collected panels, the symbols of the
-spectra on every map, the bias arrows, the scale bars, the removal of a panel and `new plot`.
+spectra on every map, the bias arrows, the scale bars, the colour square of maps collected with Height shading, the removal of a panel and `new plot`.
 `contour.py` is the contour slice's geometry: `iso_segments` (marching squares at one level,
 vectorized over the cells, the segments in pixel coordinates; a cell with a never-acquired corner
 contributes none; the two ambiguous cases split by the mean of the four corners) and `to_frame`
 (the segments at the pixels as drawn, with the pixel shifts read between the pixels).
+
+### `topo_ldos_blend.py`
+
+`TopoLdosBlend`: the colours of a map's value and the topography's height shown together, from a
+topography colour map and a map colour map used as they are (`blend(s, t)`: the table lookup;
+`blend.colours(s, t)`: the rule itself; `square`, `topo_bar`, `ldos_bar`: the legend's colours). It
+is the STM_from_DFT simulator's file, taken as it is (numpy only, nothing of this package): its
+class constants are the approved rule and are not changed here. The Map window's `Height` toggle
+draws with it through `plots.py`.
 
 ### `averaging.py`
 
@@ -972,7 +1025,8 @@ fit window and the edit window.
 
 A qtplot figure rebuilt as a matplotlib figure (`to_matplotlib`: the canvas as on screen, at its
 size, text at its on-screen size, the controls left out, and the full information panel below it,
-wrapped as on screen) for the vector file types; `export` writes one and `available` says whether
+wrapped as on screen) for the vector file types; ticks given with their labels (the scales of
+Height shading's value bar and legends) are written as given; `export` writes one and `available` says whether
 matplotlib can be imported.
 
 ### `phase.py` and `fft.py`

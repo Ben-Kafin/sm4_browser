@@ -12,6 +12,13 @@ these functions, and take their events from widgets.py.
       sweep
   PixelMap : a map whose pixels sit at their own shifted positions (the Map
       window with drift correction on)
+  make_blend, height_fraction, blend_colors, BlendImage, BlendKey,
+      draw_blend_square, draw_blend_topo_bar, draw_blend_value_bar,
+      draw_blend_legend, scale_ticks, scale_label : Height shading (the Map
+      window's 'Height' toggle, its Feenstra companion and the composer): a
+      map coloured by its value and the topo's height together
+      (topo_ldos_blend.TopoLdosBlend), the colour square with its topo bar
+      and value bar, and the legend under a map
   draw_topo_stripe, draw_stripe_drift_lines, draw_marker_curves,
       draw_sweeps, draw_map_marker : the Line / Map / Feenstra panels
   TOPO_CMAP, draw_topo_absolute, draw_topo_frame, draw_point_sweeps,
@@ -42,6 +49,7 @@ import numpy as np
 from sm4_Browser import qtplot as plt
 from sm4_Browser import qtplot as mcolors           # Normalize, PowerNorm, TwoSlopeNorm, LinearSegmentedColormap
 from sm4_Browser.qtplot import ScalarMappable, PolyCollection, LineCollection, Affine2D, QuadItem, Circle, to_cmap
+from sm4_Browser.topo_ldos_blend import TopoLdosBlend
 
 # The drift lines (every sweep's start to its end): one colour on every page that shows them
 # for the auto drift (the tracker), another for the manual drift (markers or typed), and a
@@ -106,6 +114,12 @@ POINT_SWEEP_COLOR = '#ff8c00'       # the later sweeps of the current point with
 # its level line on the topo colour bars (cyan shows on the ramp's black, firebrick and yellow).
 CONTOUR_COLOR = 'white'
 CONTOUR_LEVEL_COLOR = 'cyan'
+# Height shading (topo_ldos_blend.TopoLdosBlend): the sizes of its legends, fractions of one map panel's height
+# (the hand-off's): the thickness of the topo bar and of the value bar beside the colour square, the gap between
+# a panel and a bar or legend attached to it, and the height of the legend under a map.
+BLEND_BAR = 0.054
+BLEND_GAP = 0.038
+BLEND_LEGEND = 0.125
 
 
 # ---------------------------------------------------------------------- #
@@ -375,15 +389,22 @@ class PixelMap:
     is heat_norm(gamma, vmin, vmax), the finite minimum and maximum of img
     when not given.  The interface the windows use: set_data, get_array,
     set_norm, norm, cmap, remove, set_shift, and `mappable` for the colour
-    bar.  NaN pixels are not drawn.
+    bar.  NaN pixels are not drawn.  With `blend` (a TopoLdosBlend) and
+    `height` (the height fraction of every pixel, img's shape) the map is
+    drawn with Height shading: every pixel in blend(norm(value), height)
+    (blend_colors), a pixel whose value or height is not finite not drawn;
+    the image, the norm and the colour map stay the map's own.
     """
 
-    def __init__(self, ax, img, extent, cmap, gamma=1.0, shift=None, vmin=None, vmax=None, zorder=1.0):
+    def __init__(self, ax, img, extent, cmap, gamma=1.0, shift=None, vmin=None, vmax=None, zorder=1.0,
+                 blend=None, height=None):
         self.ax = ax
         self.img = np.asarray(img, dtype=np.float64)
         self.extent = [float(v) for v in extent]
         self.shift = None if shift is None else np.asarray(shift, dtype=np.float64)
         self.zorder = zorder
+        self.blend = blend
+        self.height = None if height is None else np.asarray(height, dtype=np.float64)
         lo, hi = finite_range(self.img)
         self.norm = heat_norm(gamma, lo if vmin is None else vmin, hi if vmax is None else vmax)
         self.cmap = to_cmap(cmap)
@@ -405,7 +426,12 @@ class PixelMap:
             quads = quads + s[:, :, None, :]
         return quads.reshape(-1, 4, 2)
 
-    _colors = _cell_colors        # the one cell-colour rule (RowHeatmap, PixelMap)
+    def _colors(self):
+        """The cells' colours (RGBA bytes): the one cell-colour rule (_cell_colors: RowHeatmap, PixelMap), or with Height shading blend_colors."""
+        if self.blend is None or self.height is None:
+            return _cell_colors(self)
+        c = blend_colors(self.blend, self.norm, self.img, self.height)
+        return (c.reshape(-1, 4) * 255.0 + 0.5).astype(np.uint8)
 
     def _build(self):
         if self.item is None:
@@ -442,6 +468,277 @@ class PixelMap:
             except Exception:
                 pass
             self.item = None
+
+
+# ---------------------------------------------------------------------- #
+#  Height shading: a map coloured by its value and the topo's height       #
+# ---------------------------------------------------------------------- #
+
+def make_blend(topo_cmap=None, map_cmap=None):
+    """
+    The TopoLdosBlend (topo_ldos_blend.py) of a topography colour map and a map colour map (TOPO_CMAP
+    and MAP_CMAP when not given): each handed over as its table of colours from lowest to highest
+    (the colour map called at its own N fractions), so the blend reads the same colours without the
+    table's steps.  One per pair of colour maps; the blend makes its lookup table at its first use.
+    """
+    t = to_cmap(TOPO_CMAP if topo_cmap is None else topo_cmap)
+    m = to_cmap(MAP_CMAP if map_cmap is None else map_cmap)
+    return TopoLdosBlend(np.asarray(t(np.linspace(0.0, 1.0, t.N)), dtype=np.float64),
+                         np.asarray(m(np.linspace(0.0, 1.0, m.N)), dtype=np.float64))
+
+
+def height_fraction(img):
+    """
+    The height fraction of every pixel of a topography image: (z - z_min) / (z_max - z_min) over its
+    finite heights, 0 the lowest and 1 the highest; a pixel that is not finite stays NaN; a flat
+    image is 0 everywhere it is finite.  Same shape as `img`.
+    """
+    z = np.asarray(img, dtype=np.float64)
+    ok = np.isfinite(z)
+    if not ok.any():
+        return np.full(z.shape, np.nan)
+    lo, hi = float(np.min(z[ok])), float(np.max(z[ok]))
+    if hi <= lo:
+        return np.where(ok, 0.0, np.nan)
+    return np.where(ok, (z - lo) / (hi - lo), np.nan)
+
+
+def blend_colors(blend, norm, img, height):
+    """
+    The colours of a map drawn with Height shading, RGBA floats 0 to 1 of img's shape plus (4,):
+    blend(s, t) with s the map's value through its own norm (clipped to 0 .. 1 by the blend) and t
+    the height fraction of the same pixel (`height`, img's shape); a pixel whose value or height is
+    not finite is transparent (not drawn).
+    """
+    v = np.asarray(img, dtype=np.float64)
+    t = np.asarray(height, dtype=np.float64)
+    if t.shape != v.shape:
+        raise ValueError(f"blend_colors: the heights {t.shape} are not on the map's pixels {v.shape}")
+    out = np.zeros(v.shape + (4,))
+    ok = np.isfinite(v) & np.isfinite(t)
+    if ok.any():
+        s = np.asarray(norm(v[ok]), dtype=np.float64)
+        s = np.where(np.isfinite(s), s, 0.0)
+        out[ok, :3] = np.clip(blend(s, t[ok]), 0.0, 1.0)
+        out[ok, 3] = 1.0
+    return out
+
+
+class BlendImage:
+    """
+    A map drawn with Height shading at its recorded pixels: img (n_lines, n_fast) over the frame
+    `extent` [l, r, b, t] as one RGBA image (imshow, origin 'lower', the aspect equal), every pixel
+    in blend(norm(value), height) (blend_colors; `height` the height fraction of every pixel, img's
+    shape), a pixel whose value or height is not finite not drawn.  The image, the norm
+    (heat_norm(gamma, vmin, vmax), img's finite range when not given) and the colour map stay the
+    map's own, so the interface is that of the unshaded image as the windows use it: set_data,
+    get_array, set_norm, get_clim, norm, cmap, remove, and `mappable` (the ScalarMappable of the
+    map's own scale).  `image` is the AxesImage drawn.
+    """
+
+    def __init__(self, ax, img, height, extent, blend, cmap, gamma=1.0, vmin=None, vmax=None):
+        self.ax = ax
+        self.img = np.asarray(img, dtype=np.float64)
+        self.height = np.asarray(height, dtype=np.float64)
+        self.blend = blend
+        lo, hi = finite_range(self.img)
+        self.norm = heat_norm(gamma, lo if vmin is None else vmin, hi if vmax is None else vmax)
+        self.cmap = to_cmap(cmap)
+        self.mappable = ScalarMappable(norm=self.norm, cmap=self.cmap)
+        self._set_mappable_array()
+        self.image = ax.imshow(blend_colors(self.blend, self.norm, self.img, self.height), origin='lower',
+                               extent=[float(v) for v in extent], aspect='equal', interpolation='none')
+
+    def _set_mappable_array(self):
+        ok = np.isfinite(self.img)
+        self.mappable.set_array(self.img[ok] if ok.any() else np.zeros(1))
+
+    def _refresh(self):
+        if self.image is not None:
+            self.image.set_data(blend_colors(self.blend, self.norm, self.img, self.height))
+
+    def set_data(self, img):
+        self.img = np.asarray(img, dtype=np.float64)
+        self._refresh()
+        self._set_mappable_array()
+
+    def get_array(self):
+        return self.img
+
+    def set_norm(self, norm):
+        self.norm = norm
+        self._refresh()
+        self.mappable.set_norm(norm)
+
+    def get_clim(self):
+        return self.norm.vmin, self.norm.vmax
+
+    def remove(self):
+        if self.image is not None:
+            try:
+                self.image.remove()
+            except Exception:
+                pass
+            self.image = None
+
+
+def scale_ticks(norm, nbins=4):
+    """
+    The ticks of a colour scale drawn along a bar that runs over the normalized 0 .. 1 (the value bar
+    and the legends of Height shading): (positions, labels, exponent).  The values are the round
+    numbers of the norm's range [vmin, vmax] in steps of 1, 2, 2.5, 5 or 10 times a power of ten, about
+    `nbins` intervals (matplotlib's MaxNLocator, as the tick axes choose theirs); a position is its
+    value through the norm (so a gamma spaces the ticks as it spaces the colours); the labels have
+    the decimals the step needs.  Very small or large values (below 1e-3 or from 1e5) are written
+    as mantissas and `exponent` is their power of ten, for the label (scale_label); else None.
+    ([], [], None) for a norm without a finite, non-empty range.
+    """
+    vmin, vmax = getattr(norm, 'vmin', None), getattr(norm, 'vmax', None)
+    if vmin is None or vmax is None or not (np.isfinite(vmin) and np.isfinite(vmax)) or not vmax > vmin:
+        return [], [], None
+    vmin, vmax = float(vmin), float(vmax)
+    raw = (vmax - vmin) / max(int(nbins), 1)
+    k = 10.0 ** np.floor(np.log10(raw))
+    step = next((f * k for f in (1.0, 2.0, 2.5, 5.0, 10.0) if f * k >= raw * (1 - 1e-9)), 10.0 * k)
+    first = np.ceil(vmin / step - 1e-9) * step
+    n = int(np.floor((vmax - first) / step + 1e-9)) + 1
+    if not 0 < n <= 200:
+        return [], [], None
+    vals = [float(first + i * step) for i in range(n)]
+    vals = [0.0 if abs(v) < step * 1e-9 else v for v in vals]
+    big = max(abs(vmin), abs(vmax))
+    exponent = int(np.floor(np.log10(big))) if big and (big < 1e-3 or big >= 1e5) else None
+    scale = 10.0 ** exponent if exponent is not None else 1.0
+    labels = plt._tick_strings([v / scale for v in vals], step / scale)
+    pos = np.clip(np.asarray(norm(np.asarray(vals, dtype=np.float64)), dtype=np.float64), 0.0, 1.0)
+    return [float(x) for x in pos], list(labels), exponent
+
+
+def scale_label(label, exponent):
+    """A colour scale's label with the power of ten of its tick values (scale_ticks): inside the closing bracket of the units, '... (A/V 1e-11)', or in a bracket of its own after a label without one; the label as it is without an exponent."""
+    label = '' if label is None else str(label)
+    if exponent is None:
+        return label
+    if label.rstrip().endswith(')'):
+        return label.rstrip()[:-1] + f" 1e{exponent})"
+    return (label + ' ' if label else '') + f"(1e{exponent})"
+
+
+def _blend_scale_axis(ax, norm, label, labelsize, nbins):
+    """The x axis of a value bar or legend of Height shading (its view 0 .. 1): with a `norm` the scale's ticks at their places (scale_ticks) and the label with their power of ten (scale_label); without one 'low' at the left end and 'high' at the right, no label."""
+    if norm is None:
+        ax.set_xticks([0.0, 1.0], ['low', 'high'])
+    else:
+        pos, labels, exponent = scale_ticks(norm, nbins)
+        ax.set_xticks(pos, labels)
+        if label:
+            ax.set_xlabel(scale_label(label, exponent), fontsize=labelsize)
+    if labelsize is not None:
+        ax.tick_params(axis='x', labelsize=labelsize)
+
+
+def draw_blend_square(ax, blend):
+    """The colour square of Height shading into `ax`: blend.square(), the map's value left to right and the height bottom to top, filling the panel; no ticks and no title."""
+    ax.clear()
+    ax.set_navigate(False)
+    ax.imshow(blend.square(), origin='lower', extent=[0.0, 1.0, 0.0, 1.0], aspect='auto', interpolation='none')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def draw_blend_topo_bar(ax, blend, z_lo, z_hi, label="height (nm)", labelsize=None):
+    """
+    The topo bar of Height shading into `ax` (the panel left of the colour square): the topography's
+    colour map alone, unaltered (blend.topo_bar()), low at the bottom and high at the top, its y axis
+    the heights from `z_lo` to `z_hi` (the range of the topography the maps are shown with) with their
+    tick values on its left and `label`; a range that is not finite or empty is drawn as 0 to 1.
+    """
+    lo, hi = float(z_lo), float(z_hi)
+    if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+        lo, hi = 0.0, 1.0
+    ax.clear()
+    ax.set_navigate(False)
+    ax.imshow(np.asarray(blend.topo_bar())[:, None, :], origin='lower', extent=[0.0, 1.0, lo, hi], aspect='auto',
+              interpolation='none')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(lo, hi)
+    ax.set_xticks([])
+    ax.set_ylabel(label, fontsize=labelsize)
+    if labelsize is not None:
+        ax.tick_params(axis='y', labelsize=labelsize)
+
+
+def draw_blend_value_bar(ax, blend, norm=None, label=None, labelsize=None, nbins=5):
+    """
+    The value bar of Height shading into `ax` (the panel under the colour square): the map colour map
+    alone, unaltered (blend.ldos_bar()), low at the left and high at the right.  With `norm` (one
+    scale for every map shown) the bar carries that scale: its tick values (scale_ticks) and `label`
+    (the maps' colour-bar label, with the power of ten of the values); with `norm` None (each map its
+    own scale) only 'low' at its left end and 'high' at its right.
+    """
+    ax.clear()
+    ax.set_navigate(False)
+    ax.imshow(np.asarray(blend.ldos_bar())[None, :, :], origin='lower', extent=[0.0, 1.0, 0.0, 1.0], aspect='auto',
+              interpolation='none')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_yticks([])
+    _blend_scale_axis(ax, norm, label, labelsize, nbins)
+
+
+def draw_blend_legend(ax, blend, norm, label=None, labelsize=None, nbins=4):
+    """
+    The legend of one map drawn with Height shading into `ax` (the panel under the map, in place of
+    its colour bar): blend.square(256, 32), the map's own scale left to right with its tick values
+    (scale_ticks of `norm`) and `label` under it, the height bottom to top; the word 'Topo' at its
+    left, written vertically and reading bottom to top (the panel's y label).
+    """
+    ax.clear()
+    ax.set_navigate(False)
+    ax.imshow(blend.square(256, 32), origin='lower', extent=[0.0, 1.0, 0.0, 1.0], aspect='auto', interpolation='none')
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_yticks([])
+    ax.set_ylabel("Topo", fontsize=labelsize)
+    _blend_scale_axis(ax, norm, label, labelsize, nbins)
+
+
+class BlendKey:
+    """
+    The key of Height shading in a window: the colour square in `cell` (a PanelCell of the window's
+    layout) with the topo bar attached at its left and the value bar attached under it
+    (Figure.attach: BLEND_BAR thick, BLEND_GAP away, fractions of the square's height).  `ax` is
+    the square's axes (it joins its row, Figure.align_row), `topo` and `value` the two bars'.
+    draw fills the three; set_visible shows or hides them together; the bars are removed with `ax`.
+    """
+
+    def __init__(self, fig, cell):
+        self.ax = fig.add_axes(cell=cell)
+        self.topo = fig.attach(self.ax, 'left', BLEND_BAR, BLEND_GAP)
+        self.value = fig.attach(self.ax, 'bottom', BLEND_BAR, BLEND_GAP)
+
+    def axes(self):
+        """The three axes: the square's, the topo bar's, the value bar's."""
+        return [self.ax, self.topo, self.value]
+
+    def set_visible(self, flag):
+        for a in self.axes():
+            a.set_visible(bool(flag))
+
+    def draw(self, blend, z_range, norm=None, label=None, aspect=None, labelsize=None, height_label="height (nm)"):
+        """
+        The colour square (draw_blend_square) in a box of `aspect` (height over width: a map's
+        shape; None leaves the box as it is), the topo bar over the heights `z_range` (lo, hi) with
+        `height_label` (draw_blend_topo_bar), and the value bar (draw_blend_value_bar): with `norm`
+        the one scale of every map shown and `label`, without it 'low' and 'high'.
+        """
+        draw_blend_square(self.ax, blend)
+        if aspect is not None and np.isfinite(aspect) and aspect > 0:
+            self.ax.set_box_aspect(float(aspect))
+        draw_blend_topo_bar(self.topo, blend, z_range[0], z_range[1], label=height_label, labelsize=labelsize)
+        draw_blend_value_bar(self.value, blend, norm, label, labelsize=labelsize)
 
 
 def draw_colorbar(fig, im, cax, label=None, labelsize=None):

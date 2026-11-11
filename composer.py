@@ -16,7 +16,11 @@ cross-referenced: every collected spectrum gets its own symbol (SYMBOLS,
 in the order collected, wrapping after the last), drawn in black on every
 map and topo at that spectrum's position; every spectrum panel gets a down
 arrow at the energy of every collected map and is titled "<quantity> at
-'<symbol>'".  Maps and the topo carry a SCALE_BAR_NM (1 nm) scale bar at
+'<symbol>'".  A map collected while the Map window's 'Height' is on is drawn
+with its Height shading, and the figure then has one more panel in front of
+the maps: the colour square with its topo bar and value bar (plots.BlendKey;
+the value bar carries the scale when every shaded map has the same one, else
+'low' and 'high').  Maps and the topo carry a SCALE_BAR_NM (1 nm) scale bar at
 the bottom right and no axis ticks.  In the figure, Delete with the cursor
 over a panel removes it, and "new plot" in the Map window empties the
 list.  The figure is one row of cells high per COLUMNS panels (DESIGN is
@@ -45,7 +49,8 @@ class FigureComposer:
     The collected panels (items) and the one figure that shows them; the
     Map window makes one per grid file (title "<file>: figure", the window
     title) at the first 'add to plot'.
-      add_map(img, extent, limits, vmin, vmax, gamma, cmap, bias_V, shift=None)
+      add_map(img, extent, limits, vmin, vmax, gamma, cmap, bias_V, shift=None,
+              blend=None, height=None, z_range=None, label=None)
       add_topo(layers, extent, limits)      layers: [(img, shift or None), ...], the first at the bottom
       add_spectrum(x, y, xlim, ylim, position, quantity)
       clear()                               the list emptied (the figure stays, empty)
@@ -76,7 +81,8 @@ class FigureComposer:
 
     # --- the list ---
 
-    def add_map(self, img, extent, limits, vmin, vmax, gamma, cmap, bias_V, shift=None):
+    def add_map(self, img, extent, limits, vmin, vmax, gamma, cmap, bias_V, shift=None, blend=None, height=None,
+                z_range=None, label=None):
         """
         A map at one energy as the Map window shows it: img (n_lines,
         n_fast) over the frame `extent` [l, r, b, t], the axes `limits`
@@ -84,13 +90,23 @@ class FigureComposer:
         the map's own range), gamma, cmap, its bias (V, the title and the
         spectra's arrows), and the pixel shifts (n_lines, n_fast, 2) of the
         drift correction when the map was drawn with one (then drawn as
-        plots.PixelMap).  The figure is rebuilt.
+        plots.PixelMap).  A map shown with Height shading comes with
+        `blend` (the window's TopoLdosBlend) and `height` (the height
+        fraction under every pixel, img's shape) and is drawn shaded, with
+        `z_range` (the heights (lo, hi) of its topo, nm) and `label` (its
+        colour-bar label) for the colour square panel (_key_item).  The
+        figure is rebuilt.
         """
+        shaded = blend is not None and height is not None
         self.items.append({'kind': 'map', 'img': np.array(img, dtype=np.float64), 'extent': [float(v) for v in extent],
                            'limits': [float(v) for v in limits],
                            'vmin': None if vmin is None else float(vmin), 'vmax': None if vmax is None else float(vmax),
                            'gamma': float(gamma), 'cmap': cmap, 'bias': float(bias_V),
-                           'shift': None if shift is None else np.array(shift, dtype=np.float64)})
+                           'shift': None if shift is None else np.array(shift, dtype=np.float64),
+                           'blend': blend if shaded else None,
+                           'height': np.array(height, dtype=np.float64) if shaded else None,
+                           'z_range': None if z_range is None else (float(z_range[0]), float(z_range[1])),
+                           'label': None if label is None else str(label)})
         self.rebuild()
 
     def add_topo(self, layers, extent, limits):
@@ -129,6 +145,30 @@ class FigureComposer:
         rank = {'topo': 0, 'map': 1, 'spectrum': 2}
         return sorted(self.items, key=lambda it: (rank[it['kind']], it['bias'] if it['kind'] == 'map' else 0.0))
 
+    def _key_item(self, items):
+        """
+        The colour square panel of Height shading for the collected items:
+        None unless a collected map is shaded, else a panel item {'kind':
+        'key'} with the first shaded map's blend, the heights of its topo
+        and its shape (the height over the width of its limits), and, when
+        every shaded map has the same colour limits and gamma, that one
+        scale (plots.heat_norm) with the map's colour-bar label for the
+        value bar; with differing scales the value bar shows 'low' and
+        'high' (norm None).  The item is drawn, never collected: it is not
+        in `items` and Delete over it removes nothing.
+        """
+        shaded = [it for it in items if it['kind'] == 'map' and it.get('blend') is not None and it.get('height') is not None]
+        if not shaded:
+            return None
+        first = shaded[0]
+        one = (len({(it['vmin'], it['vmax'], it['gamma']) for it in shaded}) == 1
+               and first['vmin'] is not None and first['vmax'] is not None)
+        x0, x1, y0, y1 = first['limits']
+        w, h = abs(x1 - x0), abs(y1 - y0)
+        return {'kind': 'key', 'blend': first['blend'], 'z_range': first['z_range'] or (0.0, 1.0),
+                'norm': plots.heat_norm(first['gamma'], first['vmin'], first['vmax']) if one else None,
+                'label': first.get('label') if one else None, 'aspect': (h / w) if (w > 0 and h > 0) else None}
+
     def is_open(self):
         """True while the figure exists (tested on the Figure object, not its number)."""
         return self.fig is not None and plt.fignum_exists(self.fig)
@@ -146,9 +186,16 @@ class FigureComposer:
         a spectrum's panel square, an image's at its data's aspect), the
         spectra their symbols in collected order
         (_draw_spectrum_panel), the maps and the topo the symbols of every
-        collected spectrum (_draw_image_panel).  `panels` is refilled.
+        collected spectrum (_draw_image_panel), and Height shading's colour
+        square its panel in front of the maps when a collected map is shaded
+        (_key_item).  `panels` is refilled.
         """
         items = self.ordered()
+        key = self._key_item(items)
+        if key is not None:
+            # Height shading's colour square: one panel in front of the maps (after the topo).
+            k = next((i for i, it in enumerate(items) if it['kind'] != 'topo'), len(items))
+            items = items[:k] + [key] + items[k:]
         n = len(items)
         rows = max((n - 1) // self.COLUMNS + 1, 1)
         if self.is_open() and rows != self._rows:
@@ -195,6 +242,12 @@ class FigureComposer:
             # The panel: square, in its cell of the grid (its title above, its tick labels below).
             cell = self.fig.cell()
             self._grid.addWidget(cell, r, c)
+            if it['kind'] == 'key':
+                # The colour square with its topo bar and value bar (plots.BlendKey), in a map's shape.
+                panel = plots.BlendKey(self.fig, cell)
+                panel.draw(it['blend'], it['z_range'], it['norm'], it['label'], aspect=it['aspect'], labelsize=6)
+                self.panels.append((panel.ax, it, {'symbols': 0, 'arrows': 0}))
+                continue
             ax = self.fig.add_axes(cell=cell)
             if it['kind'] == 'spectrum':
                 ax.set_box_aspect(1.0)                # a spectrum's panel square (an image keeps its data's aspect)
@@ -213,16 +266,22 @@ class FigureComposer:
         """
         A map or the topo: the image(s) as collected (a map with a shift as
         plots.PixelMap, else plots.draw_heatmap with the collected colour
-        limits and gamma; the topo's layers as PixelMap with a shift, else
+        limits and gamma, a map collected with Height shading in its shaded
+        form, plots.BlendImage without a shift; the topo's layers as PixelMap with a shift, else
         imshow, in TOPO_CMAP), titled with the bias ("0.45 V") or "Topo",
         square, zoomed to the collected limits, no ticks, the scale bar,
         and every collected spectrum's symbol at its position.  Returns the
         panel's info dict.
         """
         if it['kind'] == 'map':
+            shaded = it.get('blend') is not None and it.get('height') is not None      # collected with Height shading
             if it['shift'] is not None:
                 plots.PixelMap(ax, it['img'], it['extent'], it['cmap'], gamma=it['gamma'], shift=it['shift'],
-                               vmin=it['vmin'], vmax=it['vmax'])
+                               vmin=it['vmin'], vmax=it['vmax'], blend=it['blend'] if shaded else None,
+                               height=it['height'] if shaded else None)
+            elif shaded:
+                plots.BlendImage(ax, it['img'], it['height'], it['extent'], it['blend'], it['cmap'], gamma=it['gamma'],
+                                 vmin=it['vmin'], vmax=it['vmax'])
             else:
                 plots.draw_heatmap(ax, it['img'], it['extent'], it['cmap'], gamma=it['gamma'], vmin=it['vmin'],
                                    vmax=it['vmax'], origin='lower', aspect='equal', interpolation='none')
