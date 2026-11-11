@@ -926,7 +926,7 @@ class Map:
         self._drift_windows.append(w)
 
     def _refresh_drift(self):
-        """The drift state applied anew (a toggle, a sweep view, a change in any drift or stripe window): the 'stripe' toggle synced, the memoized result, bounds and lines dropped, the pixel maps removed, the topo and the maps redrawn."""
+        """The drift state applied anew (a toggle, a sweep view, a change in any drift or stripe window): the 'stripe' toggle synced, the memoized result, bounds and lines dropped, the drawn maps removed (_clear_pixel_maps), the topo and the maps redrawn."""
         self._sync_stripe_toggle()
         self._drift_res = None
         self._bounds = None
@@ -940,7 +940,13 @@ class Map:
         self.fig.canvas.draw_idle()
 
     def _clear_pixel_maps(self):
-        """Every PixelMap of the maps removed and the grid view's images forgotten (made again at the next draw)."""
+        """Every drawn map removed from its panel and forgotten (made again at the next draw): the grid view's images that are not PixelMaps (plots.draw_heatmap's, drawn when no result places the pixels) and every PixelMap of the maps."""
+        for im in self.grid_ims:
+            if im is not None and not isinstance(im, plots.PixelMap):
+                try:
+                    im.remove()
+                except Exception:
+                    pass
         for pm in self._pixel_maps.values():
             try:
                 pm.remove()

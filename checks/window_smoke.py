@@ -13,10 +13,14 @@ average, the browser's spectra panels, each companion's four panels), a record i
 window has one, reloaded, and the state asserted to round-trip; then everything is closed.  No
 per-feature cells, no interaction beyond the boxes.
 
-The Map window's two features ride on its pass: the percentile clip (one pixel set far above the
+The Map window's three features ride on its pass: the percentile clip (one pixel set far above the
 rest at one energy: 'clip %' 0 gives the limits of plots.finite_range, 'clip %' 2 the limits of
 numpy.nanpercentile(values, [2, 98]) in both 'cmap norm' states, the drawn array unchanged by the
-box, an edit outside 0 <= p < 50 refused) and its marker record (saved with the non-default state
+box, an edit outside 0 <= p < 50 refused), the grid view's panels across a drift toggle (in the
+grid view 'auto drift' clicked twice, the pixels placed by the drift result in one state and not
+in the other: after each click every panel holds exactly one drawn map, a PixelMap where the
+pixels are placed and an image where not, the dropped one removed from its axes) and its marker
+record (saved with the non-default state
 and the markers, reloaded through Browser.load_map_record: the state, the view, the energy index,
 the markers, the group sizes and centres, z_frac and clip % round-trip; a hand-edited record with
 an out-of-range marker and a wrong e_index loaded, the marker clipped to the grid and the index
@@ -218,6 +222,18 @@ def _holds(drawn, columns):
     return all(any(_same(d, cols[:, j]) for d in drawn) for j in range(cols.shape[1]))
 
 
+def _drawn_maps(ax):
+    """
+    The maps drawn in an axes, (images, pixel maps): its images (plots.draw_heatmap's AxesImage)
+    and the quad items added straight to its view (a plots.PixelMap's item, which belongs to no
+    artist of the axes: mplexport's rule for them).
+    """
+    from sm4_Browser import qtplot as plt
+    quads = [it for it in getattr(ax.vb, 'addedItems', [])
+             if isinstance(it, plt.QuadItem) and not any(it is getattr(a, 'item', None) for a in ax._children)]
+    return len(ax.images), len(quads)
+
+
 def _companion_state(parent, fw):
     """The state a companion asks its parent for: the parent's with the companion's rows."""
     flags = fw.pipeline.state()
@@ -307,6 +323,31 @@ def _run():
           m.clip_percent == 2.0 and m.box_clip.value == '2')
     _click(m.chk_cmap_norm)                       # off again
     m.recompute()                                 # the maps back from the data
+
+    # --- the grid view's panels across a drift toggle: one drawn map each, the dropped one removed ---
+    m.toggle_view()                               # the grid view
+    app.processEvents()
+
+    def grid_panels():
+        """Whether the pixels are placed (a drift result), the (images, pixel maps) of every panel, and whether each panel holds the one map of that placement."""
+        placed = m._frame_shift(0) is not None
+        drawn = [_drawn_maps(ax) for ax in m.grid_axes]
+        return placed, drawn, all(d == ((0, 1) if placed else (1, 0)) for d in drawn)
+
+    placed0, drawn0, one0 = grid_panels()
+    check("Map grid view: every panel holds exactly one drawn map when first drawn", one0,
+          f"pixels {'placed' if placed0 else 'not placed'}, (images, pixel maps) per panel {sorted(set(drawn0))}")
+    _click(m.chk_auto)
+    placed1, drawn1, one1 = grid_panels()
+    check("Map grid view: 'auto drift' toggled changes whether the pixels are placed, and every panel holds exactly "
+          "one drawn map", placed1 != placed0 and one1,
+          f"pixels {'placed' if placed1 else 'not placed'}, (images, pixel maps) per panel {sorted(set(drawn1))}")
+    _click(m.chk_auto)
+    placed2, drawn2, one2 = grid_panels()
+    check("Map grid view: 'auto drift' toggled back, every panel holds exactly one drawn map", placed2 == placed0 and one2,
+          f"pixels {'placed' if placed2 else 'not placed'}, (images, pixel maps) per panel {sorted(set(drawn2))}")
+    m.toggle_view()                               # the single view again
+    app.processEvents()
 
     # --- the Map's marker record: saved with the non-default state and the markers, reloaded ---
     m._set_level(0.3)
