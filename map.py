@@ -218,9 +218,13 @@ class Map:
     at that energy, so with a drift source on the heights follow the shift
     within the sweep; a map pixel drawn outside the topography as drawn
     has no height and is not drawn).  The lowest height shows the maps'
-    colour map exactly.  'Height' and 'Contour' are never on together:
-    turning one on turns the other off; both may be off.  The topo panels
-    keep the topo colour map.  With 'Height' on (_draw_height_panels) the
+    colour map exactly, and every colour keeps the lightness (CIELAB L*)
+    of the maps' colour map's colour for its value at every height: a
+    shaded map is as light and dark as the unshaded map at every pixel
+    drawn, and the height shows as colour only.  'Height' and 'Contour'
+    are never on together: turning one on turns the other off; both may
+    be off.  The topo panels keep the topo colour map.
+    With 'Height' on (_draw_height_panels) the
     colour square (value left to right, height bottom to top) sits between
     the topo's ramp and the map in the single view and in the first map
     position of the grid view (the maps one place on, _arrange_grid), in a

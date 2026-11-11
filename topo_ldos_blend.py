@@ -44,6 +44,12 @@ class TopoLdosBlend:
     7. Corner.  The result is darkened toward black in CIELAB (L*, a* and b* scaled together, so no hue
        changes) by CORNER (1 - s) t: most where the LDOS is lowest and the height highest, not at all along
        the lowest height or the highest LDOS.
+    8. Lightness.  The colour of steps 1 to 7, as the display shows it, keeps its a* and b* and takes the
+       LDOS colour's own L*: at every height the result is exactly as light as the LDOS map's colour of that
+       LDOS value, so a black-and-white print of a combined map is the print of the LDOS map alone, and the
+       height shows as colour only.  Where that colour falls outside the display's range its saturation
+       alone is reduced.  (Steps 3 and 7 therefore act through the a* and b* they leave, not through the
+       result's lightness.)
 
     CIELAB is taken against the D65 white, with CSS Color 4's conversions
     (https://www.w3.org/TR/css-color-4/#color-conversion-code).
@@ -198,7 +204,8 @@ class TopoLdosBlend:
                                          0.0, 1.0))
         out = (1.0 - self.SHARE) * base + self.SHARE * ruled                   # 6. the share of the two
         out = out * (1.0 - self.CORNER * (1.0 - s) * t)[..., None]             # 7. corner
-        return self._lab_to_rgb(out)
+        ab = self._rgb_to_lab(self._lab_to_rgb(out))[..., 1:]
+        return self._fit(np.concatenate([lab_m[..., :1], ab], axis=-1))        # 8. the LDOS colour's own lightness
 
     def table(self):
         """The rule on a grid, made once: (TABLE, TABLE, 3) sRGB, [i, j] the colour at the height fraction i / (TABLE - 1) and the LDOS fraction j / (TABLE - 1)."""

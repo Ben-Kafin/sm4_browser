@@ -480,7 +480,10 @@ without the shading (`cmap norm`, `clip %` and the slice's `γ`), and the topogr
 pixel, as a fraction of the drawn topography's own range (the pass on top, the image the contour slice
 reads). The lookup combines the topo colour map and the maps' colour map, both as they are: the lowest
 height shows the maps' colour map exactly, and as the height rises the colours turn toward the topo
-colour map's. The height of a map pixel is that of the topography pixel drawn nearest where the map
+colour map's. Every colour keeps the lightness (CIELAB L\*) of the maps' colour map's colour for its
+value, at every height: a shaded map is exactly as light and dark as the unshaded map at every pixel
+drawn, a black-and-white print of a shaded map is the print of the unshaded map, and the height
+shows as colour only. The height of a map pixel is that of the topography pixel drawn nearest where the map
 pixel itself is drawn at that energy, so with a drift source on the heights follow the map's shift
 within the sweep while the surface stays put, as the contour slice's traces do; a map pixel drawn
 outside the topography as drawn (more than one topography pixel from the nearest one drawn) has no
@@ -995,10 +998,14 @@ contributes none; the two ambiguous cases split by the mean of the four corners)
 
 `TopoLdosBlend`: the colours of a map's value and the topography's height shown together, from a
 topography colour map and a map colour map used as they are (`blend(s, t)`: the table lookup;
-`blend.colours(s, t)`: the rule itself; `square`, `topo_bar`, `ldos_bar`: the legend's colours). It
-is the STM_from_DFT simulator's file, taken as it is (numpy only, nothing of this package): its
-class constants are the approved rule and are not changed here. The Map window's `Height` toggle
-draws with it through `plots.py`.
+`blend.colours(s, t)`: the rule itself; `square`, `topo_bar`, `ldos_bar`: the legend's colours). The
+lowest height gives the map colour map exactly, and the rule's last step gives every colour the
+CIELAB L\* of the map colour map's colour for its value, so the height changes a colour's hue and
+saturation and never its lightness (a colour that falls outside the display's range has its
+saturation alone reduced). The class keeps no cache between runs: its lookup table is made at the
+first use of each `TopoLdosBlend`. It is the STM_from_DFT simulator's file, taken as it is (numpy
+only, nothing of this package): its class constants are the approved rule and are not changed here.
+The Map window's `Height` toggle draws with it through `plots.py`.
 
 ### `averaging.py`
 
